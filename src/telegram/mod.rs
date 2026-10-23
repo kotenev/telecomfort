@@ -83,6 +83,8 @@ pub struct PollInfo {
     pub quiz: bool,
     pub total_voters: Option<i32>,
     pub answers: Vec<PollAnswerInfo>,
+    /// Пояснение правильного ответа (викторины).
+    pub solution: Option<String>,
 }
 
 /// Контакт из телефонной книги Telegram.
@@ -610,6 +612,14 @@ pub trait TelegramService: Send + Sync {
     /// Изменить подпись своей сторис.
     async fn edit_story_caption(&self, _story_id: i32, _caption: &str) -> anyhow::Result<()> {
         anyhow::bail!("story edit is not implemented for this backend")
+    }
+    /// Назначить/снять админа (без права добавлять админов и анонимности).
+    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _admin: bool, _title: &str) -> anyhow::Result<()> {
+        anyhow::bail!("admin management is not implemented for this backend")
+    }
+    /// Слоумод чата (0 — выкл, иначе секунды задержки).
+    async fn set_slowmode(&self, _chat_id: i64, _seconds: i32) -> anyhow::Result<()> {
+        anyhow::bail!("slow mode is not implemented for this backend")
     }
     /// Подборки сторис (хайлайтс) текущего пользователя.
     async fn story_albums(&self) -> anyhow::Result<Vec<StoryAlbumInfo>> {

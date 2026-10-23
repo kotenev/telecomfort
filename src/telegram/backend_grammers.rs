@@ -2181,6 +2181,71 @@ impl TelegramService for GrammersBackend {
         Ok(())
     }
 
+    async fn set_admin(
+        &self,
+        chat_id: i64,
+        user_id: i64,
+        access_hash: i64,
+        admin: bool,
+        title: &str,
+    ) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        // Без анонимности и права добавлять админов (консервативный набор).
+        let rights = |on: bool| {
+            tl::types::ChatAdminRights {
+                change_info: on,
+                post_messages: on,
+                edit_messages: on,
+                delete_messages: on,
+                ban_users: on,
+                invite_users: on,
+                pin_messages: on,
+                add_admins: false,
+                anonymous: false,
+                manage_call: on,
+                other: on,
+                manage_topics: on,
+                post_stories: on,
+                edit_stories: on,
+                delete_stories: on,
+                manage_direct_messages: on,
+                manage_ranks: false,
+                manage_linked_peers: false,
+                manage_welcome_messages: false,
+            }
+        };
+        self.client
+            .invoke(&tl::functions::channels::EditAdmin {
+                channel,
+                user_id: tl::enums::InputUser::User(tl::types::InputUser {
+                    user_id,
+                    access_hash,
+                }),
+                admin_rights: tl::enums::ChatAdminRights::Rights(rights(admin)),
+                rank: if admin && !title.is_empty() {
+                    Some(title.to_string())
+                } else {
+                    None
+                },
+            })
+            .await
+            .context("editAdmin failed (нет прав?)")?;
+        Ok(())
+    }
+
+    async fn set_slowmode(&self, chat_id: i64, seconds: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        self.client
+            .invoke(&tl::functions::channels::ToggleSlowMode { channel, seconds: seconds.max(0) })
+            .await
+            .context("slowmode failed (не канал/нет прав?)")?;
+        Ok(())
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();
@@ -2459,6 +2524,7 @@ fn poll_info(p: &grammers_client::media::Poll) -> super::PollInfo {
         quiz: p.is_quiz(),
         total_voters: p.total_voters(),
         answers,
+        solution: p.raw_results.solution.clone(),
     }
 }
 
@@ -2592,8 +2658,10 @@ fn raw_to_info(
                     let mut stat: std::collections::HashMap<Vec<u8>, (Option<i32>, bool)> =
                         std::collections::HashMap::new();
                     let mut total_voters = None;
+                    let mut solution = None;
                     if let tl::enums::PollResults::Results(rr) = &p.results {
                         total_voters = rr.total_voters;
+                        solution = rr.solution.clone();
                         for v in rr.results.iter().flatten() {
                             if let tl::enums::PollAnswerVoters::Voters(v) = v {
                                 stat.insert(v.option.clone(), (v.voters, v.chosen));
@@ -2628,6 +2696,7 @@ fn raw_to_info(
                         quiz: raw.quiz,
                         total_voters,
                         answers,
+                        solution,
                     });
                 }
             }

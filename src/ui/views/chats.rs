@@ -330,6 +330,9 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("👥").on_hover_text("Участники (каналы/супергруппы)").clicked() {
                     app.load_participants(chat_id);
                 }
+                if ui.small_button("⏱").on_hover_text("Слоумод (задержка отправки)").clicked() {
+                    app.slowmode_open = Some(chat_id);
+                }
                 if ui
                     .small_button("+ Правило для этого чата")
                     .on_hover_text("Добавить per-chat правило автозагрузки")
@@ -531,6 +534,10 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         for p in items {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{} {}", if p.admin { "⭐" } else { "•" }, p.name));
+                                let admin_label = if p.admin { "⬇ Разжаловать" } else { "⬆ Админ" };
+                                if ui.small_button(admin_label).on_hover_text("Назначить/снять админа (нужны права)").clicked() {
+                                    app.toggle_admin(cid, &p);
+                                }
                                 if !p.admin {
                                     if ui.small_button("🚫").on_hover_text("Исключить").clicked() {
                                         app.kick_participant(cid, p.id);
@@ -566,6 +573,29 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 });
             }
             // Подтверждения опасных действий — глобальное окно в app.rs (работает с любого экрана).
+            if let Some(cid) = app.slowmode_open {
+                egui::Window::new("⏱ Слоумод").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.label("Задержка между сообщениями (0 — выкл):");
+                    ui.horizontal(|ui| {
+                        for (label, secs) in [("Выкл", "0"), ("30с", "30"), ("1м", "60"), ("5м", "300"), ("1ч", "3600")] {
+                            if ui.small_button(label).clicked() {
+                                app.slowmode_secs = secs.to_string();
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut app.slowmode_secs);
+                        if ui.button("Применить").clicked() {
+                            let secs: i32 = app.slowmode_secs.trim().parse().unwrap_or(0).max(0);
+                            app.set_slowmode(cid, secs);
+                            app.slowmode_open = None;
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.slowmode_open = None;
+                        }
+                    });
+                });
+            }
             if app.scheduled_open {
                 egui::Window::new("⏰ Запланированные").collapsible(false).show(ui.ctx(), |ui| {
                     if app.scheduled.is_empty() {
@@ -902,6 +932,11 @@ fn poll_card(
             let mut title = format!("📊 {}", poll.question);
             if poll.quiz {
                 title.push_str(" (викторина)");
+            }
+            if let Some(sol) = &poll.solution {
+                if !sol.is_empty() {
+                    ui.label(egui::RichText::new(format!("💡 {sol}")).small().weak());
+                }
             }
             if poll.closed {
                 title.push_str(" · закрыт");
