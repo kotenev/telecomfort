@@ -22,12 +22,28 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     ui.text_edit_singleline(&mut app.profile_last);
                 });
                 ui.horizontal(|ui| {
+                    ui.label("@username:");
+                    ui.text_edit_singleline(&mut app.profile_username);
+                    if ui.small_button("💾 Ник").on_hover_text("Изменить @username").clicked() {
+                        app.save_username();
+                    }
+                });
+                ui.horizontal(|ui| {
                     ui.label("О себе:");
                     ui.text_edit_singleline(&mut app.profile_about);
                 });
-                if ui.small_button("💾 Сохранить профиль").clicked() {
-                    app.save_profile();
-                }
+                ui.horizontal(|ui| {
+                    if ui.small_button("💾 Сохранить профиль").clicked() {
+                        app.save_profile();
+                    }
+                    if ui
+                        .small_button("🖼 Фото профиля")
+                        .on_hover_text("Загрузить новое фото профиля")
+                        .clicked()
+                    {
+                        app.upload_avatar_pick();
+                    }
+                });
                 ui.label(
                     egui::RichText::new("Имя/о себе видны всем, у кого вы в контактах.")
                         .small()

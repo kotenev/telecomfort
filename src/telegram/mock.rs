@@ -408,6 +408,7 @@ impl TelegramService for MockTelegram {
             first_name: "Демо".into(),
             last_name: "Юзер".into(),
             about: "офлайн-демо".into(),
+            username: None,
         })
     }
 
@@ -604,6 +605,54 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
+    async fn story_react(&self, _peer_id: i64, _story_id: i32, _emoji: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn toggle_story_pin(&self, _story_id: i32, _pinned: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn story_viewers(
+        &self,
+        _story_id: i32,
+        _limit: usize,
+    ) -> anyhow::Result<(i32, Vec<crate::telegram::StoryViewer>)> {
+        Ok((
+            42,
+            vec![
+                crate::telegram::StoryViewer { name: "Анна".into() },
+                crate::telegram::StoryViewer { name: "Лектор".into() },
+            ],
+        ))
+    }
+
+    async fn search_media(
+        &self,
+        chat_id: i64,
+        _kind: &str,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<crate::telegram::MessageInfo>> {
+        let items = self.history(chat_id, 10).await?;
+        Ok(items.into_iter().filter(|m| m.has_media).collect())
+    }
+
+    async fn update_username(&self, _username: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn upload_avatar(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete_contact(&self, _user_id: i64, _access_hash: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn blocked_list(&self) -> anyhow::Result<Vec<crate::telegram::BlockedInfo>> {
+        Ok(vec![crate::telegram::BlockedInfo { id: 2003, name: "Спаммер".into() }])
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -687,12 +736,14 @@ impl TelegramService for MockTelegram {
                 phone: "+7 900 000-00-00".into(),
                 username: Some("anna".into()),
                 user_id: 2001,
+                access_hash: 111,
             },
             crate::telegram::ContactInfo {
                 name: "Лектор".into(),
                 phone: "+7 900 000-00-01".into(),
                 username: None,
                 user_id: 2002,
+                access_hash: 222,
             },
         ])
     }
@@ -826,5 +877,25 @@ mod tests {
         assert!(m.story_reply(2001, 7, "круто!").await.expect("story reply") >= 9200);
         assert_eq!(m.story_views(7).await.expect("story views"), 42);
         m.enable_stealth().await.expect("stealth");
+    }
+
+    /// Контракт шестого parity-пакета: сторис-интерактив, медиапоиск,
+    /// профиль, удаление контактов, чёрный список.
+    #[tokio::test]
+    async fn mock_management_contract_5() {
+        let m = MockTelegram;
+        m.story_react(2001, 7, "❤️").await.expect("story react");
+        m.toggle_story_pin(7, true).await.expect("pin story");
+        let (count, viewers) = m.story_viewers(7, 20).await.expect("viewers");
+        assert_eq!(count, 42);
+        assert_eq!(viewers.len(), 2);
+        let media = m.search_media(-1001, "photo", 50).await.expect("search media");
+        assert!(media.iter().all(|x| x.has_media));
+        m.update_username("demo_user").await.expect("username");
+        m.upload_avatar(std::path::Path::new("ava.jpg")).await.expect("avatar");
+        m.delete_contact(2002, 222).await.expect("delete contact");
+        let blocked = m.blocked_list().await.expect("blocked");
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].name, "Спаммер");
     }
 }

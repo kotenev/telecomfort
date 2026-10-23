@@ -92,6 +92,20 @@ pub struct ContactInfo {
     pub phone: String,
     pub username: Option<String>,
     pub user_id: i64,
+    pub access_hash: i64,
+}
+
+/// Заблокированный пользователь/чат.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockedInfo {
+    pub id: i64,
+    pub name: String,
+}
+
+/// Зритель сторис (имя для списка просмотревших).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryViewer {
+    pub name: String,
 }
 
 /// Папка диалогов сервера (вкладка-фильтр).
@@ -140,12 +154,13 @@ pub struct SessionInfo {
     pub hash: i64,
 }
 
-/// Профиль текущего аккаунта (имя + о себе).
+/// Профиль текущего аккаунта (имя + о себе + username).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProfileInfo {
     pub first_name: String,
     pub last_name: String,
     pub about: String,
+    pub username: Option<String>,
 }
 
 /// Сериализация `Vec<u8>` как массива чисел (serde без extra-фич).
@@ -499,6 +514,47 @@ pub trait TelegramService: Send + Sync {
     /// Стелс-режим сторис (не палить просмотры): прошлое + будущее.
     async fn enable_stealth(&self) -> anyhow::Result<()> {
         anyhow::bail!("stealth mode is not implemented for this backend")
+    }
+    /// Реакция на чужую сторис (emoji; повтор — toggle на сервере).
+    async fn story_react(&self, _peer_id: i64, _story_id: i32, _emoji: &str) -> anyhow::Result<()> {
+        anyhow::bail!("story reactions are not implemented for this backend")
+    }
+    /// Закрепить/открепить свою сторис в профиле.
+    async fn toggle_story_pin(&self, _story_id: i32, _pinned: bool) -> anyhow::Result<()> {
+        anyhow::bail!("story pins are not implemented for this backend")
+    }
+    /// Зрители своей сторис (первые N имён).
+    async fn story_viewers(
+        &self,
+        _story_id: i32,
+        _limit: usize,
+    ) -> anyhow::Result<(i32, Vec<StoryViewer>)> {
+        anyhow::bail!("story views are not implemented for this backend")
+    }
+    /// Медиа-табы истории: только фото / только видео / только ссылки.
+    async fn search_media(
+        &self,
+        _chat_id: i64,
+        _kind: &str,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        Ok(vec![])
+    }
+    /// Изменить @username текущего аккаунта.
+    async fn update_username(&self, _username: &str) -> anyhow::Result<()> {
+        anyhow::bail!("username edit is not implemented for this backend")
+    }
+    /// Загрузить новое фото профиля (fallback=false).
+    async fn upload_avatar(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::bail!("avatar upload is not implemented for this backend")
+    }
+    /// Удалить контакт по (user_id, access_hash).
+    async fn delete_contact(&self, _user_id: i64, _access_hash: i64) -> anyhow::Result<()> {
+        anyhow::bail!("delete contact is not implemented for this backend")
+    }
+    /// Чёрный список (пользователи и чаты).
+    async fn blocked_list(&self) -> anyhow::Result<Vec<BlockedInfo>> {
+        Ok(vec![])
     }
     fn is_connected(&self) -> bool;
 }
