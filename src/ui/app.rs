@@ -94,12 +94,26 @@ pub enum BgEvent {
     UsernameChecked(bool),
     /// Закреп диалога переключён.
     DialogPinToggled { chat_id: i64, pinned: bool },
+    /// Перевод сообщения готов.
+    TranslatedMessage { chat_id: i64, message_id: i32, text: String },
+    /// Репост сторис выполнен.
+    StoryForwarded { story_id: i32 },
+    /// Права администратора применены.
+    AdminSaved { chat_id: i64 },
+    /// Эмодзи-статусы загружены.
+    EmojiStatusesLoaded(Vec<i64>),
+    /// Свой эмодзи-статус изменён.
+    OwnEmojiStatus(Option<i64>),
     /// Альбом файлов отправлен.
     AlbumSent { chat_id: i64, count: usize },
     /// Архив сторис загружен.
     ArchiveLoaded(Vec<crate::telegram::StoryInfo>),
     /// Подборки загружены.
     AlbumsLoaded(Vec<crate::telegram::StoryAlbumInfo>),
+    /// Содержимое подборки загружено.
+    AlbumStoriesLoaded { album_id: i32, items: Vec<crate::telegram::StoryInfo> },
+    /// Аналитика канала загружена.
+    ChannelStatsLoaded { chat_id: i64, stats: crate::telegram::ChannelStats },
     /// Архивное превью готово.
     ArchiveThumbReady { story_id: i32, path: PathBuf },
     /// Подборка создана/удалена.
@@ -167,6 +181,18 @@ pub struct AudioPlayback {
 pub struct StoryPublish {
     pub path: PathBuf,
     pub caption: String,
+}
+
+/// Редактор прав администратора (открывается из списка участников).
+#[derive(Debug, Clone)]
+pub struct AdminEditState {
+    pub chat_id: i64,
+    pub user_id: i64,
+    pub access_hash: i64,
+    pub user_name: String,
+    pub is_admin: bool,
+    pub rights: crate::telegram::AdminRights,
+    pub title: String,
 }
 
 /// Опасное действие, требующее подтверждения окном.
@@ -241,6 +267,15 @@ pub struct TelecomfortApp {
     pub composer: HashMap<i64, String>,
     /// Тихая отправка (без звука у получателя).
     pub silent_send: bool,
+    /// Переводы сообщений: (chat_id, message_id) -> текст перевода.
+    pub translations: std::collections::HashMap<(i64, i32), String>,
+    /// Эмодзи-статус аккаунта (document id) + доступные варианты.
+    pub own_emoji_status: Option<i64>,
+    pub emoji_statuses: Vec<i64>,
+    /// Отложенная отправка вложений (None = сразу).
+    pub attach_scheduled: bool,
+    /// Редактор прав администратора.
+    pub admin_edit: Option<AdminEditState>,
     /// Эмодзи новой папки (опционально).
     pub folder_create_emoji: String,
     /// Текущий текст ввода (синкается с composer при select_chat).
@@ -373,6 +408,12 @@ pub struct TelecomfortApp {
     pub album_create_open: bool,
     pub album_create_title: String,
     pub album_pick: std::collections::HashSet<i32>,
+    /// Открытая подборка (просмотр содержимого).
+    pub album_open: Option<i32>,
+    pub album_stories: HashMap<i32, Vec<crate::telegram::StoryInfo>>,
+    /// Аналитика канала (chat_id → stats) + открытое окно.
+    pub channel_stats: HashMap<i64, crate::telegram::ChannelStats>,
+    pub channel_stats_open: Option<i64>,
     /// Архивные превью (story_id → текстура).
     pub archive_thumbs: HashMap<i32, egui::TextureHandle>,
     pub archive_thumb_files: HashMap<i32, PathBuf>,
@@ -472,7 +513,12 @@ impl TelecomfortApp {
             composer: HashMap::new(),
             composer_current: String::new(),
             silent_send: false,
-            folder_create_emoji: String::new(),
+            translations: std::collections::HashMap::new(),
+            own_emoji_status: None,
+            emoji_statuses: Vec::new(),
+            attach_scheduled: false,
+            admin_edit: None,
+        folder_create_emoji: String::new(),
             chat_search: String::new(),
             reply_to: None,
             editing: None,
@@ -553,6 +599,10 @@ impl TelecomfortApp {
             album_create_open: false,
             album_create_title: String::new(),
             album_pick: std::collections::HashSet::new(),
+            album_open: None,
+            album_stories: HashMap::new(),
+            channel_stats: HashMap::new(),
+            channel_stats_open: None,
             archive_thumbs: HashMap::new(),
             archive_thumb_files: HashMap::new(),
             archive_thumb_requested: HashSet::new(),
@@ -840,6 +890,23 @@ impl TelecomfortApp {
                     self.blocked = blocked;
                     self.blocked_loaded = true;
                 }
+                BgEvent::TranslatedMessage { chat_id, message_id, text } => {
+                    self.translations.insert((chat_id, message_id), text);
+                }
+                BgEvent::StoryForwarded { story_id } => {
+                    self.log(format!("репост опубликован (сторис #{story_id})"));
+                    self.refresh_stories();
+                }
+                BgEvent::AdminSaved { chat_id } => {
+                    self.admin_edit = None;
+                    self.load_participants(chat_id);
+                }
+                BgEvent::EmojiStatusesLoaded(ids) => {
+                    self.emoji_statuses = ids;
+                }
+                BgEvent::OwnEmojiStatus(id) => {
+                    self.own_emoji_status = id;
+                }
                 BgEvent::UsernameChecked(free) => {
                     self.username_check = Some(free);
                 }
@@ -870,6 +937,14 @@ impl TelecomfortApp {
                 BgEvent::AlbumsLoaded(albums) => {
                     self.albums = albums;
                     self.albums_loaded = true;
+                }
+                BgEvent::AlbumStoriesLoaded { album_id, items } => {
+                    self.album_stories.insert(album_id, items);
+                    self.album_open = Some(album_id);
+                }
+                BgEvent::ChannelStatsLoaded { chat_id, stats } => {
+                    self.channel_stats.insert(chat_id, stats);
+                    self.channel_stats_open = Some(chat_id);
                 }
                 BgEvent::AlbumChanged => {
                     self.album_create_open = false;
@@ -1334,9 +1409,11 @@ impl TelecomfortApp {
                 let draft = std::mem::take(&mut self.composer_current);
                 self.composer.insert(old, draft.clone());
                 // Черновик и на сервер (синк между устройствами), best-effort.
+                // Reply-контекст тоже сохраняем, если черновик не пуст.
+                let reply = self.reply_to.clone().filter(|(c, _, _)| *c == old).map(|(_, m, _)| m);
                 let tg = Arc::clone(&self.tg);
                 self.rt.spawn(async move {
-                    let _ = tg.save_draft(old, &draft).await;
+                    let _ = tg.save_draft(old, &draft, reply).await;
                 });
             }
         }
@@ -2088,6 +2165,46 @@ impl TelecomfortApp {
         });
     }
 
+    /// Открыть содержимое подборки.
+    pub fn open_album(&mut self, album_id: i32) {
+        if self.album_stories.contains_key(&album_id) {
+            self.album_open = Some(album_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.album_stories(album_id).await {
+                Ok(items) => {
+                    let _ = tx.send(BgEvent::AlbumStoriesLoaded { album_id, items });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подборка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить аналитику канала (окно со значениями).
+    pub fn load_channel_stats(&mut self, chat_id: i64) {
+        if self.channel_stats.contains_key(&chat_id) {
+            self.channel_stats_open = Some(chat_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.channel_stats(chat_id).await {
+                Ok(stats) => {
+                    let _ = tx.send(BgEvent::ChannelStatsLoaded { chat_id, stats });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("статистика: {e:#}")));
+                }
+            }
+        });
+    }
+
     /// Удалить подборку.
     pub fn delete_album(&mut self, album_id: i32) {
         let tg = Arc::clone(&self.tg);
@@ -2211,23 +2328,39 @@ impl TelecomfortApp {
         });
     }
 
-    /// Назначить/снять админа (нужны права владельца).
-    pub fn toggle_admin(&mut self, chat_id: i64, p: &crate::telegram::ParticipantInfo) {
+    /// Открыть редактор прав администратора (тонкие галки).
+    pub fn open_admin_editor(&mut self, chat_id: i64, p: &crate::telegram::ParticipantInfo) {
+        // Новому админу предлагаем полный набор, у действующего — пустой
+        // (одно нажатие «Применить» = разжаловать); галки можно менять вручную.
+        let rights = if p.admin {
+            crate::telegram::AdminRights::none()
+        } else {
+            crate::telegram::AdminRights::full()
+        };
+        self.admin_edit = Some(AdminEditState {
+            chat_id,
+            user_id: p.id,
+            access_hash: p.access_hash,
+            user_name: p.name.clone(),
+            is_admin: p.admin,
+            rights,
+            title: String::new(),
+        });
+    }
+
+    /// Применить права из редактора (пустой набор = разжаловать).
+    pub fn apply_admin_rights(&mut self) {
+        let Some(ed) = self.admin_edit.clone() else {
+            return;
+        };
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
-        let (uid, hash, admin) = (p.id, p.access_hash, p.admin);
         self.rt.spawn(async move {
-            match tg.set_admin(chat_id, uid, hash, !admin, "").await {
+            let label = if ed.rights.any() { "права обновлены".to_string() } else { "админ снят".to_string() };
+            match tg.set_admin(ed.chat_id, ed.user_id, ed.access_hash, ed.rights, &ed.title).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if !admin { "админ назначен".to_string() } else { "админ снят".to_string() },
-                    ));
-                    match tg.participants(chat_id, 100).await {
-                        Ok(items) => {
-                            let _ = tx.send(BgEvent::ParticipantsLoaded { chat_id, items });
-                        }
-                        Err(_) => {}
-                    }
+                    let _ = tx.send(BgEvent::Log(label));
+                    let _ = tx.send(BgEvent::AdminSaved { chat_id: ed.chat_id });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("админка: {e:#}")));
@@ -2235,6 +2368,110 @@ impl TelecomfortApp {
             }
         });
     }
+
+    /// Вычислить время отложки для вложений (по sched_hours); сбрасывает флаг.
+    pub fn attach_scheduled_at(&mut self) -> Option<std::time::SystemTime> {
+        if !self.attach_scheduled {
+            return None;
+        }
+        self.attach_scheduled = false;
+        let hours: f64 = self.sched_hours.replace(',', ".").parse().unwrap_or(0.0);
+        if hours <= 0.0 {
+            return None;
+        }
+        Some(
+            std::time::SystemTime::now()
+                + std::time::Duration::from_secs((hours * 3600.0) as u64),
+        )
+    }
+
+    /// Перевести сообщение (язык — авто: кириллица → en, иначе → ru).
+    pub fn translate_message(&mut self, chat_id: i64, m: &crate::telegram::MessageInfo) {
+        if self.translations.contains_key(&(chat_id, m.id)) {
+            self.translations.remove(&(chat_id, m.id));
+            return;
+        }
+        let to_lang = if m.text.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c)) {
+            "en"
+        } else {
+            "ru"
+        };
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let message_id = m.id;
+        let to_lang = to_lang.to_string();
+        self.rt.spawn(async move {
+            match tg.translate_message(chat_id, message_id, &to_lang).await {
+                Ok(text) => {
+                    let _ = tx.send(BgEvent::TranslatedMessage { chat_id, message_id, text });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("перевод: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Репост чужой сторис себе (с атрибуцией автора).
+    pub fn forward_story(&mut self, peer_id: i64, story_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.log("репост сторис: скачивание…".to_string());
+        self.rt.spawn(async move {
+            match tg.forward_story(peer_id, story_id, "").await {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::Log(format!("репост опубликован (сторис #{id})")));
+                    let _ = tx.send(BgEvent::StoryForwarded { story_id: id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("репост: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Установить/снять эмодзи-статус.
+    pub fn set_emoji_status(&mut self, document_id: Option<i64>) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.set_emoji_status(document_id).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if document_id.is_some() {
+                            "эмодзи-статус установлен".to_string()
+                        } else {
+                            "эмодзи-статус снят".to_string()
+                        },
+                    ));
+                    let _ = tx.send(BgEvent::OwnEmojiStatus(document_id));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("статус: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить доступные эмодзи-статусы.
+    pub fn load_emoji_statuses(&mut self) {
+        if !self.emoji_statuses.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.default_emoji_statuses().await {
+                Ok(ids) => {
+                    let _ = tx.send(BgEvent::EmojiStatusesLoaded(ids));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("эмодзи: {e:#}")));
+                }
+            }
+        });
+    }
+
     /// Установить слоумод (0 — выкл).
     pub fn set_slowmode(&mut self, chat_id: i64, seconds: i32) {
         let tg = Arc::clone(&self.tg);
@@ -2292,10 +2529,12 @@ impl TelecomfortApp {
     }
 
     /// Отправить альбом файлов (выбор нескольких в диалоге).
+    /// Если взведён флаг отложки вложений — отправка планируется по sched_hours.
     pub fn send_album_pick(&mut self, chat_id: i64) {
         let Some(paths) = rfd::FileDialog::new().pick_files() else {
             return;
         };
+        let schedule_at = self.attach_scheduled_at();
         if paths.len() < 2 {
             // Один файл — обычной отправкой.
             if let Some(p) = paths.into_iter().next() {
@@ -2304,7 +2543,7 @@ impl TelecomfortApp {
                 let tx = self.tx.clone();
                 let silent = self.silent_send;
                 self.rt.spawn(async move {
-                    match tg.send_file(chat_id, &p, &caption, silent).await {
+                    match tg.send_file(chat_id, &p, &caption, silent, schedule_at).await {
                         Ok(id) => {
                             let _ = tx.send(BgEvent::Log(format!("файл отправлен (msg {id})")));
                             let _ = tx.send(BgEvent::ReloadHistory { chat_id });
@@ -2322,8 +2561,9 @@ impl TelecomfortApp {
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         self.log(format!("альбом: заливка {} файлов…", paths.len()));
+        let schedule_at = self.attach_scheduled_at();
         self.rt.spawn(async move {
-            match tg.send_album(chat_id, &paths, &caption).await {
+            match tg.send_album(chat_id, &paths, &caption, schedule_at).await {
                 Ok(ids) => {
                     let _ = tx.send(BgEvent::AlbumSent { chat_id, count: ids.len() });
                 }

@@ -355,6 +355,7 @@ impl TelegramService for MockTelegram {
         path: &std::path::Path,
         _caption: &str,
         _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<i32> {
         let mut h: i32 = 9500;
         for b in path.as_os_str().as_encoded_bytes() {
@@ -658,6 +659,7 @@ impl TelegramService for MockTelegram {
         _chat_id: i64,
         paths: &[std::path::PathBuf],
         _caption: &str,
+        _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<Vec<i32>> {
         Ok(paths.iter().enumerate().map(|(i, _)| 9400 + i as i32).collect())
     }
@@ -767,7 +769,7 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
-    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _admin: bool, _title: &str) -> anyhow::Result<()> {
+    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _rights: crate::telegram::AdminRights, _title: &str) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -870,6 +872,47 @@ impl TelegramService for MockTelegram {
         ])
     }
 
+    async fn album_stories(&self, _album_id: i32) -> anyhow::Result<Vec<crate::telegram::StoryInfo>> {
+        Ok(vec![crate::telegram::StoryInfo {
+            peer_id: 0,
+            peer_title: "Я".into(),
+            story_id: 7,
+            caption: "из подборки".into(),
+            has_url: false,
+            date: 1_700_000_000,
+            preview_path: None,
+        }])
+    }
+
+    async fn channel_stats(&self, _chat_id: i64) -> anyhow::Result<crate::telegram::ChannelStats> {
+        Ok(crate::telegram::ChannelStats {
+            followers: 1204,
+            followers_prev: 1190,
+            views_per_post: 321.5,
+            shares_per_post: 4.2,
+            reactions_per_post: 12.7,
+            views_per_story: 210.0,
+            notifications_pct: 63.0,
+            ..Default::default()
+        })
+    }
+
+    async fn translate_message(&self, _chat_id: i64, _message_id: i32, to_lang: &str) -> anyhow::Result<String> {
+        Ok(format!("[mock перевод на {to_lang}] Hello from the other side"))
+    }
+
+    async fn forward_story(&self, _peer_id: i64, _story_id: i32, _caption: &str) -> anyhow::Result<i32> {
+        Ok(4007)
+    }
+
+    async fn set_emoji_status(&self, _document_id: Option<i64>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn default_emoji_statuses(&self) -> anyhow::Result<Vec<i64>> {
+        Ok(vec![1001, 1002, 1003])
+    }
+
     fn is_connected(&self) -> bool {
         false
     }
@@ -891,7 +934,7 @@ mod tests {
         m.edit_text(-1001, id, "привет!").await.expect("edit");
         m.delete_messages(-1001, &[id]).await.expect("delete");
         m.react(-1001, id, "👍").await.expect("react");
-        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption", false).await.expect("file");
+        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption", false, None).await.expect("file");
         assert!(fid >= 9500);
         m.mark_read(-1001).await.expect("mark_read");
         assert!(m.avatar_path(-1001).await.expect("avatar").is_none());
@@ -946,7 +989,8 @@ mod tests {
             .await
             .expect("scheduled");
         assert!(id >= 9800);
-        m.save_draft(-1001, "черновик").await.expect("draft");
+        m.save_draft(-1001, "черновик", None).await.expect("draft");
+        m.save_draft(-1001, "ответ", Some(5)).await.expect("draft reply");
         let sessions = m.sessions().await.expect("sessions");
         assert_eq!(sessions.len(), 2);
         assert!(sessions.iter().any(|s| s.current));
@@ -1003,13 +1047,27 @@ mod tests {
 
     /// Контракт одиннадцатого parity-пакета: markdown, тихая отправка, эмодзи папок.
     #[tokio::test]
+    async fn mock_management_contract_10() {
+        let m = MockTelegram;
+        let t = m.translate_message(-1001, 321, "en").await.expect("translate");
+        assert!(t.contains("mock"));
+        assert_eq!(m.forward_story(-1002, 77, "").await.expect("repost"), 4007);
+        let em = m.default_emoji_statuses().await.expect("emoji list");
+        assert_eq!(em, vec![1001, 1002, 1003]);
+        m.set_emoji_status(Some(1001)).await.expect("set emoji");
+        m.set_emoji_status(None).await.expect("clear emoji");
+        let all = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap", Some(std::time::SystemTime::now())).await.expect("scheduled album");
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
     async fn mock_management_contract_9() {
         let m = MockTelegram;
         // Markdown не ломает контракт отправки; silent принимается.
         let id = m.send_text(-1001, "**жирно** и *курсив* `код`", None, true).await.expect("md send");
         assert!(id >= 9000);
         m.send_scheduled(-1001, "потом *важно*", None, std::time::SystemTime::now(), false).await.expect("md scheduled");
-        m.send_file(-1001, std::path::Path::new("a.png"), "_подпись_", true).await.expect("md file");
+        m.send_file(-1001, std::path::Path::new("a.png"), "_подпись_", true, None).await.expect("md file");
         m.send_to_topic(-1002, 2, "в топик **жирно**", false).await.expect("md topic");
         let fid = m.create_folder("Работа", &[-1001], Some("💼".into())).await.expect("folder emoji");
         assert!(fid >= 0);
@@ -1030,9 +1088,18 @@ mod tests {
         assert!(parts.iter().any(|p| p.admin));
         m.kick_participant(-1002, 2001).await.expect("kick");
         m.hide_peer_stories(2001, true).await.expect("hide");
+        let alb = m.story_albums().await.expect("albums");
+        assert_eq!(alb.len(), 1);
+        let items = m.album_stories(1).await.expect("album stories");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].story_id, 7);
+        m.delete_album(1).await.expect("delete album");
+        let st = m.channel_stats(-1001).await.expect("stats");
+        assert_eq!(st.followers, 1204);
+        assert!(st.notifications_pct > 0.0);
         m.edit_story_caption(7, "новый текст").await.expect("edit story");
-        m.set_admin(-1002, 2001, 111, true, "модератор").await.expect("promote");
-        m.set_admin(-1002, 2001, 111, false, "").await.expect("demote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::full(), "модератор").await.expect("promote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "").await.expect("demote");
         m.set_slowmode(-1002, 30).await.expect("slowmode");
         m.set_slowmode(-1002, 0).await.expect("slowmode off");
     }
@@ -1050,10 +1117,19 @@ mod tests {
         let parts = m.participants(-1002, 100).await.expect("participants");
         assert!(parts.iter().any(|p| p.admin));
         m.kick_participant(-1002, 2001).await.expect("kick");
-        m.set_admin(-1002, 2001, 111, true, "модератор").await.expect("promote");
-        m.set_admin(-1002, 2001, 111, false, "").await.expect("demote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::full(), "модератор").await.expect("promote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "").await.expect("demote");
         m.set_slowmode(-1002, 30).await.expect("slowmode");
         m.hide_peer_stories(2001, true).await.expect("hide");
+        let alb = m.story_albums().await.expect("albums");
+        assert_eq!(alb.len(), 1);
+        let items = m.album_stories(1).await.expect("album stories");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].story_id, 7);
+        m.delete_album(1).await.expect("delete album");
+        let st = m.channel_stats(-1001).await.expect("stats");
+        assert_eq!(st.followers, 1204);
+        assert!(st.notifications_pct > 0.0);
         m.edit_story_caption(7, "новый текст").await.expect("edit story");
         let albums = m.story_albums().await.expect("albums");
         assert_eq!(albums.len(), 1);
@@ -1092,7 +1168,7 @@ mod tests {
         assert!(m.check_username("free_name").await.expect("check"));
         assert!(!m.check_username("taken").await.expect("check taken"));
         m.toggle_dialog_pin(-1001, true).await.expect("pin dialog");
-        let album = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap").await.expect("album");
+        let album = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap", None).await.expect("album");
         assert_eq!(album.len(), 2);
         let arch = m.archived_stories().await.expect("archive");
         assert_eq!(arch.len(), 1);
@@ -1101,5 +1177,43 @@ mod tests {
         let blocked = m.blocked_list().await.expect("blocked");
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].name, "Спаммер");
+    }
+
+    /// Контракт двенадцатого parity-пакета: подборки (просмотр), статистика,
+    /// черновики с reply, закрепы списком.
+    #[tokio::test]
+    async fn mock_management_contract_11() {
+        let m = MockTelegram;
+        m.save_draft(-1001, "черновик", Some(7)).await.expect("draft reply");
+        let albums = m.story_albums().await.expect("albums");
+        assert!(!albums.is_empty());
+        let stats = m.channel_stats(-1001).await.expect("stats");
+        assert!(stats.followers > 0);
+    }
+
+    /// Контракт: перевод, репост сторис, эмодзи-статус, тонкие права, отложка медиа.
+    #[tokio::test]
+    async fn mock_management_contract_12() {
+        let m = MockTelegram;
+        let t = m.translate_message(-1001, 321, "en").await.expect("translate");
+        assert!(t.contains("mock"));
+        assert_eq!(m.forward_story(-1002, 77, "").await.expect("repost"), 4007);
+        let em = m.default_emoji_statuses().await.expect("emoji list");
+        assert_eq!(em, vec![1001, 1002, 1003]);
+        m.set_emoji_status(Some(1001)).await.expect("set emoji");
+        m.set_emoji_status(None).await.expect("clear emoji");
+        let all = m
+            .send_album(
+                -1001,
+                &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")],
+                "cap",
+                Some(std::time::SystemTime::now()),
+            )
+            .await
+            .expect("scheduled album");
+        assert_eq!(all.len(), 2);
+        m.set_admin(2001, 2002, 333, crate::telegram::AdminRights::full(), "Модератор").await.expect("rights");
+        let one = m.send_file(-1001, std::path::Path::new("a.png"), "cap", false, Some(std::time::SystemTime::now())).await.expect("scheduled file");
+        assert!(one != 0);
     }
 }

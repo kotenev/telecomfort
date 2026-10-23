@@ -44,6 +44,29 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     ui.label("О себе:");
                     ui.text_edit_singleline(&mut app.profile_about);
                 });
+                // Эмодзи-статус: выбор из дефолтных document id (превью нет — TGS).
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Статус:");
+                    if app.emoji_statuses.is_empty() {
+                        if ui.small_button("↻").on_hover_text("Загрузить варианты").clicked() {
+                            app.load_emoji_statuses();
+                        }
+                    }
+                    for id in app.emoji_statuses.clone() {
+                        let sel = app.own_emoji_status == Some(id);
+                        if ui.selectable_label(sel, format!("#{id}")).clicked() {
+                            app.set_emoji_status(Some(id));
+                        }
+                    }
+                    if app.own_emoji_status.is_some()
+                        && ui.small_button("✕").on_hover_text("Снять статус").clicked()
+                    {
+                        app.set_emoji_status(None);
+                    }
+                    if let Some(cur) = app.own_emoji_status {
+                        ui.label(egui::RichText::new(format!("текущий: #{cur}")).small().weak());
+                    }
+                });
                 ui.horizontal(|ui| {
                     if ui.small_button("💾 Сохранить профиль").clicked() {
                         app.save_profile();
