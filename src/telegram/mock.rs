@@ -349,8 +349,76 @@ impl TelegramService for MockTelegram {
         Ok(h)
     }
 
-    fn is_connected(&self) -> bool {
-        false
+    async fn send_scheduled(
+        &self,
+        _chat_id: i64,
+        text: &str,
+        _reply_to: Option<i32>,
+        _at: std::time::SystemTime,
+    ) -> anyhow::Result<i32> {
+        let mut h: i32 = 9800;
+        for b in text.bytes() {
+            h = h.wrapping_add(b as i32);
+        }
+        Ok(h)
+    }
+
+    async fn sessions(&self) -> anyhow::Result<Vec<crate::telegram::SessionInfo>> {
+        Ok(vec![
+            crate::telegram::SessionInfo {
+                current: true,
+                app_name: "Telecomfort".into(),
+                device: "MacBook".into(),
+                platform: "macOS".into(),
+                country: "Россия".into(),
+                ip: "127.0.0.1".into(),
+                last_active: 1_700_000_000,
+                hash: 1,
+            },
+            crate::telegram::SessionInfo {
+                current: false,
+                app_name: "Telegram Desktop".into(),
+                device: "PC".into(),
+                platform: "Windows".into(),
+                country: "Россия".into(),
+                ip: "10.0.0.2".into(),
+                last_active: 1_699_000_000,
+                hash: 2,
+            },
+        ])
+    }
+
+    async fn terminate_others(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn get_profile(&self) -> anyhow::Result<crate::telegram::ProfileInfo> {
+        Ok(crate::telegram::ProfileInfo {
+            first_name: "Демо".into(),
+            last_name: "Юзер".into(),
+            about: "офлайн-демо".into(),
+        })
+    }
+
+    async fn update_profile(
+        &self,
+        _first_name: &str,
+        _last_name: &str,
+        _about: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn publish_story(
+        &self,
+        path: &std::path::Path,
+        _caption: &str,
+    ) -> anyhow::Result<i32> {
+        let mut h: i32 = 700;
+        for b in path.as_os_str().as_encoded_bytes() {
+            h = h.wrapping_add(*b as i32);
+        }
+        Ok(h)
     }
 
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
@@ -443,6 +511,10 @@ impl TelegramService for MockTelegram {
             },
         ])
     }
+
+    fn is_connected(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +577,27 @@ mod tests {
         let dialogs = m.dialogs().await.expect("dialogs");
         assert!(dialogs.iter().any(|d| d.muted));
         assert!(dialogs.iter().any(|d| d.archived));
+    }
+
+    /// Контракт третьего parity-пакета: отложка/черновики/сессии/профиль/сторис.
+    #[tokio::test]
+    async fn mock_management_contract_2() {
+        let m = MockTelegram;
+        let id = m
+            .send_scheduled(-1001, "потом", None, std::time::SystemTime::now())
+            .await
+            .expect("scheduled");
+        assert!(id >= 9800);
+        m.save_draft(-1001, "черновик").await.expect("draft");
+        let sessions = m.sessions().await.expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().any(|s| s.current));
+        m.terminate_others().await.expect("terminate");
+        let p = m.get_profile().await.expect("profile");
+        assert_eq!(p.first_name, "Демо");
+        m.update_profile("A", "B", "bio").await.expect("update profile");
+        let sid =
+            m.publish_story(std::path::Path::new("photo.jpg"), "привет").await.expect("story");
+        assert!(sid >= 700);
     }
 }

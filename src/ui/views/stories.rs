@@ -7,6 +7,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             if ui.small_button("↻ Обновить").clicked() {
                 app.refresh_stories();
             }
+            if ui
+                .small_button("＋ Опубликовать")
+                .on_hover_text("Фото/видео с устройства → сторис (видно контактам, 24 часа)")
+                .clicked()
+            {
+                app.pick_story();
+            }
             let ads = app
                 .stories
                 .iter()
@@ -26,6 +33,44 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             .weak(),
         );
         ui.separator();
+
+        // Окно подтверждения публикации сторис (файл + подпись).
+        if let Some(sp) = app.story_publish.as_ref() {
+            let fname = sp
+                .path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut open = true;
+            egui::Window::new("＋ Новая сторис")
+                .collapsible(false)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.label(format!("Файл: {fname}"));
+                    ui.label(
+                        egui::RichText::new("Будет видно вашим контактам (24 часа).")
+                            .small()
+                            .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Подпись:");
+                        if let Some(sp) = app.story_publish.as_mut() {
+                            ui.text_edit_singleline(&mut sp.caption);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Опубликовать").clicked() {
+                            app.do_publish_story();
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.story_publish = None;
+                        }
+                    });
+                });
+            if !open {
+                app.story_publish = None;
+            }
+        }
 
         let n = app.stories.len();
         egui::ScrollArea::horizontal().show(ui, |ui| {

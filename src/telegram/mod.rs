@@ -98,6 +98,27 @@ pub struct DialogFilterInfo {
     pub peer_ids: Vec<i64>,
 }
 
+/// Активная сессия (`account.getAuthorizations`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub current: bool,
+    pub app_name: String,
+    pub device: String,
+    pub platform: String,
+    pub country: String,
+    pub ip: String,
+    pub last_active: i64,
+    pub hash: i64,
+}
+
+/// Профиль текущего аккаунта (имя + о себе).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileInfo {
+    pub first_name: String,
+    pub last_name: String,
+    pub about: String,
+}
+
 /// Сериализация `Vec<u8>` как массива чисел (serde без extra-фич).
 mod serde_bytes_vec {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -161,6 +182,15 @@ pub fn audio_cache_dir() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("telecomfort")
         .join("audio")
+}
+
+/// Папка кэша стикеров для превью в пузырях: `~/.cache/telecomfort/stickers`.
+/// Файлы `sticker_<msg>.webp`, качаются по тапу (не попадают в Загрузки/БД).
+pub fn stickers_cache_dir() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("telecomfort")
+        .join("stickers")
 }
 
 #[async_trait]
@@ -284,6 +314,50 @@ pub trait TelegramService: Send + Sync {
     /// Контакты телефонной книги Telegram.
     async fn contacts(&self) -> anyhow::Result<Vec<ContactInfo>> {
         Ok(vec![])
+    }
+    /// Отложенная отправка (сервер доставит в `at`). Возвращает id.
+    async fn send_scheduled(
+        &self,
+        _chat_id: i64,
+        _text: &str,
+        _reply_to: Option<i32>,
+        _at: std::time::SystemTime,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("scheduled send is not implemented for this backend")
+    }
+    /// Сохранить черновик на сервере (синк между устройствами).
+    async fn save_draft(&self, _chat_id: i64, _text: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Активные сессии текущего аккаунта.
+    async fn sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        Ok(vec![])
+    }
+    /// Завершить все сессии, кроме текущей.
+    async fn terminate_others(&self) -> anyhow::Result<()> {
+        anyhow::bail!("sessions are not implemented for this backend")
+    }
+    /// Профиль текущего аккаунта (имя + о себе).
+    async fn get_profile(&self) -> anyhow::Result<ProfileInfo> {
+        Ok(ProfileInfo::default())
+    }
+    /// Обновить имя/о себе текущего аккаунта.
+    async fn update_profile(
+        &self,
+        _first_name: &str,
+        _last_name: &str,
+        _about: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("profile edit is not implemented for this backend")
+    }
+    /// Опубликовать сторис (фото/видео + подпись, видно контактам).
+    /// Возвращает id сторис.
+    async fn publish_story(
+        &self,
+        _path: &std::path::Path,
+        _caption: &str,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("story publishing is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

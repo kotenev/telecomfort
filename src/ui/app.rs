@@ -46,6 +46,14 @@ pub enum BgEvent {
     AudioReady { chat_id: i64, message_id: i32, path: PathBuf },
     /// Пересылка выполнена.
     Forwarded { from_chat: i64, to_chat: i64, count: usize },
+    /// Стикер скачался в кэш — показать превью в пузыре.
+    StickerReady { message_id: i32, path: PathBuf },
+    /// Активные сессии загружены.
+    SessionsLoaded(Vec<crate::telegram::SessionInfo>),
+    /// Профиль загружен.
+    ProfileLoaded(crate::telegram::ProfileInfo),
+    /// Сторис опубликована.
+    StoryPublished { story_id: i32 },
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -85,6 +93,12 @@ pub struct AudioPlayback {
     pub path: PathBuf,
     _sink: rodio::MixerDeviceSink,
     player: rodio::Player,
+}
+
+/// Публикация сторис: выбранный файл + подпись (окно подтверждения).
+pub struct StoryPublish {
+    pub path: PathBuf,
+    pub caption: String,
 }
 
 pub struct TelecomfortApp {
@@ -173,6 +187,25 @@ pub struct TelecomfortApp {
     /// Активное воспроизведение голосового/аудио.
     pub playback: Option<AudioPlayback>,
 
+    // Третий parity-пакет: отложка/стикеры/сессии/профиль/публикация сторис
+    /// Окно отложенной отправки: часы задержки (текст композера подставляется).
+    pub sched_open: bool,
+    pub sched_hours: String,
+    /// Превью стикеров в пузырях (msg_id → текстура) + файлы + запрошенные.
+    pub sticker_tex: HashMap<i32, egui::TextureHandle>,
+    pub sticker_files: HashMap<i32, PathBuf>,
+    sticker_requested: HashSet<i32>,
+    /// Активные сессии + флаг загрузки.
+    pub sessions: Vec<crate::telegram::SessionInfo>,
+    pub sessions_loaded: bool,
+    /// Профиль: редактируемые поля + флаг загрузки.
+    pub profile_first: String,
+    pub profile_last: String,
+    pub profile_about: String,
+    pub profile_loaded: bool,
+    /// Публикация сторис: выбранный файл + подпись + окно.
+    pub story_publish: Option<StoryPublish>,
+
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
     pub onnx_enabled: bool,
@@ -256,6 +289,18 @@ impl TelecomfortApp {
             contacts_loaded: false,
             forward_pick: None,
             playback: None,
+            sched_open: false,
+            sched_hours: "1".into(),
+            sticker_tex: HashMap::new(),
+            sticker_files: HashMap::new(),
+            sticker_requested: HashSet::new(),
+            sessions: Vec::new(),
+            sessions_loaded: false,
+            profile_first: String::new(),
+            profile_last: String::new(),
+            profile_about: String::new(),
+            profile_loaded: false,
+            story_publish: None,
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -414,7 +459,28 @@ impl TelecomfortApp {
                 }
                 BgEvent::Forwarded { from_chat, to_chat, count } => {
                     self.forward_pick = None;
-                    self.log(format!("переслано сообщений: {count} (чат {from_chat} → {to_chat})"));
+                    self.log(format!("переслано сообщений: {count} (чат {from_chat} → {to_chat}"));
+                }
+                BgEvent::StickerReady { message_id, path } => {
+                    self.sticker_files.insert(message_id, path);
+                    // Сбрасываем плейсхолдер — следующий кадр подхватит превью.
+                    self.sticker_tex.remove(&message_id);
+                }
+                BgEvent::SessionsLoaded(sessions) => {
+                    self.sessions = sessions;
+                    self.sessions_loaded = true;
+                    self.log(format!("сессий: {}", self.sessions.len()));
+                }
+                BgEvent::ProfileLoaded(p) => {
+                    self.profile_first = p.first_name;
+                    self.profile_last = p.last_name;
+                    self.profile_about = p.about;
+                    self.profile_loaded = true;
+                }
+                BgEvent::StoryPublished { story_id } => {
+                    self.story_publish = None;
+                    self.log(format!("сторис опубликована (id {story_id})"));
+                    self.refresh_stories();
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -826,7 +892,13 @@ impl TelecomfortApp {
     pub fn select_chat(&mut self, chat_id: i64) {
         if let Some(old) = self.selected_chat {
             if old != chat_id {
-                self.composer.insert(old, std::mem::take(&mut self.composer_current));
+                let draft = std::mem::take(&mut self.composer_current);
+                self.composer.insert(old, draft.clone());
+                // Черновик и на сервер (синк между устройствами), best-effort.
+                let tg = Arc::clone(&self.tg);
+                self.rt.spawn(async move {
+                    let _ = tg.save_draft(old, &draft).await;
+                });
             }
         }
         self.selected_chat = Some(chat_id);
@@ -843,6 +915,7 @@ impl TelecomfortApp {
     }
 
     /// Отправить текущее (или сохранить правку). Пустое — игнор.
+    /// После успешной отправки черновик стирается и локально, и на сервере.
     pub fn send_current(&mut self) {
         let Some(chat_id) = self.selected_chat else {
             return;
@@ -1316,6 +1389,220 @@ impl TelecomfortApp {
                 self.log(format!("плеер: не декодируется ({e:?})"));
             }
         }
+    }
+
+    /// Отложенная отправка: текст композера + задержка в часах.
+    pub fn send_scheduled(&mut self, hours: f64) {
+        let Some(chat_id) = self.selected_chat else {
+            return;
+        };
+        let text = self.composer_current.trim().to_string();
+        if text.is_empty() || !(hours > 0.0) {
+            return;
+        }
+        let at = std::time::SystemTime::now()
+            + std::time::Duration::from_secs((hours * 3600.0) as u64);
+        let reply = self.reply_to.clone().filter(|(c, _, _)| *c == chat_id).map(|(_, m, _)| m);
+        self.reply_to = None;
+        self.sched_open = false;
+        self.composer_current.clear();
+        self.composer.insert(chat_id, String::new());
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.send_scheduled(chat_id, &text, reply, at).await {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::Log(format!("отложено (msg {id}, через {hours} ч)")));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("отложка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Превью стикера в пузыре (128px): кэш → файл → запрос скачивания → плейсхолдер.
+    pub fn ensure_sticker(
+        &mut self,
+        ctx: &egui::Context,
+        chat_id: i64,
+        msg: &crate::telegram::MessageInfo,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.sticker_tex.get(&msg.id) {
+            return Some(t.clone());
+        }
+        if let Some(p) = self.sticker_files.get(&msg.id).cloned() {
+            if let Ok(img) = image::open(&p) {
+                let thumb = img.resize(128, 128, image::imageops::FilterType::Triangle);
+                let tex = ctx.load_texture(
+                    format!("sticker::{}", msg.id),
+                    to_egui(&thumb),
+                    egui::TextureOptions::default(),
+                );
+                self.sticker_tex.insert(msg.id, tex.clone());
+                return Some(tex);
+            }
+        }
+        if self.sticker_requested.insert(msg.id) {
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            let mid = msg.id;
+            let dir = crate::telegram::stickers_cache_dir();
+            let fname = msg
+                .file_name
+                .clone()
+                .unwrap_or_else(|| format!("sticker_{mid}.webp"));
+            self.rt.spawn(async move {
+                std::fs::create_dir_all(&dir).ok();
+                let dest = dir.join(format!("{chat_id}_{mid}_{fname}"));
+                if !dest.exists() {
+                    if tg.download_message_media(chat_id, mid, &dir).await.is_err() {
+                        return;
+                    }
+                    // download_message_media кладёт файл со своим именем.
+                    if !dest.exists() {
+                        if let Ok(entries) = std::fs::read_dir(&dir) {
+                            let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p == dest {
+                                    continue;
+                                }
+                                if let Ok(meta) = entry.metadata() {
+                                    if let Ok(mtime) = meta.modified() {
+                                        if best.as_ref().map(|(t, _)| *t < mtime).unwrap_or(true) {
+                                            best = Some((mtime, p));
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some((_, src)) = best {
+                                std::fs::rename(&src, &dest).ok();
+                            }
+                        }
+                    }
+                }
+                if dest.exists() {
+                    let _ = tx.send(BgEvent::StickerReady { message_id: mid, path: dest });
+                }
+            });
+        }
+        None
+    }
+
+    /// Загрузить активные сессии (экран Настройки).
+    pub fn load_sessions(&mut self) {
+        if self.sessions_loaded {
+            return;
+        }
+        self.sessions_loaded = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.sessions().await {
+                Ok(s) => {
+                    let _ = tx.send(BgEvent::SessionsLoaded(s));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("сессии: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Завершить все сессии, кроме текущей.
+    pub fn terminate_others(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.terminate_others().await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("другие сессии завершены".into()));
+                    match tg.sessions().await {
+                        Ok(s) => {
+                            let _ = tx.send(BgEvent::SessionsLoaded(s));
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("сессии: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить профиль (имя + о себе) в форму настроек.
+    pub fn load_profile(&mut self) {
+        if self.profile_loaded {
+            return;
+        }
+        self.profile_loaded = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.get_profile().await {
+                Ok(p) => {
+                    let _ = tx.send(BgEvent::ProfileLoaded(p));
+                }
+                Err(e) => {
+                    tracing::debug!("profile failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Сохранить профиль из формы настроек.
+    pub fn save_profile(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let (f, l, a) = (
+            self.profile_first.trim().to_string(),
+            self.profile_last.trim().to_string(),
+            self.profile_about.trim().to_string(),
+        );
+        self.rt.spawn(async move {
+            match tg.update_profile(&f, &l, &a).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("профиль обновлён".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("профиль: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Выбрать файл сторис (фото/видео) → окно подтверждения с подписью.
+    pub fn pick_story(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Медиа", &["jpg", "jpeg", "png", "webp", "mp4", "mov"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.story_publish = Some(StoryPublish { path, caption: String::new() });
+        self.screen = Screen::Stories;
+    }
+
+    /// Опубликовать сторис (видно контактам). Фоновая задача, затем refresh.
+    pub fn do_publish_story(&mut self) {
+        let Some(sp) = self.story_publish.take() else {
+            return;
+        };
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.log(format!("публикация сторис: {}…", sp.path.display()));
+        self.rt.spawn(async move {
+            match tg.publish_story(&sp.path, &sp.caption).await {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::StoryPublished { story_id: id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("сторис: {e:#}")));
+                }
+            }
+        });
     }
 
     /// Одна фоновая итерация с актуальным снапшотом настроек.

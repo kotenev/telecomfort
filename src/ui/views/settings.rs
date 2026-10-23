@@ -11,6 +11,75 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 super::login::show(app, ui);
             });
 
+            ui.collapsing("👤 Профиль (имя + о себе)", |ui| {
+                if !app.profile_loaded {
+                    app.load_profile();
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Имя:");
+                    ui.text_edit_singleline(&mut app.profile_first);
+                    ui.label("Фамилия:");
+                    ui.text_edit_singleline(&mut app.profile_last);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("О себе:");
+                    ui.text_edit_singleline(&mut app.profile_about);
+                });
+                if ui.small_button("💾 Сохранить профиль").clicked() {
+                    app.save_profile();
+                }
+                ui.label(
+                    egui::RichText::new("Имя/о себе видны всем, у кого вы в контактах.")
+                        .small()
+                        .weak(),
+                );
+            });
+
+            ui.collapsing("📱 Активные сессии", |ui| {
+                if !app.sessions_loaded {
+                    app.load_sessions();
+                }
+                if app.sessions.is_empty() {
+                    ui.label(
+                        egui::RichText::new("сессии не загружены — нажмите ↻")
+                            .small()
+                            .weak(),
+                    );
+                }
+                for s in app.sessions.clone() {
+                    ui.horizontal(|ui| {
+                        let cur = if s.current { " · текущая" } else { "" };
+                        ui.label(
+                            egui::RichText::new(format!("{}{}", s.app_name, cur)).strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {} · {}{}",
+                                s.device,
+                                s.platform,
+                                s.country,
+                                if s.ip.is_empty() { String::new() } else { format!(" · {}", s.ip) }
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    });
+                }
+                ui.horizontal(|ui| {
+                    if ui.small_button("↻ Обновить").clicked() {
+                        app.sessions_loaded = false;
+                        app.load_sessions();
+                    }
+                    if ui
+                        .small_button("⏏ Завершить другие")
+                        .on_hover_text("auth.resetAuthorizations: все сессии, кроме текущей")
+                        .clicked()
+                    {
+                        app.terminate_others();
+                    }
+                });
+            });
+
             ui.collapsing("✨ Сторис · анти-реклама", |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Порог рекламы:");

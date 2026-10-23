@@ -582,7 +582,10 @@ impl TelegramService for GrammersBackend {
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
         let sent = self
             .client
-            .send_message(pref, InputMessage::new().text(text).reply_to(reply_to))
+            .send_message(
+                pref,
+                InputMessage::new().text(text).reply_to(reply_to).clear_draft(true),
+            )
             .await
             .context("send_message failed")?;
         Ok(sent.id())
@@ -642,12 +645,287 @@ impl TelegramService for GrammersBackend {
             .map(|e| matches!(e.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
             .unwrap_or(false);
         let input = if is_photo {
-            InputMessage::new().text(caption).photo(uploaded)
+            InputMessage::new().text(caption).photo(uploaded).clear_draft(true)
         } else {
-            InputMessage::new().text(caption).document(uploaded)
+            InputMessage::new().text(caption).document(uploaded).clear_draft(true)
         };
         let sent = self.client.send_message(pref, input).await.context("send file failed")?;
         Ok(sent.id())
+    }
+
+    async fn send_scheduled(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_to: Option<i32>,
+        at: std::time::SystemTime,
+    ) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let sent = self
+            .client
+            .send_message(
+                pref,
+                InputMessage::new()
+                    .text(text)
+                    .reply_to(reply_to)
+                    .schedule_date(Some(at))
+                    .clear_draft(true),
+            )
+            .await
+            .context("scheduled send failed")?;
+        Ok(sent.id())
+    }
+
+    async fn save_draft(&self, chat_id: i64, text: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // Пустой текст — сервер стирает черновик (синк между устройствами).
+        self.client
+            .invoke(&tl::functions::messages::SaveDraft {
+                no_webpage: true,
+                invert_media: false,
+                reply_to: None,
+                peer: (&pref).into(),
+                message: text.to_string(),
+                entities: None,
+                media: None,
+                effect: None,
+                rich_message: None,
+                suggested_post: None,
+            })
+            .await
+            .context("saveDraft failed")?;
+        Ok(())
+    }
+
+    async fn sessions(&self) -> Result<Vec<super::SessionInfo>> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::account::GetAuthorizations {})
+            .await
+            .context("getAuthorizations failed")?;
+        let list = match res {
+            tl::enums::account::Authorizations::Authorizations(a) => a.authorizations,
+        };
+        Ok(list
+            .into_iter()
+            .filter_map(|a| match a {
+                tl::enums::Authorization::Authorization(a) => Some(super::SessionInfo {
+                    current: a.current,
+                    app_name: a.app_name,
+                    device: if a.device_model.is_empty() {
+                        a.platform.clone()
+                    } else {
+                        format!("{} ({})", a.device_model, a.platform)
+                    },
+                    platform: a.system_version,
+                    country: if a.country.is_empty() { a.ip.clone() } else { a.country },
+                    ip: a.ip,
+                    last_active: a.date_active as i64,
+                    hash: a.hash,
+                }),
+                _ => None,
+            })
+            .collect())
+    }
+
+    async fn terminate_others(&self) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::auth::ResetAuthorizations {})
+            .await
+            .context("resetAuthorizations failed")?;
+        Ok(())
+    }
+
+    async fn get_profile(&self) -> Result<super::ProfileInfo> {
+        use grammers_client::tl as tl;
+        let me = self.client.get_me().await?;
+        let res = self
+            .client
+            .invoke(&tl::functions::users::GetFullUser {
+                id: tl::enums::InputUser::UserSelf,
+            })
+            .await
+            .context("getFullUser failed")?;
+        let about = match res {
+            tl::enums::users::UserFull::Full(f) => match f.full_user {
+                tl::enums::UserFull::Full(u) => u.about.clone().unwrap_or_default(),
+                _ => String::new(),
+            },
+        };
+        Ok(super::ProfileInfo {
+            first_name: me.first_name().unwrap_or("").to_string(),
+            last_name: me.last_name().unwrap_or("").to_string(),
+            about,
+        })
+    }
+
+    async fn update_profile(&self, first_name: &str, last_name: &str, about: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::account::UpdateProfile {
+                first_name: Some(first_name.to_string()),
+                last_name: Some(last_name.to_string()),
+                about: Some(about.to_string()),
+            })
+            .await
+            .context("updateProfile failed")?;
+        Ok(())
+    }
+
+    async fn publish_story(&self, path: &Path, caption: &str) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let uploaded =
+            self.client.upload_file(path).await.context("story upload failed")?;
+        let fname = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "story.bin".to_string());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        let is_photo = matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp");
+        let upload_media: tl::enums::InputMedia = if is_photo {
+            tl::enums::InputMedia::UploadedPhoto(tl::types::InputMediaUploadedPhoto {
+                spoiler: false,
+                live_photo: false,
+                file: uploaded.raw,
+                stickers: None,
+                ttl_seconds: None,
+                video: None,
+            })
+        } else {
+            // Размеры — из встроенного декодера первого кадра (без ffmpeg).
+            let (w, h) = crate::media::video::first_frame_builtin(path)
+                .map(|f| (f.width() as i32, f.height() as i32))
+                .unwrap_or((0, 0));
+            tl::enums::InputMedia::UploadedDocument(tl::types::InputMediaUploadedDocument {
+                nosound_video: false,
+                force_file: false,
+                spoiler: false,
+                file: uploaded.raw,
+                thumb: None,
+                mime_type: "video/mp4".to_string(),
+                attributes: vec![
+                    tl::enums::DocumentAttribute::Filename(
+                        tl::types::DocumentAttributeFilename { file_name: fname },
+                    ),
+                    tl::enums::DocumentAttribute::Video(tl::types::DocumentAttributeVideo {
+                        round_message: false,
+                        supports_streaming: true,
+                        nosound: false,
+                        duration: 0.0,
+                        w,
+                        h,
+                        preload_prefix_size: None,
+                        video_start_ts: None,
+                        video_codec: None,
+                    }),
+                ],
+                stickers: None,
+                video_cover: None,
+                video_timestamp: None,
+                ttl_seconds: None,
+            })
+        };
+        // Шаг 2: messages.uploadMedia — сервер возвращает photo/document с id.
+        let me_pref = self.resolve_ref(
+            self.client.get_me().await?.id().bot_api_dialog_id().unwrap_or(0),
+        ).await?.context("me peer not found")?;
+        let uploaded_media = self
+            .client
+            .invoke(&tl::functions::messages::UploadMedia {
+                business_connection_id: None,
+                peer: (&me_pref).into(),
+                media: upload_media,
+            })
+            .await
+            .context("uploadMedia failed")?;
+        let media: tl::enums::InputMedia = match uploaded_media {
+            tl::enums::MessageMedia::Photo(p) => {
+                let photo = p.photo.context("uploadMedia: no photo")?;
+                let (id, access_hash, file_reference) = match photo {
+                    tl::enums::Photo::Photo(p) => (p.id, p.access_hash, p.file_reference),
+                    _ => anyhow::bail!("uploadMedia: unsupported photo"),
+                };
+                tl::enums::InputMedia::Photo(tl::types::InputMediaPhoto {
+                    spoiler: false,
+                    live_photo: false,
+                    id: tl::enums::InputPhoto::Photo(tl::types::InputPhoto {
+                        id,
+                        access_hash,
+                        file_reference,
+                    }),
+                    ttl_seconds: None,
+                    video: None,
+                })
+            }
+            tl::enums::MessageMedia::Document(d) => {
+                let doc = d.document.context("uploadMedia: no document")?;
+                let (id, access_hash, file_reference) = match doc {
+                    tl::enums::Document::Document(d) => (d.id, d.access_hash, d.file_reference),
+                    _ => anyhow::bail!("uploadMedia: unsupported document"),
+                };
+                tl::enums::InputMedia::Document(tl::types::InputMediaDocument {
+                    spoiler: false,
+                    id: tl::enums::InputDocument::Document(tl::types::InputDocument {
+                        id,
+                        access_hash,
+                        file_reference,
+                    }),
+                    video_cover: None,
+                    video_timestamp: None,
+                    ttl_seconds: None,
+                    query: None,
+                })
+            }
+            _ => anyhow::bail!("uploadMedia: неожиданный тип медиа"),
+        };
+        // Шаг 3: stories.sendStory себе (видно контактам — как дефолт официального клиента).
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::SendStory {
+                pinned: false,
+                noforwards: false,
+                fwd_modified: false,
+                peer: tl::enums::InputPeer::PeerSelf,
+                media,
+                media_areas: None,
+                caption: if caption.is_empty() { None } else { Some(caption.to_string()) },
+                entities: None,
+                privacy_rules: vec![tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts],
+                random_id,
+                period: None,
+                fwd_from_id: None,
+                fwd_from_story: None,
+                albums: None,
+                music: None,
+            })
+            .await
+            .context("sendStory failed")?;
+        // Ответ — Updates: ищем UpdateStory с id новой сторис.
+        let updates = match res {
+            tl::enums::Updates::Updates(u) => u.updates,
+            tl::enums::Updates::Combined(u) => u.updates,
+            _ => vec![],
+        };
+        for u in &updates {
+            if let tl::enums::Update::Story(s) = u {
+                if let tl::enums::StoryItem::Item(full) = &s.story {
+                    return Ok(full.id);
+                }
+            }
+        }
+        anyhow::bail!("sendStory: id новой сторис не найден")
     }
 
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
