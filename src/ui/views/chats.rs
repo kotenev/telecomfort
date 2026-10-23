@@ -248,6 +248,12 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("⏰").on_hover_text("Запланированные сообщения").clicked() {
                     app.load_scheduled(chat_id);
                 }
+                if ui.small_button("📌×N").on_hover_text("Все закреплённые сообщения").clicked() {
+                    app.load_pinned_all(chat_id);
+                }
+                if ui.small_button("👥").on_hover_text("Участники (каналы/супергруппы)").clicked() {
+                    app.load_participants(chat_id);
+                }
                 if ui
                     .small_button("+ Правило для этого чата")
                     .on_hover_text("Добавить per-chat правило автозагрузки")
@@ -392,11 +398,81 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     |ui| {
                         ui.label("Поделитесь ссылкой (выделите и скопируйте):");
                         ui.label(egui::RichText::new(link).strong());
-                        if ui.button("Закрыть").clicked() {
-                            app.invite_link = None;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("⏏ Отозвать").on_hover_text("Аннулировать ссылку").clicked() {
+                                app.revoke_invite(chat_id);
+                            }
+                            if ui.button("Закрыть").clicked() {
+                                app.invite_link = None;
+                            }
+                        });
                     },
                 );
+            }
+            // Окно всех закрепов чата.
+            if let Some(cid) = app.pinned_more_open {
+                let items = app.pinned_more.get(&cid).cloned().unwrap_or_default();
+                egui::Window::new("📌 Все закрепы").collapsible(false).show(ui.ctx(), |ui| {
+                    if items.is_empty() {
+                        ui.label("закрепов нет");
+                    }
+                    for m in items {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("#{} {}", m.id, crate::utils::truncate(&m.text, 80)));
+                            if ui.small_button("✕").clicked() {
+                                app.toggle_pin(cid, m.id, true);
+                            }
+                        });
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.pinned_more_open = None;
+                    }
+                });
+            }
+            // Окно участников (только каналы/супергруппы; кик — нужны права).
+            if let Some(cid) = app.participants_open {
+                let items = app.participants.get(&cid).cloned().unwrap_or_default();
+                egui::Window::new("👥 Участники").collapsible(false).show(ui.ctx(), |ui| {
+                    if items.is_empty() {
+                        ui.label("участники не загружены / не канал");
+                    }
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        for p in items {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{} {}", if p.admin { "⭐" } else { "•" }, p.name));
+                                if !p.admin {
+                                    if ui.small_button("🚫").on_hover_text("Исключить").clicked() {
+                                        app.kick_participant(cid, p.id);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    if ui.button("Закрыть").clicked() {
+                        app.participants_open = None;
+                    }
+                });
+            }
+            // Окно шаринга контакта: выбор из телефонной книги.
+            if app.contact_share_pick.is_some() {
+                let contacts = app.contacts.clone();
+                if contacts.is_empty() {
+                    app.load_contacts();
+                }
+                egui::Window::new("👤 Поделиться контактом").collapsible(false).show(ui.ctx(), |ui| {
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for c in contacts {
+                            if ui.selectable_label(false, format!("{} · {}", c.name, c.phone)).clicked() {
+                                if let Some(cid) = app.contact_share_pick {
+                                    app.share_contact_to(cid, &c);
+                                }
+                            }
+                        }
+                    });
+                    if ui.button("Отмена").clicked() {
+                        app.contact_share_pick = None;
+                    }
+                });
             }
             // Подтверждения опасных действий — глобальное окно в app.rs (работает с любого экрана).
             if app.scheduled_open {
@@ -748,6 +824,9 @@ fn poll_card(
                 );
             }
             if !poll.closed {
+                if ui.small_button("■ Остановить").on_hover_text("Закрыть голосование").clicked() {
+                    app.stop_poll(chat_id, message_id);
+                }
                 for a in &poll.answers {
                     let mut label = a.text.clone();
                     if let Some(v) = a.votes {
@@ -819,6 +898,13 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             .clicked()
         {
             app.attach_file();
+        }
+        if ui
+            .button("👤")
+            .on_hover_text("Поделиться контактом")
+            .clicked()
+        {
+            app.contact_share_pick = Some(chat_id);
         }
         if ui
             .button("⏰")
