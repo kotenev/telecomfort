@@ -15,6 +15,8 @@ impl TelegramService for MockTelegram {
                 username: None,
                 protected: true,
                 unread: 12,
+                muted: false,
+                archived: false,
             },
             ChatInfo {
                 id: -1002,
@@ -22,6 +24,8 @@ impl TelegramService for MockTelegram {
                 username: None,
                 protected: true,
                 unread: 3,
+                muted: true,
+                archived: false,
             },
             ChatInfo {
                 id: 2001,
@@ -29,6 +33,8 @@ impl TelegramService for MockTelegram {
                 username: Some("friends".into()),
                 protected: false,
                 unread: 0,
+                muted: false,
+                archived: true,
             },
         ])
     }
@@ -48,6 +54,11 @@ impl TelegramService for MockTelegram {
                 sender: Some("Лектор".into()),
                 edited: false,
                 reactions: Some(5),
+                views: Some(1204),
+                forwards: Some(37),
+                poll: None,
+                geo: None,
+                contact: None,
             },
             MessageInfo {
                 id: 102,
@@ -62,6 +73,30 @@ impl TelegramService for MockTelegram {
                 sender: None,
                 edited: true,
                 reactions: None,
+                views: None,
+                forwards: None,
+                poll: Some(crate::telegram::PollInfo {
+                    question: "Когда пара?".into(),
+                    closed: false,
+                    quiz: false,
+                    total_voters: Some(7),
+                    answers: vec![
+                        crate::telegram::PollAnswerInfo {
+                            text: "В 10:00".into(),
+                            option: vec![0],
+                            votes: Some(5),
+                            chosen: true,
+                        },
+                        crate::telegram::PollAnswerInfo {
+                            text: "В 12:00".into(),
+                            option: vec![1],
+                            votes: Some(2),
+                            chosen: false,
+                        },
+                    ],
+                }),
+                geo: None,
+                contact: None,
             },
             MessageInfo {
                 id: 103,
@@ -76,6 +111,11 @@ impl TelegramService for MockTelegram {
                 sender: Some("Анна".into()),
                 edited: false,
                 reactions: None,
+                views: None,
+                forwards: None,
+                poll: None,
+                geo: Some((55.7558, 37.6173)),
+                contact: Some(("Анна".into(), "+7 900 000-00-00".into())),
             },
         ])
     }
@@ -312,6 +352,97 @@ impl TelegramService for MockTelegram {
     fn is_connected(&self) -> bool {
         false
     }
+
+    async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn unpin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn pinned_message(
+        &self,
+        chat_id: i64,
+    ) -> anyhow::Result<Option<crate::telegram::MessageInfo>> {
+        Ok(Some(crate::telegram::MessageInfo {
+            id: 1,
+            chat_id,
+            text: "📌 Закреп: читаем правила чата".into(),
+            date: 0,
+            has_media: false,
+            media_kind: None,
+            file_name: None,
+            file_size: None,
+            outgoing: false,
+            sender: Some("Админ".into()),
+            edited: false,
+            reactions: None,
+            views: Some(999),
+            forwards: None,
+            poll: None,
+            geo: None,
+            contact: None,
+        }))
+    }
+
+    async fn vote(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+        _option: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn forward(
+        &self,
+        _from_chat: i64,
+        message_ids: &[i32],
+        _to_chat: i64,
+    ) -> anyhow::Result<usize> {
+        Ok(message_ids.len())
+    }
+
+    async fn mute(&self, _chat_id: i64, _muted: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn archive(&self, _chat_id: i64, _archived: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn dialog_filters(&self) -> anyhow::Result<Vec<crate::telegram::DialogFilterInfo>> {
+        Ok(vec![
+            crate::telegram::DialogFilterInfo {
+                id: 1,
+                title: "Учёба".into(),
+                peer_ids: vec![-1002],
+            },
+            crate::telegram::DialogFilterInfo {
+                id: 2,
+                title: "Личное".into(),
+                peer_ids: vec![2001],
+            },
+        ])
+    }
+
+    async fn contacts(&self) -> anyhow::Result<Vec<crate::telegram::ContactInfo>> {
+        Ok(vec![
+            crate::telegram::ContactInfo {
+                name: "Анна".into(),
+                phone: "+7 900 000-00-00".into(),
+                username: Some("anna".into()),
+                user_id: 2001,
+            },
+            crate::telegram::ContactInfo {
+                name: "Лектор".into(),
+                phone: "+7 900 000-00-01".into(),
+                username: None,
+                user_id: 2002,
+            },
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -346,5 +477,33 @@ mod tests {
         assert!(items.iter().any(|x| x.sender.is_some()));
         assert!(items.iter().any(|x| x.reactions == Some(5)));
         assert!(items.iter().any(|x| x.edited));
+        assert!(items.iter().any(|x| x.views == Some(1204)));
+        assert!(items.iter().any(|x| x.forwards == Some(37)));
+        assert!(items.iter().any(|x| x.poll.as_ref().map(|p| p.answers.len()) == Some(2)));
+        assert!(items.iter().any(|x| x.geo.is_some()));
+        assert!(items.iter().any(|x| x.contact.is_some()));
+    }
+
+    /// Контракт второго parity-пакета: пины/опросы/пересылка/мьют/архив/папки/контакты.
+    #[tokio::test]
+    async fn mock_management_contract() {
+        let m = MockTelegram;
+        m.pin_message(-1001, 5).await.expect("pin");
+        m.unpin_message(-1001, 5).await.expect("unpin");
+        let pinned = m.pinned_message(-1001).await.expect("pinned").expect("some");
+        assert_eq!(pinned.id, 1);
+        m.vote(-1001, 102, vec![0]).await.expect("vote");
+        assert_eq!(m.forward(-1001, &[101, 102], 2001).await.expect("forward"), 2);
+        m.mute(-1001, true).await.expect("mute");
+        m.archive(-1001, true).await.expect("archive");
+        let filters = m.dialog_filters().await.expect("filters");
+        assert_eq!(filters.len(), 2);
+        assert!(filters.iter().any(|f| f.title == "Учёба"));
+        let contacts = m.contacts().await.expect("contacts");
+        assert_eq!(contacts.len(), 2);
+        assert!(contacts.iter().any(|c| c.username.as_deref() == Some("anna")));
+        let dialogs = m.dialogs().await.expect("dialogs");
+        assert!(dialogs.iter().any(|d| d.muted));
+        assert!(dialogs.iter().any(|d| d.archived));
     }
 }

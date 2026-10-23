@@ -34,6 +34,18 @@ pub enum BgEvent {
     ReloadHistory { chat_id: i64 },
     /// Аватар скачался — запомнить файл, сбросить текстуру-идентикон.
     AvatarReady { chat_id: i64, path: PathBuf },
+    /// Закреплённое сообщение чата (None — нет закрепа).
+    PinnedLoaded { chat_id: i64, item: Option<crate::telegram::MessageInfo> },
+    /// Папки диалогов сервера.
+    FoldersLoaded(Vec<crate::telegram::DialogFilterInfo>),
+    /// Контакты телефонной книги.
+    ContactsLoaded(Vec<crate::telegram::ContactInfo>),
+    /// Перезагрузить список диалогов (после мьют/архив).
+    ReloadDialogs,
+    /// Аудио скачалось в кэш — начать воспроизведение.
+    AudioReady { chat_id: i64, message_id: i32, path: PathBuf },
+    /// Пересылка выполнена.
+    Forwarded { from_chat: i64, to_chat: i64, count: usize },
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -49,12 +61,13 @@ pub enum Screen {
     Chats,
     Stories,
     Downloads,
+    Contacts,
     Settings,
 }
 
 pub struct StoryCard {
     pub info: StoryInfo,
-    pub score: crate::ai::AdScore,
+    pub score: AdScore,
     pub revealed: bool,
     pub texture: Option<egui::TextureHandle>,
     pub texture_blurred: Option<egui::TextureHandle>,
@@ -62,6 +75,16 @@ pub struct StoryCard {
     pub local_path: Option<PathBuf>,
     pub preview_loading: bool,
     pub visual_done: bool,
+}
+
+/// Активное воспроизведение голосового/аудио (rodio 0.23).
+/// `_sink` держим живым — без него звук останавливается.
+pub struct AudioPlayback {
+    pub chat_id: i64,
+    pub message_id: i32,
+    pub path: PathBuf,
+    _sink: rodio::MixerDeviceSink,
+    player: rodio::Player,
 }
 
 pub struct TelecomfortApp {
@@ -135,6 +158,20 @@ pub struct TelecomfortApp {
     pub avatars: HashMap<i64, egui::TextureHandle>,
     pub avatar_files: HashMap<i64, PathBuf>,
     avatar_requested: HashSet<i64>,
+
+    // Второй parity-пакет: пины/папки/контакты/пересылка/голосовые
+    /// Закреплённые сообщения по чатам (подгружаются при открытии).
+    pub pinned: HashMap<i64, crate::telegram::MessageInfo>,
+    /// Папки диалогов сервера (вкладки-фильтры) + выбранная (None = все).
+    pub folders: Vec<crate::telegram::DialogFilterInfo>,
+    pub folder_sel: Option<i32>,
+    /// Контакты телефонной книги + флаг загрузки.
+    pub contacts: Vec<crate::telegram::ContactInfo>,
+    contacts_loaded: bool,
+    /// Выбор цели пересылки: (from_chat, msg_ids).
+    pub forward_pick: Option<(i64, Vec<i32>)>,
+    /// Активное воспроизведение голосового/аудио.
+    pub playback: Option<AudioPlayback>,
 
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
@@ -212,6 +249,13 @@ impl TelecomfortApp {
             avatars: HashMap::new(),
             avatar_files: HashMap::new(),
             avatar_requested: HashSet::new(),
+            pinned: HashMap::new(),
+            folders: Vec::new(),
+            folder_sel: None,
+            contacts: Vec::new(),
+            contacts_loaded: false,
+            forward_pick: None,
+            playback: None,
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -285,6 +329,10 @@ impl TelecomfortApp {
             self.preview_requested.clear();
             self.log("переключено на live-бэкенд grammers");
         }
+        // Окончание воспроизведения — чистим состояние плеера.
+        if self.playback.as_ref().map(|p| p.player.empty()).unwrap_or(false) {
+            self.playback = None;
+        }
         let events: Vec<BgEvent> = {
             let rx = self.rx.lock().unwrap();
             let mut v = Vec::new();
@@ -338,6 +386,35 @@ impl TelecomfortApp {
                     self.avatar_files.insert(chat_id, path);
                     // Сбрасываем идентикон — следующий кадр подхватит фото.
                     self.avatars.remove(&chat_id);
+                }
+                BgEvent::PinnedLoaded { chat_id, item } => {
+                    match item {
+                        Some(m) => {
+                            self.pinned.insert(chat_id, m);
+                        }
+                        None => {
+                            self.pinned.remove(&chat_id);
+                        }
+                    }
+                }
+                BgEvent::FoldersLoaded(folders) => {
+                    self.folders = folders;
+                    self.log(format!("папок диалогов: {}", self.folders.len()));
+                }
+                BgEvent::ContactsLoaded(contacts) => {
+                    self.contacts = contacts;
+                    self.contacts_loaded = true;
+                    self.log(format!("контактов: {}", self.contacts.len()));
+                }
+                BgEvent::ReloadDialogs => {
+                    self.refresh_dialogs();
+                }
+                BgEvent::AudioReady { chat_id, message_id, path } => {
+                    self.start_playback(chat_id, message_id, path);
+                }
+                BgEvent::Forwarded { from_chat, to_chat, count } => {
+                    self.forward_pick = None;
+                    self.log(format!("переслано сообщений: {count} (чат {from_chat} → {to_chat})"));
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -699,6 +776,8 @@ impl TelecomfortApp {
                 }
             }
         });
+        // Папки — отдельным запросом, не блокируем список диалогов.
+        self.load_folders();
     }
 
     pub fn refresh_me(&mut self) {
@@ -756,6 +835,7 @@ impl TelecomfortApp {
         self.editing = None;
         self.chat_search.clear();
         self.load_history(chat_id);
+        self.load_pinned(chat_id);
         let tg = Arc::clone(&self.tg);
         self.rt.spawn(async move {
             let _ = tg.mark_read(chat_id).await;
@@ -814,6 +894,11 @@ impl TelecomfortApp {
                         sender: None,
                         edited: false,
                         reactions: None,
+                        views: None,
+                        forwards: None,
+                        poll: None,
+                        geo: None,
+                        contact: None,
                     };
                     let _ = tx.send(BgEvent::SentMessage { chat_id, item });
                 }
@@ -914,6 +999,11 @@ impl TelecomfortApp {
                         sender: None,
                         edited: false,
                         reactions: None,
+                        views: None,
+                        forwards: None,
+                        poll: None,
+                        geo: None,
+                        contact: None,
                     };
                     let _ = tx.send(BgEvent::SentMessage { chat_id, item });
                 }
@@ -963,6 +1053,269 @@ impl TelecomfortApp {
         );
         self.avatars.insert(chat_id, tex.clone());
         tex
+    }
+
+    // --- Второй parity-пакет: пины/мьют/архив/папки/опросы/пересылка/голосовые ---
+
+    /// Загрузить закреплённое сообщение чата (баннер под шапкой).
+    pub fn load_pinned(&mut self, chat_id: i64) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.pinned_message(chat_id).await {
+                Ok(item) => {
+                    let _ = tx.send(BgEvent::PinnedLoaded { chat_id, item });
+                }
+                Err(e) => {
+                    tracing::debug!("pinned load failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Закрепить/открепить сообщение (сервер проверяет права).
+    pub fn toggle_pin(&mut self, chat_id: i64, message_id: i32, unpin: bool) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let res = if unpin {
+                tg.unpin_message(chat_id, message_id).await
+            } else {
+                tg.pin_message(chat_id, message_id).await
+            };
+            match res {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if unpin { "откреплено".into() } else { "закреплено".into() },
+                    ));
+                    let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                    match tg.pinned_message(chat_id).await {
+                        Ok(item) => {
+                            let _ = tx.send(BgEvent::PinnedLoaded { chat_id, item });
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("закреп: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Заглушить/разглушить чат. Список обновляем через ReloadDialogs.
+    pub fn toggle_mute(&mut self, chat_id: i64) {
+        let muted = self.dialogs.iter().find(|d| d.id == chat_id).map(|d| d.muted).unwrap_or(false);
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.mute(chat_id, !muted).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if !muted { "чат заглушён".into() } else { "мут снят".into() },
+                    ));
+                    let _ = tx.send(BgEvent::ReloadDialogs);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("мьют: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// В архив/из архива. Список обновляем через ReloadDialogs.
+    pub fn toggle_archive(&mut self, chat_id: i64) {
+        let archived =
+            self.dialogs.iter().find(|d| d.id == chat_id).map(|d| d.archived).unwrap_or(false);
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.archive(chat_id, !archived).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if !archived { "чат в архиве".into() } else { "чат из архива".into() },
+                    ));
+                    let _ = tx.send(BgEvent::ReloadDialogs);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("архив: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить папки диалогов сервера (вкладки-фильтры).
+    pub fn load_folders(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.dialog_filters().await {
+                Ok(folders) => {
+                    let _ = tx.send(BgEvent::FoldersLoaded(folders));
+                }
+                Err(e) => {
+                    tracing::debug!("folders failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Загрузить контакты телефонной книги (экран Контакты).
+    pub fn load_contacts(&mut self) {
+        if self.contacts_loaded {
+            return;
+        }
+        self.contacts_loaded = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.contacts().await {
+                Ok(contacts) => {
+                    let _ = tx.send(BgEvent::ContactsLoaded(contacts));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("контакты: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Начать пересылку: запомнить источник, UI покажет выбор цели.
+    pub fn start_forward(&mut self, chat_id: i64, message_id: i32) {
+        self.forward_pick = Some((chat_id, vec![message_id]));
+        self.log(format!("пересылка msg {message_id}: выберите целевой чат слева"));
+    }
+
+    /// Выполнить пересылку в целевой чат.
+    pub fn do_forward(&mut self, to_chat: i64) {
+        let Some((from_chat, ids)) = self.forward_pick.clone() else {
+            return;
+        };
+        if from_chat == to_chat {
+            self.log("пересылка в тот же чат — отменено");
+            self.forward_pick = None;
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.forward(from_chat, &ids, to_chat).await {
+                Ok(count) => {
+                    let _ = tx.send(BgEvent::Forwarded { from_chat, to_chat, count });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("пересылка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Проголосовать в опросе (один вариант; multiple-choice — по одному за раз).
+    pub fn vote_poll(&mut self, chat_id: i64, message_id: i32, option: Vec<u8>) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.vote(chat_id, message_id, option).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("голосование: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Вкл/выкл воспроизведения голосового/аудио (повторный тап — стоп).
+    /// Файл докачивается в аудиокэш (не в Загрузки), затем AudioReady.
+    pub fn play_audio(&mut self, chat_id: i64, msg: &crate::telegram::MessageInfo) {
+        if let Some(pb) = &self.playback {
+            if pb.chat_id == chat_id && pb.message_id == msg.id {
+                self.playback = None;
+                return;
+            }
+        }
+        self.playback = None;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let fname = msg.file_name.clone().unwrap_or_else(|| format!("audio_{}.ogg", msg.id));
+        let ext = std::path::Path::new(&fname)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("ogg");
+        let dest = crate::telegram::audio_cache_dir()
+            .join(format!("{chat_id}_{}.{ext}", msg.id));
+        let mid = msg.id;
+        self.log(format!("голосовое msg {mid}: загрузка…"));
+        self.rt.spawn(async move {
+            std::fs::create_dir_all(dest.parent().unwrap()).ok();
+            let fresh = std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false);
+            if !fresh {
+                if let Err(e) = tg.download_message_media(chat_id, mid, dest.parent().unwrap()).await
+                {
+                    let _ = tx.send(BgEvent::Error(format!("аудио: {e:#}")));
+                    return;
+                }
+                // download_message_media кладёт рядом файл со своим именем —
+                // находим самый свежий подходящий и переименовываем.
+                if !dest.exists() {
+                    if let Ok(mut entries) = std::fs::read_dir(dest.parent().unwrap()) {
+                        let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p == dest {
+                                continue;
+                            }
+                            if let Ok(meta) = entry.metadata() {
+                                if let Ok(mtime) = meta.modified() {
+                                    if best.as_ref().map(|(t, _)| *t < mtime).unwrap_or(true) {
+                                        best = Some((mtime, p));
+                                    }
+                                }
+                            }
+                        }
+                        if let Some((_, src)) = best {
+                            std::fs::rename(&src, &dest).ok();
+                        }
+                    }
+                }
+            }
+            if dest.exists() {
+                let _ = tx.send(BgEvent::AudioReady { chat_id, message_id: mid, path: dest });
+            } else {
+                let _ = tx.send(BgEvent::Error("аудио: файл не скачался".into()));
+            }
+        });
+    }
+
+    /// Запустить воспроизведение скачанного файла
+    /// (rodio 0.23: `DeviceSinkBuilder` + `play`, CoreAudio/ALSA/WASAPI).
+    fn start_playback(&mut self, chat_id: i64, message_id: i32, path: PathBuf) {
+        let f = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                self.log(format!("плеер: {e:#}"));
+                return;
+            }
+        };
+        let mut sink = match rodio::DeviceSinkBuilder::open_default_sink() {
+            Ok(s) => s,
+            Err(e) => {
+                self.log(format!("плеер: нет аудио-устройства ({e:?})"));
+                return;
+            }
+        };
+        sink.log_on_drop(false);
+        match rodio::play(sink.mixer(), f) {
+            Ok(player) => {
+                self.playback =
+                    Some(AudioPlayback { chat_id, message_id, path, _sink: sink, player });
+                self.log(format!("▶ воспроизведение msg {message_id}"));
+            }
+            Err(e) => {
+                self.log(format!("плеер: не декодируется ({e:?})"));
+            }
+        }
     }
 
     /// Одна фоновая итерация с актуальным снапшотом настроек.
@@ -1677,11 +2030,15 @@ impl eframe::App for TelecomfortApp {
                     ("💬 Чаты", Screen::Chats),
                     ("✨ Сторис", Screen::Stories),
                     ("⬇ Загрузки", Screen::Downloads),
+                    ("👥 Контакты", Screen::Contacts),
                     ("⚙ Настройки", Screen::Settings),
                 ] {
                     let active = self.screen == scr;
                     if ui.selectable_label(active, label).clicked() {
                         self.screen = scr;
+                        if scr == Screen::Contacts {
+                            self.load_contacts();
+                        }
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1704,6 +2061,7 @@ impl eframe::App for TelecomfortApp {
             Screen::Chats => super::views::chats::show(self, ui),
             Screen::Stories => super::views::stories::show(self, ui),
             Screen::Downloads => super::views::downloads::show(self, ui),
+            Screen::Contacts => super::views::contacts::show(self, ui),
             Screen::Settings => super::views::settings::show(self, ui),
         }
     }

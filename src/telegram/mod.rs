@@ -25,6 +25,10 @@ pub struct ChatInfo {
     /// Запрет копирования/пересылки (noforwards)
     pub protected: bool,
     pub unread: i32,
+    /// Чат заглушён (mute_until в будущем).
+    pub muted: bool,
+    /// Чат в архиве (папка 1).
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +49,64 @@ pub struct MessageInfo {
     pub edited: bool,
     /// Суммарное число реакций (None — нет информации/реакций).
     pub reactions: Option<i32>,
+    /// Просмотры (каналы) и пересылки, если сервер отдал.
+    pub views: Option<i32>,
+    pub forwards: Option<i32>,
+    /// Опрос (вопрос + варианты + голоса), если это poll.
+    pub poll: Option<PollInfo>,
+    /// Геопозиция (lat, long), если сообщение — точка на карте.
+    pub geo: Option<(f64, f64)>,
+    /// Контакт (имя, телефон), если сообщение — карточка контакта.
+    pub contact: Option<(String, String)>,
+}
+
+/// Один вариант ответа опроса.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollAnswerInfo {
+    pub text: String,
+    /// Байты option для `messages.sendVote`.
+    #[serde(with = "serde_bytes_vec")]
+    pub option: Vec<u8>,
+    pub votes: Option<i32>,
+    pub chosen: bool,
+}
+
+/// Опрос целиком (для карточки + голосования).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollInfo {
+    pub question: String,
+    pub closed: bool,
+    pub quiz: bool,
+    pub total_voters: Option<i32>,
+    pub answers: Vec<PollAnswerInfo>,
+}
+
+/// Контакт из телефонной книги Telegram.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactInfo {
+    pub name: String,
+    pub phone: String,
+    pub username: Option<String>,
+    pub user_id: i64,
+}
+
+/// Папка диалогов сервера (вкладка-фильтр).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DialogFilterInfo {
+    pub id: i32,
+    pub title: String,
+    pub peer_ids: Vec<i64>,
+}
+
+/// Сериализация `Vec<u8>` как массива чисел (serde без extra-фич).
+mod serde_bytes_vec {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        v.to_vec().serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        Vec::<u8>::deserialize(d)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +152,15 @@ pub fn avatars_cache_dir() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("telecomfort")
         .join("avatars")
+}
+
+/// Папка кэша голосовых/аудио для плеера: `~/.cache/telecomfort/audio`.
+/// Файлы `<chat>_<msg>.<ext>`, качаются по требованию (не попадают в Загрузки/БД).
+pub fn audio_cache_dir() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("telecomfort")
+        .join("audio")
 }
 
 #[async_trait]
@@ -172,6 +243,47 @@ pub trait TelegramService: Send + Sync {
     /// Дефолт — нет фото (UI рисует идентикон).
     async fn avatar_path(&self, _chat_id: i64) -> anyhow::Result<Option<std::path::PathBuf>> {
         Ok(None)
+    }
+    /// Закрепить сообщение в чате (сервер проверяет права).
+    async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("pins are not implemented for this backend")
+    }
+    /// Открепить сообщение в чате.
+    async fn unpin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("pins are not implemented for this backend")
+    }
+    /// Закреплённое сообщение чата (поиск по фильтру pinned, лимит 1).
+    async fn pinned_message(&self, _chat_id: i64) -> anyhow::Result<Option<MessageInfo>> {
+        Ok(None)
+    }
+    /// Проголосовать в опросе (один вариант; для multiple-choice — по одному за раз).
+    async fn vote(&self, _chat_id: i64, _message_id: i32, _option: Vec<u8>) -> anyhow::Result<()> {
+        anyhow::bail!("polls are not implemented for this backend")
+    }
+    /// Переслать сообщения в другой чат. Возвращает число пересланных.
+    async fn forward(
+        &self,
+        _from_chat: i64,
+        _message_ids: &[i32],
+        _to_chat: i64,
+    ) -> anyhow::Result<usize> {
+        anyhow::bail!("forward is not implemented for this backend")
+    }
+    /// Заглушить/разглушить чат (mute_until в будущее/0).
+    async fn mute(&self, _chat_id: i64, _muted: bool) -> anyhow::Result<()> {
+        anyhow::bail!("mute is not implemented for this backend")
+    }
+    /// В архив/из архива (папка 1/0).
+    async fn archive(&self, _chat_id: i64, _archived: bool) -> anyhow::Result<()> {
+        anyhow::bail!("archive is not implemented for this backend")
+    }
+    /// Папки диалогов сервера (вкладки-фильтры).
+    async fn dialog_filters(&self) -> anyhow::Result<Vec<DialogFilterInfo>> {
+        Ok(vec![])
+    }
+    /// Контакты телефонной книги Telegram.
+    async fn contacts(&self) -> anyhow::Result<Vec<ContactInfo>> {
+        Ok(vec![])
     }
     fn is_connected(&self) -> bool;
 }
