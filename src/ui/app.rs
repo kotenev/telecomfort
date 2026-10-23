@@ -90,8 +90,18 @@ pub enum BgEvent {
     MediaTabLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
     /// Чёрный список загружен.
     BlockedLoaded(Vec<crate::telegram::BlockedInfo>),
+    /// Результат проверки username.
+    UsernameChecked(bool),
+    /// Закреп диалога переключён.
+    DialogPinToggled { chat_id: i64, pinned: bool },
+    /// Альбом файлов отправлен.
+    AlbumSent { chat_id: i64, count: usize },
+    /// Архив сторис загружен.
+    ArchiveLoaded(Vec<crate::telegram::StoryInfo>),
     /// Подборки загружены.
     AlbumsLoaded(Vec<crate::telegram::StoryAlbumInfo>),
+    /// Архивное превью готово.
+    ArchiveThumbReady { story_id: i32, path: PathBuf },
     /// Подборка создана/удалена.
     AlbumChanged,
     /// Голоса загружены.
@@ -344,12 +354,23 @@ pub struct TelecomfortApp {
     /// Чёрный список + флаг загрузки.
     pub blocked: Vec<crate::telegram::BlockedInfo>,
     pub blocked_loaded: bool,
+    /// Закрепы диалогов (порядок не гарантирован сервером при чтении).
+    pub dialog_pinned: std::collections::HashSet<i64>,
+    /// Результат проверки username.
+    pub username_check: Option<bool>,
+    /// Архив сторис + режим просмотра.
+    pub stories_archive: Vec<crate::telegram::StoryInfo>,
+    pub stories_archive_open: bool,
     /// Подборки сторис + окно создания (выбор своих сторис).
     pub albums: Vec<crate::telegram::StoryAlbumInfo>,
     pub albums_loaded: bool,
     pub album_create_open: bool,
     pub album_create_title: String,
     pub album_pick: std::collections::HashSet<i32>,
+    /// Архивные превью (story_id → текстура).
+    pub archive_thumbs: HashMap<i32, egui::TextureHandle>,
+    pub archive_thumb_files: HashMap<i32, PathBuf>,
+    archive_thumb_requested: HashSet<i32>,
     /// Голоса в опросе (msg_id → (всего, имена)) + окно.
     pub poll_voters: HashMap<i32, (i32, Vec<String>)>,
     pub poll_voters_open: Option<i32>,
@@ -514,11 +535,18 @@ impl TelecomfortApp {
             profile_username: String::new(),
             blocked: Vec::new(),
             blocked_loaded: false,
+            dialog_pinned: std::collections::HashSet::new(),
+            username_check: None,
+            stories_archive: Vec::new(),
+            stories_archive_open: false,
             albums: Vec::new(),
             albums_loaded: false,
             album_create_open: false,
             album_create_title: String::new(),
             album_pick: std::collections::HashSet::new(),
+            archive_thumbs: HashMap::new(),
+            archive_thumb_files: HashMap::new(),
+            archive_thumb_requested: HashSet::new(),
             poll_voters: HashMap::new(),
             poll_voters_open: None,
             folder_create_open: false,
@@ -802,6 +830,33 @@ impl TelecomfortApp {
                 BgEvent::BlockedLoaded(blocked) => {
                     self.blocked = blocked;
                     self.blocked_loaded = true;
+                }
+                BgEvent::UsernameChecked(free) => {
+                    self.username_check = Some(free);
+                }
+                BgEvent::DialogPinToggled { chat_id, pinned } => {
+                    if pinned {
+                        self.dialog_pinned.insert(chat_id);
+                    } else {
+                        self.dialog_pinned.remove(&chat_id);
+                    }
+                    self.refresh_dialogs();
+                }
+                BgEvent::UsernameChecked(free) => {
+                    self.username_check = Some(free);
+                    self.log(if free { "username свободен".to_string() } else { "username занят".to_string() });
+                }
+                BgEvent::AlbumSent { chat_id, count } => {
+                    self.log(format!("альбом отправлен ({count} файлов)"));
+                    self.load_history(chat_id);
+                }
+                BgEvent::ArchiveLoaded(items) => {
+                    self.stories_archive = items;
+                    self.log(format!("архив сторис: {}", self.stories_archive.len()));
+                }
+                BgEvent::ArchiveThumbReady { story_id, path } => {
+                    self.archive_thumb_files.insert(story_id, path);
+                    self.archive_thumbs.remove(&story_id);
                 }
                 BgEvent::AlbumsLoaded(albums) => {
                     self.albums = albums;
@@ -1418,56 +1473,6 @@ impl TelecomfortApp {
         });
     }
 
-    /// Прикрепить файл: выбор через нативный диалог → заливка → отправка
-    /// (фото — как фото, остальное — документом; подпись — текст композера).
-    pub fn attach_file(&mut self) {
-        let Some(chat_id) = self.selected_chat else {
-            self.log("сначала выберите чат");
-            return;
-        };
-        let Some(path) = rfd::FileDialog::new().pick_file() else {
-            return;
-        };
-        let caption = self.composer_current.trim().to_string();
-        self.composer_current.clear();
-        self.composer.insert(chat_id, String::new());
-        let tg = Arc::clone(&self.tg);
-        let tx = self.tx.clone();
-        self.log(format!("заливка файла: {}…", path.display()));
-        self.rt.spawn(async move {
-            match tg.send_file(chat_id, &path, &caption).await {
-                Ok(sent_id) => {
-                    let item = crate::telegram::MessageInfo {
-                        id: sent_id,
-                        chat_id,
-                        text: caption,
-                        date: chrono::Local::now().timestamp(),
-                        has_media: true,
-                        media_kind: Some("document".into()),
-                        file_name: path
-                            .file_name()
-                            .map(|s| s.to_string_lossy().to_string()),
-                        file_size: std::fs::metadata(&path).ok().map(|m| m.len() as i64),
-                        outgoing: true,
-                        sender: None,
-                        edited: false,
-                        reactions: None,
-                        views: None,
-                        forwards: None,
-                        poll: None,
-                        geo: None,
-                        contact: None,
-                        web_preview: None,
-                        topic_id: None,
-                    };
-                    let _ = tx.send(BgEvent::SentMessage { chat_id, item });
-                }
-                Err(e) => {
-                    let _ = tx.send(BgEvent::Error(format!("отправка файла: {e:#}")));
-                }
-            }
-        });
-    }
 
     /// Аватар чата 64px: кэш → файл → запрос скачивания → идентикон.
     /// Идентикон возвращается сразу (и как fallback без фото).
@@ -2213,6 +2218,173 @@ impl TelecomfortApp {
                 }
             }
         });
+    }
+
+    /// Закрепить/открепить диалог в списке.
+    pub fn toggle_dialog_pin(&mut self, chat_id: i64) {
+        let pinned = !self.dialog_pinned.contains(&chat_id);
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.toggle_dialog_pin(chat_id, pinned).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::DialogPinToggled { chat_id, pinned });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("закреп: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Проверить доступность username.
+    pub fn check_username(&mut self) {
+        let u = self.profile_username.trim().to_string();
+        if u.is_empty() {
+            return;
+        }
+        self.username_check = None;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.check_username(&u).await {
+                Ok(free) => {
+                    let _ = tx.send(BgEvent::UsernameChecked(free));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("проверка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отправить альбом файлов (выбор нескольких в диалоге).
+    pub fn send_album_pick(&mut self, chat_id: i64) {
+        let Some(paths) = rfd::FileDialog::new().pick_files() else {
+            return;
+        };
+        if paths.len() < 2 {
+            // Один файл — обычной отправкой.
+            if let Some(p) = paths.into_iter().next() {
+                let caption = self.composer_current.trim().to_string();
+                let tg = Arc::clone(&self.tg);
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    match tg.send_file(chat_id, &p, &caption).await {
+                        Ok(id) => {
+                            let _ = tx.send(BgEvent::Log(format!("файл отправлен (msg {id})")));
+                            let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("файл: {e:#}")));
+                        }
+                    }
+                });
+            }
+            return;
+        }
+        let caption = self.composer_current.trim().to_string();
+        self.composer_current.clear();
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.log(format!("альбом: заливка {} файлов…", paths.len()));
+        self.rt.spawn(async move {
+            match tg.send_album(chat_id, &paths, &caption).await {
+                Ok(ids) => {
+                    let _ = tx.send(BgEvent::AlbumSent { chat_id, count: ids.len() });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("альбом: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить архив своих сторис.
+    pub fn load_archive(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.archived_stories().await {
+                Ok(items) => {
+                    let _ = tx.send(BgEvent::ArchiveLoaded(items));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("архив: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Превью архивной сторис (160px): кэш → файл → скачивание в фоне.
+    pub fn ensure_archive_thumb(
+        &mut self,
+        ctx: &egui::Context,
+        peer_id: i64,
+        story_id: i32,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.archive_thumbs.get(&story_id) {
+            return Some(t.clone());
+        }
+        if let Some(p) = self.archive_thumb_files.get(&story_id).cloned() {
+            if let Some(tex) = Self::thumb_from_file(ctx, &p, &format!("archthumb::{story_id}"), 160) {
+                self.archive_thumbs.insert(story_id, tex.clone());
+                return Some(tex);
+            }
+        }
+        if self.archive_thumb_requested.insert(story_id) {
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            let dir = crate::telegram::stickers_cache_dir().join("archive");
+            self.rt.spawn(async move {
+                std::fs::create_dir_all(&dir).ok();
+                match tg.download_story_media(peer_id, story_id, &dir).await {
+                    Ok(path) => {
+                        // Видео — сразу делаем постер (превью в списке).
+                        let show = if path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| matches!(e.to_lowercase().as_str(), "mp4" | "mov" | "webm"))
+                            .unwrap_or(false)
+                        {
+                            let poster = path.with_extension("poster.jpg");
+                            if !poster.exists() {
+                                if let Some(frame) = tokio::task::spawn_blocking({
+                                    let dest = path.clone();
+                                    move || crate::media::video::first_frame_builtin(&dest)
+                                })
+                                .await
+                                .ok()
+                                .flatten()
+                                {
+                                    crate::media::video::save_poster_jpeg(&frame, &poster);
+                                }
+                            }
+                            if poster.exists() { poster } else { path }
+                        } else {
+                            path
+                        };
+                        let _ = tx.send(BgEvent::ArchiveThumbReady { story_id, path: show });
+                    }
+                    Err(e) => {
+                        tracing::debug!("archive thumb failed: {e}");
+                    }
+                }
+            });
+        }
+        None
+    }
+
+    /// Уменьшить файл до миниатюры и обернуть в текстуру.
+    fn thumb_from_file(
+        ctx: &egui::Context,
+        path: &std::path::Path,
+        id: &str,
+        max: u32,
+    ) -> Option<egui::TextureHandle> {
+        let img = image::open(path).ok()?;
+        let thumb = img.resize(max, max, image::imageops::FilterType::Triangle);
+        Some(ctx.load_texture(id, to_egui(&thumb), egui::TextureOptions::default()))
     }
 
     /// Загрузить чёрный список.

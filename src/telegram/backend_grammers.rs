@@ -2246,6 +2246,119 @@ impl TelegramService for GrammersBackend {
         Ok(())
     }
 
+    async fn check_username(&self, username: &str) -> Result<bool> {
+        use grammers_client::tl as tl;
+        let username = username.trim().trim_start_matches('@').to_string();
+        if username.is_empty() {
+            anyhow::bail!("пустой username");
+        }
+        let free = self
+            .client
+            .invoke(&tl::functions::account::CheckUsername { username })
+            .await
+            .context("checkUsername failed")?;
+        Ok(free)
+    }
+
+    async fn toggle_dialog_pin(&self, chat_id: i64, pinned: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // DialogPeer — отдельная обёртка: peer → InputDialogPeer::Peer.
+        let input = match pref.id.kind() {
+            grammers_session::types::PeerKind::User
+            | grammers_session::types::PeerKind::Chat
+            | grammers_session::types::PeerKind::Channel => {
+                tl::enums::InputDialogPeer::Peer(tl::types::InputDialogPeer {
+                    peer: (&pref).into(),
+                })
+            }
+            _ => anyhow::bail!("не диалог"),
+        };
+        self.client
+            .invoke(&tl::functions::messages::ToggleDialogPin { pinned, peer: input })
+            .await
+            .context("toggleDialogPin failed")?;
+        Ok(())
+    }
+
+    async fn send_album(
+        &self,
+        chat_id: i64,
+        paths: &[std::path::PathBuf],
+        caption: &str,
+    ) -> Result<Vec<i32>> {
+        use grammers_client::media::InputMedia;
+        if paths.len() < 2 {
+            anyhow::bail!("для альбома нужно 2+ файлов");
+        }
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let mut medias = Vec::new();
+        for (i, path) in paths.iter().take(10).enumerate() {
+            let uploaded = self.client.upload_file(path).await.with_context(|| {
+                format!("upload failed: {}", path.display())
+            })?;
+            let is_photo = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| matches!(e.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+                .unwrap_or(false);
+            // Подпись — только у первого элемента альбома.
+            let cap = if i == 0 { caption.trim() } else { "" };
+            if is_photo {
+                medias.push(InputMedia::new().caption(cap).photo(uploaded));
+            } else {
+                medias.push(InputMedia::new().caption(cap).document(uploaded));
+            }
+        }
+        let sent = self
+            .client
+            .send_album(pref, medias)
+            .await
+            .context("sendAlbum failed")?;
+        Ok(sent
+            .into_iter()
+            .flatten()
+            .map(|m| m.id())
+            .collect())
+    }
+
+    async fn archived_stories(&self) -> Result<Vec<StoryInfo>> {
+        use grammers_client::tl as tl;
+        let me = self.client.get_me().await?;
+        let me_id = me.id().bot_api_dialog_id().unwrap_or(0);
+        let me_name = me.full_name();
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::GetStoriesArchive {
+                peer: tl::enums::InputPeer::PeerSelf,
+                offset_id: 0,
+                limit: 50,
+            })
+            .await
+            .context("getStoriesArchive failed")?;
+        let (count, items) = match res {
+            tl::enums::stories::Stories::Stories(s) => (s.count, s.stories),
+        };
+        tracing::debug!("archive count={count}");
+        let mut out = Vec::new();
+        for st in items {
+            let full = match st {
+                tl::enums::StoryItem::Item(f) => f,
+                _ => continue,
+            };
+            out.push(StoryInfo {
+                peer_id: me_id,
+                peer_title: if me_name.trim().is_empty() { "Я".to_string() } else { me_name.clone() },
+                story_id: full.id,
+                caption: full.caption.clone().unwrap_or_default(),
+                has_url: false,
+                date: full.date as i64,
+                preview_path: None,
+            });
+        }
+        Ok(out)
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();

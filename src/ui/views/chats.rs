@@ -202,6 +202,10 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         ui.image((tex.id(), egui::Vec2::new(36.0, 36.0)));
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
+                                let is_pinned = app.dialog_pinned.contains(&d.id);
+                                if ui.small_button(if is_pinned { "📌" } else { "📍" }).on_hover_text(if is_pinned { "Открепить диалог" } else { "Закрепить диалог" }).clicked() {
+                                    app.toggle_dialog_pin(d.id);
+                                }
                                 if ui.selectable_label(sel, &d.title).clicked() {
                                     app.select_chat(d.id);
                                 }
@@ -1027,10 +1031,12 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl) && resp.has_focus();
         if ui
             .button("📎")
-            .on_hover_text("Прикрепить файл (фото — как фото, остальное — документом)")
+            .on_hover_text("Прикрепить файлы (один — как обычно, несколько — альбомом)")
             .clicked()
         {
-            app.attach_file();
+            if let Some(chat_id) = app.selected_chat {
+                app.send_album_pick(chat_id);
+            }
         }
         if ui
             .button("👤")
