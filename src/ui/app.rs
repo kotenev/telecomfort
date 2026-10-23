@@ -239,6 +239,10 @@ pub struct TelecomfortApp {
     // Чаты: композер и пузыри (паритет с официальным клиентом)
     /// Черновики ввода по чатам (сохраняются при переключении диалогов).
     pub composer: HashMap<i64, String>,
+    /// Тихая отправка (без звука у получателя).
+    pub silent_send: bool,
+    /// Эмодзи новой папки (опционально).
+    pub folder_create_emoji: String,
     /// Текущий текст ввода (синкается с composer при select_chat).
     pub composer_current: String,
     /// Поиск по загруженной истории текущего чата.
@@ -286,6 +290,8 @@ pub struct TelecomfortApp {
     pub story_publish: Option<StoryPublish>,
     /// ID своего аккаунта (для «мои сторис»).
     pub me_id: Option<i64>,
+    /// Телефон своего аккаунта (для шаринга своего контакта).
+    pub me_phone: Option<String>,
 
     // Четвёртый parity-пакет: топики/поиск/превью/модерация/создание
     /// Топики форума текущего чата + выбранный (None = общий чат).
@@ -465,6 +471,8 @@ impl TelecomfortApp {
             dl_thumbs: HashMap::new(),
             composer: HashMap::new(),
             composer_current: String::new(),
+            silent_send: false,
+            folder_create_emoji: String::new(),
             chat_search: String::new(),
             reply_to: None,
             editing: None,
@@ -491,6 +499,7 @@ impl TelecomfortApp {
             profile_loaded: false,
             story_publish: None,
             me_id: None,
+            me_phone: None,
             topics: Vec::new(),
             topic_sel: None,
             topic_create_open: false,
@@ -1144,6 +1153,7 @@ impl TelecomfortApp {
                         info.name.clone()
                     };
                     self.me_id = Some(info.id);
+                                  self.me_phone = info.phone;
                 }
                 BgEvent::Log(s) => self.log(s),
                 BgEvent::Error(s) => {
@@ -1384,8 +1394,9 @@ impl TelecomfortApp {
         self.reply_to = None;
         self.composer_current.clear();
         self.composer.insert(chat_id, String::new());
+        let silent = self.silent_send;
         self.rt.spawn(async move {
-            match tg.send_text(chat_id, &text, reply).await {
+            match tg.send_text(chat_id, &text, reply, silent).await {
                 Ok(sent_id) => {
                     let item = crate::telegram::MessageInfo {
                         id: sent_id,
@@ -1796,8 +1807,9 @@ impl TelecomfortApp {
         self.composer.insert(chat_id, String::new());
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
+        let silent = self.silent_send;
         self.rt.spawn(async move {
-            match tg.send_scheduled(chat_id, &text, reply, at).await {
+            match tg.send_scheduled(chat_id, &text, reply, at, silent).await {
                 Ok(id) => {
                     let _ = tx.send(BgEvent::Log(format!("отложено (msg {id}, через {hours} ч)")));
                 }
@@ -1877,21 +1889,41 @@ impl TelecomfortApp {
         None
     }
 
+    /// Поделиться своим контактом в чат (имя — из профиля).
+    pub fn share_own_contact(&mut self, chat_id: i64) {
+        let (Some(phone), Some(_)) = (self.me_phone.clone(), self.me_id) else {
+            self.log("нет данных своего профиля".to_string());
+            return;
+        };
+        let name = self.profile_first.clone();
+        let (first, last) = match name.split_once(' ') {
+            Some((f, l)) => (f.to_string(), l.to_string()),
+            None => (name, self.profile_last.clone()),
+        };
+        self.share_contact_with(chat_id, phone, first, last);
+    }
+
     /// Поделиться контактом из телефонной книги в чат.
     pub fn share_contact_to(&mut self, chat_id: i64, c: &crate::telegram::ContactInfo) {
-        let tg = Arc::clone(&self.tg);
-        let tx = self.tx.clone();
         let (phone, first, last) = (c.phone.clone(), c.name.clone(), String::new());
         // Имя делим на first/last по первому пробелу (как в официальном клиенте).
         let (first, last) = match first.split_once(' ') {
             Some((f, l)) => (f.to_string(), l.to_string()),
             None => (first, last),
         };
+        self.share_contact_with(chat_id, phone, first, last);
+    }
+
+    /// Низкоуровневая отправка карточки контакта.
+    pub fn share_contact_with(&mut self, chat_id: i64, phone: String, first: String, last: String) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
         self.contact_share_pick = None;
         self.rt.spawn(async move {
             match tg.share_contact(chat_id, &phone, &first, &last).await {
                 Ok(message_id) => {
-                    let _ = tx.send(BgEvent::ShareContactSent { chat_id, message_id });
+                    let _ = tx.send(BgEvent::Log(format!("контакт отправлен (msg {message_id})")));
+                    let _ = tx.send(BgEvent::ReloadHistory { chat_id });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("шаринг: {e:#}")));
@@ -2126,8 +2158,9 @@ impl TelecomfortApp {
         }
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
+        let emoji = if self.folder_create_emoji.trim().is_empty() { None } else { Some(self.folder_create_emoji.trim().to_string()) };
         self.rt.spawn(async move {
-            match tg.create_folder(&title, &peers).await {
+            match tg.create_folder(&title, &peers, emoji).await {
                 Ok(id) => {
                     let _ = tx.send(BgEvent::Log(format!("папка создана (id {id})")));
                     let _ = tx.send(BgEvent::FoldersChanged);
@@ -2269,8 +2302,9 @@ impl TelecomfortApp {
                 let caption = self.composer_current.trim().to_string();
                 let tg = Arc::clone(&self.tg);
                 let tx = self.tx.clone();
+                let silent = self.silent_send;
                 self.rt.spawn(async move {
-                    match tg.send_file(chat_id, &p, &caption).await {
+                    match tg.send_file(chat_id, &p, &caption, silent).await {
                         Ok(id) => {
                             let _ = tx.send(BgEvent::Log(format!("файл отправлен (msg {id})")));
                             let _ = tx.send(BgEvent::ReloadHistory { chat_id });
@@ -2616,8 +2650,9 @@ impl TelecomfortApp {
         self.composer.insert(chat_id, String::new());
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
+        let silent = self.silent_send;
         self.rt.spawn(async move {
-            match tg.send_to_topic(chat_id, topic_id, &text).await {
+            match tg.send_to_topic(chat_id, topic_id, &text, silent).await {
                 Ok(sent_id) => {
                     let item = crate::telegram::MessageInfo {
                         id: sent_id,

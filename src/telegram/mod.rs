@@ -303,6 +303,7 @@ pub trait TelegramService: Send + Sync {
         _chat_id: i64,
         _text: &str,
         _reply_to: Option<i32>,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("send is not implemented for this backend")
     }
@@ -329,6 +330,7 @@ pub trait TelegramService: Send + Sync {
         _chat_id: i64,
         _path: &std::path::Path,
         _caption: &str,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("file sending is not implemented for this backend")
     }
@@ -385,6 +387,7 @@ pub trait TelegramService: Send + Sync {
         _text: &str,
         _reply_to: Option<i32>,
         _at: std::time::SystemTime,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("scheduled send is not implemented for this backend")
     }
@@ -444,7 +447,7 @@ pub trait TelegramService: Send + Sync {
         Ok(vec![])
     }
     /// Отправить текст в топик (top_msg_id).
-    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, _text: &str) -> anyhow::Result<i32> {
+    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, _text: &str, _silent: bool) -> anyhow::Result<i32> {
         anyhow::bail!("forum topics are not implemented for this backend")
     }
     /// Глобальный поиск по всем чатам. Возвращает (chat_id, сообщение).
@@ -659,7 +662,7 @@ pub trait TelegramService: Send + Sync {
         Ok((0, vec![]))
     }
     /// Создать папку диалогов (id = max+1). Возвращает id.
-    async fn create_folder(&self, _title: &str, _peer_ids: &[i64]) -> anyhow::Result<i32> {
+    async fn create_folder(&self, _title: &str, _peer_ids: &[i64], _emoticon: Option<String>) -> anyhow::Result<i32> {
         anyhow::bail!("folder management is not implemented for this backend")
     }
     /// Переименовать папку (состав и настройки сохраняются).

@@ -74,6 +74,10 @@
    Участники канала/супергруппы (👥: список, админы ⭐, кик 🚫 через `channels.editBanned`).
    Редактирование подписи своей сторис (✏️ → `stories.editStory`).
    Скрытие чужих сторис из ленты (🙈 на карточке → `stories.togglePeerStoriesHidden`).
+   Markdown-разметка сообщений (**жирный** *курсив* `код`, парсинг `grammers` `markdown`-фичей, подсказка в композере).
+   Тихая отправка (🔕 чекбокс в композере: `silent`, без звука у получателя; работает и для файлов/отложки/топиков).
+   Эмодзи папок диалогов (поле в окне создания, `InputDialogFilter.emoticon`).
+   Шаринг своего контакта (👤 «Мой контакт» в окне шаринга, номер из профиля).
    Админка участников: ⬆/⬇ в окне участников (назначение/разжалование, `channels.editAdmin` без права добавлять админов и анонимности).
    Слоумод чата (⏱ окно: пресеты 30с/1м/5м/1ч или ввод секунд, `channels.toggleSlowMode`).
    Пояснения викторин (💡 под вопросом, из результатов опроса).
@@ -105,7 +109,7 @@ cargo run
 # запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
 cargo run --features ort
 
-# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/медиапоиск/сторис-интерактив/модерация/подборки/админка/медиа/мок-контракты) + видео + чанки + multi-DC + бандл
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/медиапоиск/сторис-интерактив/модерация/подборки/админка/медиа/разметка/мок-контракты) + видео + чанки + multi-DC + бандл
 cargo test
 
 # проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
@@ -156,6 +160,8 @@ src/
                         + create_poll/send_geo/story_reply/story_views/stealth
                         + story_react/story_pin/story_viewers/media_search/username/avatar/delete_contact/blocked
                         + set_admin/set_slowmode/poll_solution
+                        + pin_dialog/check_username/send_album/archived_stories
+                        + silent/markdown/emoji/share_own
                         + pin_dialog/check_username/send_album/archived_stories
                         + share_contact/stop_poll/pinned_list/revoke_invite/participants/kick
                         + hide_stories/edit_story_caption
