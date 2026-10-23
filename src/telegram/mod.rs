@@ -466,5 +466,39 @@ pub trait TelegramService: Send + Sync {
     ) -> anyhow::Result<std::path::PathBuf> {
         anyhow::bail!("web preview download is not implemented for this backend")
     }
+    /// Создать опрос (quiz — с правильным ответом). Возвращает id сообщения.
+    async fn create_poll(
+        &self,
+        _chat_id: i64,
+        _question: &str,
+        _options: &[String],
+        _quiz: bool,
+        _correct: Option<usize>,
+        _anonymous: bool,
+        _multiple_choice: bool,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("poll creation is not implemented for this backend")
+    }
+    /// Отправить геопозицию (точку на карте).
+    async fn send_geo(&self, _chat_id: i64, _lat: f64, _long: f64) -> anyhow::Result<i32> {
+        anyhow::bail!("geo send is not implemented for this backend")
+    }
+    /// Ответить на сторис текстом (ответ уходит в чат владельца).
+    async fn story_reply(
+        &self,
+        _peer_id: i64,
+        _story_id: i32,
+        _text: &str,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("story replies are not implemented for this backend")
+    }
+    /// Просмотры своей сторис (count).
+    async fn story_views(&self, _story_id: i32) -> anyhow::Result<i32> {
+        anyhow::bail!("story views are not implemented for this backend")
+    }
+    /// Стелс-режим сторис (не палить просмотры): прошлое + будущее.
+    async fn enable_stealth(&self) -> anyhow::Result<()> {
+        anyhow::bail!("stealth mode is not implemented for this backend")
+    }
     fn is_connected(&self) -> bool;
 }

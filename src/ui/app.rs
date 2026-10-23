@@ -74,6 +74,16 @@ pub enum BgEvent {
     ChannelCreated { chat_id: i64 },
     /// Сторис удалены — перезагрузить ленту.
     StoriesDeleted,
+    /// Опрос создан.
+    PollCreated { chat_id: i64, message_id: i32 },
+    /// Геопозиция отправлена.
+    GeoSent { chat_id: i64, message_id: i32 },
+    /// Ответ на сторис отправлен.
+    StoryReplySent { story_id: i32, message_id: i32 },
+    /// Просмотры сторис загружены.
+    StoryViewsLoaded { story_id: i32, views: i32 },
+    /// Стелс-режим включён.
+    StealthEnabled,
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -275,6 +285,26 @@ pub struct TelecomfortApp {
     pub contact_add_first: String,
     pub contact_add_last: String,
 
+    // Пятый parity-пакет: опросы/гео/сторис-интерактив
+    /// Конструктор опроса: окно + поля.
+    pub poll_open: bool,
+    pub poll_question: String,
+    pub poll_options: String,
+    pub poll_quiz: bool,
+    pub poll_correct: String,
+    pub poll_anonymous: bool,
+    pub poll_multiple: bool,
+    /// Геопозиция: окно + поля.
+    pub geo_open: bool,
+    pub geo_lat: String,
+    pub geo_long: String,
+    /// Ответ на сторис: окно + текст + цель.
+    pub story_reply_open: bool,
+    pub story_reply_text: String,
+    pub story_reply_target: Option<(i64, i32)>,
+    /// Просмотры своих сторис (story_id → views).
+    pub story_views: HashMap<i32, i32>,
+
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
     pub onnx_enabled: bool,
@@ -395,6 +425,20 @@ impl TelecomfortApp {
             contact_add_phone: String::new(),
             contact_add_first: String::new(),
             contact_add_last: String::new(),
+            poll_open: false,
+            poll_question: String::new(),
+            poll_options: String::new(),
+            poll_quiz: false,
+            poll_correct: String::new(),
+            poll_anonymous: true,
+            poll_multiple: false,
+            geo_open: false,
+            geo_lat: String::new(),
+            geo_long: String::new(),
+            story_reply_open: false,
+            story_reply_text: String::new(),
+            story_reply_target: None,
+            story_views: HashMap::new(),
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -623,6 +667,31 @@ impl TelecomfortApp {
                 }
                 BgEvent::StoriesDeleted => {
                     self.refresh_stories();
+                }
+                BgEvent::PollCreated { chat_id, message_id } => {
+                    self.poll_open = false;
+                    self.poll_question.clear();
+                    self.poll_options.clear();
+                    self.poll_correct.clear();
+                    self.log(format!("опрос создан (msg {message_id})"));
+                    self.load_history(chat_id);
+                }
+                BgEvent::GeoSent { chat_id, message_id } => {
+                    self.geo_open = false;
+                    self.log(format!("геопозиция отправлена (msg {message_id})"));
+                    self.load_history(chat_id);
+                }
+                BgEvent::StoryReplySent { story_id, message_id } => {
+                    self.story_reply_open = false;
+                    self.story_reply_text.clear();
+                    self.story_reply_target = None;
+                    self.log(format!("ответ на сторис {story_id} отправлен (msg {message_id})"));
+                }
+                BgEvent::StoryViewsLoaded { story_id, views } => {
+                    self.story_views.insert(story_id, views);
+                }
+                BgEvent::StealthEnabled => {
+                    self.log("🥷 стелс-режим сторис включён".to_string());
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -1920,7 +1989,128 @@ impl TelecomfortApp {
         });
     }
 
-    /// Создать группу (megagroup) или канал (broadcast).
+    /// Создать опрос из конструктора (вопрос + строки вариантов).
+    pub fn do_create_poll(&mut self, chat_id: i64) {
+        let question = self.poll_question.trim().to_string();
+        let options: Vec<String> = self
+            .poll_options
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if question.is_empty() || options.len() < 2 {
+            self.log("опрос: нужны вопрос и ≥2 вариантов".to_string());
+            return;
+        }
+        let correct = if self.poll_quiz {
+            self.poll_correct.trim().parse::<usize>().ok().filter(|&i| i < options.len())
+        } else {
+            None
+        };
+        if self.poll_quiz && correct.is_none() {
+            self.log("викторина: укажите номер правильного варианта (с 0)".to_string());
+            return;
+        }
+        let (quiz, anon, mult) = (self.poll_quiz, self.poll_anonymous, self.poll_multiple);
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.create_poll(chat_id, &question, &options, quiz, correct, anon, mult).await {
+                Ok(message_id) => {
+                    let _ = tx.send(BgEvent::PollCreated { chat_id, message_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("опрос: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отправить геопозицию (точку) в текущий чат.
+    pub fn do_send_geo(&mut self, chat_id: i64) {
+        let parse = |s: &str| s.trim().replace(',', ".").parse::<f64>().ok();
+        let (lat, long) = (parse(&self.geo_lat), parse(&self.geo_long));
+        let (Some(lat), Some(long)) = (lat, long) else {
+            self.log("гео: введите широту и долготу числами".to_string());
+            return;
+        };
+        self.geo_open = false;
+        self.geo_lat.clear();
+        self.geo_long.clear();
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.send_geo(chat_id, lat, long).await {
+                Ok(message_id) => {
+                    let _ = tx.send(BgEvent::GeoSent { chat_id, message_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("гео: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Ответить на сторис текстом (ответ уходит в чат владельца).
+    pub fn do_story_reply(&mut self) {
+        let (Some((peer_id, story_id)), text) =
+            (self.story_reply_target, self.story_reply_text.trim().to_string())
+        else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.story_reply(peer_id, story_id, &text).await {
+                Ok(message_id) => {
+                    let _ = tx.send(BgEvent::StoryReplySent { story_id, message_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("ответ на сторис: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить просмотры своей сторис (👁 на карточке).
+    pub fn load_story_views(&mut self, story_id: i32) {
+        if self.story_views.contains_key(&story_id) {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.story_views(story_id).await {
+                Ok(views) => {
+                    let _ = tx.send(BgEvent::StoryViewsLoaded { story_id, views });
+                }
+                Err(e) => {
+                    tracing::debug!("story views failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Включить стелс-режим сторис (прошлые+будущие просмотры скрыты).
+    pub fn enable_stealth(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.enable_stealth().await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::StealthEnabled);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("стелс: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Создать канал (megagroup) или чат (broadcast).
     pub fn do_create_channel(&mut self) {
         let title = self.create_chat_title.trim().to_string();
         if title.is_empty() {

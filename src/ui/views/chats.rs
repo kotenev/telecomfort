@@ -682,7 +682,31 @@ fn bubble_content(
         if ui.small_button("➦").on_hover_text("Переслать в другой чат").clicked() {
             app.start_forward(chat_id, m.id);
         }
+        if ui.small_button("🔗").on_hover_text("Скопировать ссылку на сообщение").clicked() {
+            let link = message_link(app, chat_id, m.id);
+            ui.ctx().copy_text(link.clone());
+            app.log(format!("ссылка скопирована: {link}"));
+        }
     });
+}
+
+/// Ссылка на сообщение: t.me/username/id или t.me/c/internal/id.
+pub fn message_link(app: &TelecomfortApp, chat_id: i64, message_id: i32) -> String {
+    if let Some(u) = app
+        .dialogs
+        .iter()
+        .find(|d| d.id == chat_id)
+        .and_then(|d| d.username.clone())
+    {
+        return format!("https://t.me/{u}/{message_id}");
+    }
+    // Внутренний id канала: chat_id = -(10^12 + channel_id).
+    let internal = if chat_id < -1_000_000_000_000 {
+        (-chat_id - 1_000_000_000_000).to_string()
+    } else {
+        chat_id.abs().to_string()
+    };
+    format!("https://t.me/c/{internal}/{message_id}")
 }
 
 /// Карточка опроса: вопрос, варианты с голосами/выбором, тап — голосовать.
@@ -791,6 +815,20 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         {
             app.sched_open = true;
         }
+        if ui
+            .button("📊")
+            .on_hover_text("Создать опрос/викторину")
+            .clicked()
+        {
+            app.poll_open = true;
+        }
+        if ui
+            .button("📍")
+            .on_hover_text("Поделиться геопозицией")
+            .clicked()
+        {
+            app.geo_open = true;
+        }
         let send_label = if app.editing.is_some() { "💾 Сохранить" } else { "➤ Отправить" };
         if ui.button(send_label).clicked() || hotkey {
             // В топике — отправка в топик, иначе обычная.
@@ -830,6 +868,61 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
                     }
                 });
             });
+    }
+    // Конструктор опроса/викторины.
+    if app.poll_open {
+        egui::Window::new("📊 Новый опрос").collapsible(false).show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Вопрос:");
+                ui.text_edit_singleline(&mut app.poll_question);
+            });
+            ui.label("Варианты (по одному на строку, 2–10):");
+            ui.add(
+                egui::TextEdit::multiline(&mut app.poll_options)
+                    .hint_text("Вариант 1\nВариант 2\n…")
+                    .desired_rows(3),
+            );
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut app.poll_quiz, "Викторина");
+                ui.checkbox(&mut app.poll_anonymous, "Анонимный");
+                ui.checkbox(&mut app.poll_multiple, "Несколько ответов");
+            });
+            if app.poll_quiz {
+                ui.horizontal(|ui| {
+                    ui.label("Правильный № (с 0):");
+                    ui.text_edit_singleline(&mut app.poll_correct);
+                });
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Опубликовать").clicked() {
+                    app.do_create_poll(chat_id);
+                }
+                if ui.button("Отмена").clicked() {
+                    app.poll_open = false;
+                }
+            });
+        });
+    }
+    // Отправка геопозиции.
+    if app.geo_open {
+        egui::Window::new("📍 Геопозиция").collapsible(false).show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Широта:");
+                ui.text_edit_singleline(&mut app.geo_lat);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Долгота:");
+                ui.text_edit_singleline(&mut app.geo_long);
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Отправить точку").clicked() {
+                    app.do_send_geo(chat_id);
+                }
+                if ui.button("Отмена").clicked() {
+                    app.geo_open = false;
+                }
+            });
+        });
     }
     ui.label(
         egui::RichText::new("Ctrl+Enter — отправить · черновик сохраняется при переключении чата")
