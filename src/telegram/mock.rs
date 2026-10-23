@@ -327,6 +327,7 @@ impl TelegramService for MockTelegram {
         _chat_id: i64,
         text: &str,
         _reply_to: Option<i32>,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         // Детерминированный id из хэша текста, чтобы демо было стабильным.
         let mut h: i32 = 9000;
@@ -353,6 +354,7 @@ impl TelegramService for MockTelegram {
         _chat_id: i64,
         path: &std::path::Path,
         _caption: &str,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         let mut h: i32 = 9500;
         for b in path.as_os_str().as_encoded_bytes() {
@@ -367,6 +369,7 @@ impl TelegramService for MockTelegram {
         text: &str,
         _reply_to: Option<i32>,
         _at: std::time::SystemTime,
+        _silent: bool,
     ) -> anyhow::Result<i32> {
         let mut h: i32 = 9800;
         for b in text.bytes() {
@@ -478,7 +481,7 @@ impl TelegramService for MockTelegram {
         }])
     }
 
-    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, text: &str) -> anyhow::Result<i32> {
+    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, text: &str, _silent: bool) -> anyhow::Result<i32> {
         let mut h: i32 = 9600;
         for b in text.bytes() {
             h = h.wrapping_add(b as i32);
@@ -752,7 +755,7 @@ impl TelegramService for MockTelegram {
         Ok((7, vec!["Анна".into(), "Лектор".into()]))
     }
 
-    async fn create_folder(&self, _title: &str, _peer_ids: &[i64]) -> anyhow::Result<i32> {
+    async fn create_folder(&self, _title: &str, _peer_ids: &[i64], _emoticon: Option<String>) -> anyhow::Result<i32> {
         Ok(7)
     }
 
@@ -881,14 +884,14 @@ mod tests {
     #[tokio::test]
     async fn mock_messaging_contract() {
         let m = MockTelegram;
-        let id = m.send_text(-1001, "привет", None).await.expect("send");
+        let id = m.send_text(-1001, "привет", None, false).await.expect("send");
         assert!(id >= 9000);
-        let id2 = m.send_text(-1001, "ответ", Some(id)).await.expect("reply");
+        let id2 = m.send_text(-1001, "ответ", Some(id), true).await.expect("reply");
         assert_ne!(id, id2);
         m.edit_text(-1001, id, "привет!").await.expect("edit");
         m.delete_messages(-1001, &[id]).await.expect("delete");
         m.react(-1001, id, "👍").await.expect("react");
-        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption").await.expect("file");
+        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption", false).await.expect("file");
         assert!(fid >= 9500);
         m.mark_read(-1001).await.expect("mark_read");
         assert!(m.avatar_path(-1001).await.expect("avatar").is_none());
@@ -939,7 +942,7 @@ mod tests {
     async fn mock_management_contract_2() {
         let m = MockTelegram;
         let id = m
-            .send_scheduled(-1001, "потом", None, std::time::SystemTime::now())
+            .send_scheduled(-1001, "потом", None, std::time::SystemTime::now(), true)
             .await
             .expect("scheduled");
         assert!(id >= 9800);
@@ -968,7 +971,7 @@ mod tests {
         let th = m.topic_history(-1002, 2, 10).await.expect("topic history");
         assert_eq!(th.len(), 1);
         assert_eq!(th[0].topic_id, Some(2));
-        assert!(m.send_to_topic(-1002, 2, "в топик").await.expect("send topic") >= 9600);
+        assert!(m.send_to_topic(-1002, 2, "в топик", false).await.expect("send topic") >= 9600);
         let gs = m.global_search("лекция", 10).await.expect("global search");
         assert!(!gs.is_empty());
         let sch = m.scheduled_history(-1001).await.expect("scheduled");
@@ -996,6 +999,20 @@ mod tests {
         assert!(m.story_reply(2001, 7, "круто!").await.expect("story reply") >= 9200);
         assert_eq!(m.story_views(7).await.expect("story views"), 42);
         m.enable_stealth().await.expect("stealth");
+    }
+
+    /// Контракт одиннадцатого parity-пакета: markdown, тихая отправка, эмодзи папок.
+    #[tokio::test]
+    async fn mock_management_contract_9() {
+        let m = MockTelegram;
+        // Markdown не ломает контракт отправки; silent принимается.
+        let id = m.send_text(-1001, "**жирно** и *курсив* `код`", None, true).await.expect("md send");
+        assert!(id >= 9000);
+        m.send_scheduled(-1001, "потом *важно*", None, std::time::SystemTime::now(), false).await.expect("md scheduled");
+        m.send_file(-1001, std::path::Path::new("a.png"), "_подпись_", true).await.expect("md file");
+        m.send_to_topic(-1002, 2, "в топик **жирно**", false).await.expect("md topic");
+        let fid = m.create_folder("Работа", &[-1001], Some("💼".into())).await.expect("folder emoji");
+        assert!(fid >= 0);
     }
 
     /// Контракт седьмого parity-пакета: шаринг контактов, опросы-менеджмент,
@@ -1054,7 +1071,7 @@ mod tests {
         let (count, voters) = m.poll_voters(-1002, 103, None).await.expect("voters");
         assert_eq!(count, 7);
         assert_eq!(voters.len(), 2);
-        assert_eq!(m.create_folder("Работа", &[-1001]).await.expect("create folder"), 7);
+        assert_eq!(m.create_folder("Работа", &[-1001], None).await.expect("create folder"), 7);
         m.rename_folder(7, "Офис").await.expect("rename");
         m.delete_folder(7).await.expect("delete folder");
     }

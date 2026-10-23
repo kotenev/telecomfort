@@ -578,14 +578,18 @@ impl TelegramService for GrammersBackend {
         })
     }
 
-    async fn send_text(&self, chat_id: i64, text: &str, reply_to: Option<i32>) -> Result<i32> {
+    async fn send_text(&self, chat_id: i64, text: &str, reply_to: Option<i32>, silent: bool) -> Result<i32> {
         use grammers_client::message::InputMessage;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
         let sent = self
             .client
             .send_message(
                 pref,
-                InputMessage::new().text(text).reply_to(reply_to).clear_draft(true),
+                InputMessage::new()
+                    .markdown(text)
+                    .reply_to(reply_to)
+                    .silent(silent)
+                    .clear_draft(true),
             )
             .await
             .context("send_message failed")?;
@@ -596,7 +600,7 @@ impl TelegramService for GrammersBackend {
         use grammers_client::message::InputMessage;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
         self.client
-            .edit_message(pref, message_id, InputMessage::new().text(text))
+            .edit_message(pref, message_id, InputMessage::new().markdown(text))
             .await
             .context("edit_message failed")?;
         Ok(())
@@ -636,7 +640,7 @@ impl TelegramService for GrammersBackend {
         Ok(())
     }
 
-    async fn send_file(&self, chat_id: i64, path: &Path, caption: &str) -> Result<i32> {
+    async fn send_file(&self, chat_id: i64, path: &Path, caption: &str, silent: bool) -> Result<i32> {
         use grammers_client::message::InputMessage;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
         let uploaded = self.client.upload_file(path).await.context("upload_file failed")?;
@@ -646,9 +650,9 @@ impl TelegramService for GrammersBackend {
             .map(|e| matches!(e.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
             .unwrap_or(false);
         let input = if is_photo {
-            InputMessage::new().text(caption).photo(uploaded).clear_draft(true)
+            InputMessage::new().markdown(caption).photo(uploaded).silent(silent).clear_draft(true)
         } else {
-            InputMessage::new().text(caption).document(uploaded).clear_draft(true)
+            InputMessage::new().markdown(caption).document(uploaded).silent(silent).clear_draft(true)
         };
         let sent = self.client.send_message(pref, input).await.context("send file failed")?;
         Ok(sent.id())
@@ -660,6 +664,7 @@ impl TelegramService for GrammersBackend {
         text: &str,
         reply_to: Option<i32>,
         at: std::time::SystemTime,
+        silent: bool,
     ) -> Result<i32> {
         use grammers_client::message::InputMessage;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
@@ -668,8 +673,9 @@ impl TelegramService for GrammersBackend {
             .send_message(
                 pref,
                 InputMessage::new()
-                    .text(text)
+                    .markdown(text)
                     .reply_to(reply_to)
+                    .silent(silent)
                     .schedule_date(Some(at))
                     .clear_draft(true),
             )
@@ -1058,9 +1064,11 @@ impl TelegramService for GrammersBackend {
             .collect())
     }
 
-    async fn send_to_topic(&self, chat_id: i64, topic_id: i32, text: &str) -> Result<i32> {
+    async fn send_to_topic(&self, chat_id: i64, topic_id: i32, text: &str, silent: bool) -> Result<i32> {
         use grammers_client::tl as tl;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let (text, entities) = grammers_client::parsers::parse_markdown_message(text);
+        let entities = if entities.is_empty() { None } else { Some(entities) };
         let random_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| (d.as_nanos() & 0x7FFF_FFFF_FFFF_FFFF) as i64)
@@ -1070,7 +1078,7 @@ impl TelegramService for GrammersBackend {
             .client
             .invoke(&tl::functions::messages::SendMessage {
                 no_webpage: true,
-                silent: false,
+                silent,
                 background: false,
                 clear_draft: true,
                 noforwards: false,
@@ -1090,10 +1098,10 @@ impl TelegramService for GrammersBackend {
                         poll_option: None,
                     },
                 )),
-                message: text.to_string(),
+                message: text,
                 random_id,
                 reply_markup: None,
-                entities: None,
+                entities,
                 schedule_date: None,
                 schedule_repeat_period: None,
                 send_as: None,
@@ -2083,7 +2091,7 @@ impl TelegramService for GrammersBackend {
         Ok((list.count, voters))
     }
 
-    async fn create_folder(&self, title: &str, peer_ids: &[i64]) -> Result<i32> {
+    async fn create_folder(&self, title: &str, peer_ids: &[i64], emoticon: Option<String>) -> Result<i32> {
         use grammers_client::tl as tl;
         let title = title.trim();
         if title.is_empty() {
@@ -2120,7 +2128,7 @@ impl TelegramService for GrammersBackend {
                     title_noanimate: false,
                     id: new_id,
                     title: txt,
-                    emoticon: None,
+                    emoticon,
                     color: None,
                     pinned_peers: vec![],
                     include_peers: inputs,

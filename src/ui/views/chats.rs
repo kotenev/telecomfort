@@ -102,6 +102,8 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     ui.horizontal(|ui| {
                         ui.label("Название:");
                         ui.text_edit_singleline(&mut app.folder_create_title);
+                        ui.label("Эмодзи:");
+                        ui.text_edit_singleline(&mut app.folder_create_emoji);
                     });
                     ui.label("Диалоги в папке:");
                     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
@@ -558,6 +560,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             // Окно шаринга контакта: выбор из телефонной книги.
             if app.contact_share_pick.is_some() {
                 let contacts = app.contacts.clone();
+                ui.horizontal(|ui| {
+                    if ui.small_button("👤 Мой контакт").on_hover_text("Поделиться своим номером").clicked() {
+                        if let Some(cid) = app.contact_share_pick {
+                            app.share_own_contact(cid);
+                        }
+                    }
+                });
                 if contacts.is_empty() {
                     app.load_contacts();
                 }
@@ -1066,6 +1075,7 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         {
             app.geo_open = true;
         }
+        ui.checkbox(&mut app.silent_send, "🔕").on_hover_text("Тихая отправка (без звука у получателя)");
         let send_label = if app.editing.is_some() { "💾 Сохранить" } else { "➤ Отправить" };
         if ui.button(send_label).clicked() || hotkey {
             // В топике — отправка в топик, иначе обычная.
@@ -1162,7 +1172,7 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         });
     }
     ui.label(
-        egui::RichText::new("Ctrl+Enter — отправить · черновик сохраняется при переключении чата")
+        egui::RichText::new("Ctrl+Enter — отправить · черновик сохраняется при переключении чата · поддерживается **жирный** *курсив* `код`")
             .small()
             .weak(),
     );
