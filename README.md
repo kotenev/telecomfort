@@ -35,6 +35,10 @@
    (`messages.getPeerDialogs` батчами), черновики при переключении диалогов,
    поиск по загруженной истории, пузыри (исходящие подсвечены), отправитель/время/«изм.»,
    аватары (`photos.getUserPhotos` → кэш `~/.cache/telecomfort/avatars`, группам — идентиконы).
+   Управление чатами: закрепы (баннер + 📌/✕), мьют/анмьют, архив, папки-серверные вкладки.
+   Опросы (карточки + голосование, quiz/закрытые), пересылка в другой чат (➦ + выбор цели),
+   контакты (экран 👥 + переход в чат), гео/контакты в пузырях, просмотры/пересылки 👁/➦,
+   голосовые и аудио — встроенный плеер (rodio, кэш `~/.cache/telecomfort/audio`).
    В демо всё работает на моке (синтетические id 9000+).
 
 Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
@@ -52,7 +56,7 @@ cargo run
 # запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
 cargo run --features ort
 
-# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/identicon/мок-контракт) + видео + чанки + multi-DC + бандл
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы/пересылка/контакты/плеер/identicon/мок-контракты) + видео + чанки + multi-DC + бандл
 cargo test
 
 # проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
@@ -96,6 +100,7 @@ src/
     mod.rs           — ChatInfo/MessageInfo/StoryInfo/AccountInfo, трейт TelegramService (+download_story_media, me)
     mock.rs          — офлайн-демо: 2 закрытые группы, 6 сторис, PNG-превью 270x480
     backend_grammers.rs — live MTProto: dialogs/history/getAllStories/getStoriesByID/download_media
+                        + send/edit/delete/react/read/file/avatar/pin/vote/forward/mute/archive/filters/contacts
    media/mod.rs       — AutoDownloader: matches_rules/should_download/download_many → MTProto (чанки+resume+прогресс) → sha256+pHash → Yandex → Calibre (+прогресс, семафор ×4)
    media/mtproto.rs     — Multi-DC докачка: chunk_ranges/resume_start/.part + DcAffinity + auth-перенос + upload.getFile precise ×N + writer seek + прогресс
     media/h264.rs        — Встроенный H.264-декодер первого кадра (чистый Rust, rusty_h264): avcC+mdat → Annex B → YUV→RGB
@@ -107,7 +112,7 @@ src/
     calibre.rs       — calibredb add + list (дедуп по title/author)
   ui/
     app.rs           — eframe::App, BgEvent-мост, кэш текстур, фоновый тикер, watermark-синк
-    views/{chats,stories,downloads,settings,login}.rs
+    views/{chats,stories,downloads,settings,login,contacts}.rs
   utils.rs           — human_size, normalize_title, sha256, is_ebook
 ```
 
@@ -247,11 +252,24 @@ Execution providers: `auto`/`cpu` всегда; `coreml`/`cuda`/`tensorrt`/`open
   (стабильный кэш, сброс — удалением файла); группам/каналам и чатам без фото —
   детерминированные идентиконы (цвет+паттерн от id/title, `ui::app::identicon`).
 - Пузыри: исходящие подсвечены темозависимым акцентом, входящие — обычным group;
-  отправитель (группы), локальное время (сегодня — ЧЧ:ММ, старше — ДД.ММ), метка «изм.».
+  отправитель (группы), локальное время (сегодня — ЧЧ:ММ, старше — ДД.ММ), метка «изм.»;
+  просмотры 👁 (каналы) и счётчик пересылок ➦; гео — координатами, контакты — карточкой.
 - Поиск по загруженной истории (текст + имя файла), фильтр диалога — по месту.
-- Вне скоупа сознательно: звонки (VoIP), секретные чаты (E2E), боты/inline-кнопки,
-  опросы, папки диалогов, закрепы/мьют/архив, стикер-сеты — требуют updates-потока
-  или отдельных подсистем; интерфейс (`TelegramService`) под них расширяем.
+- Закрепы: баннер под шапкой (текст закрепа + ✕), кнопка 📌 на сообщении
+  (`messages.updatePinnedMessage`, `search` с фильтром pinned для чтения).
+- Мьют (🔇/🔈, `account.updateNotifySettings`, иконка в списке) и архив (📦, папка 1/0,
+  отдельный вид «📦 Архив» — как в официальном клиенте).
+- Папки сервера (`messages.getDialogFilters`): вкладки Все/…/Архив, фильтр по пирам папки.
+- Опросы: карточка (вопрос, варианты с голосами и ✓), тап — голос (`messages.sendVote`);
+  закрытые — только итоги, викторины помечены.
+- Пересылка: ➦ на сообщении → окно выбора цели → `messages.forwardMessages` (revoke-логика сервера).
+- Контакты: экран 👥 (имя/телефон/@username, инициалы), «💬» — переход в чат
+  (матч по username, иначе по имени).
+- Голосовые/аудио: кнопка ▶/⏹ в пузыре, скачивание в аудиокэш, воспроизведение rodio
+  (CoreAudio/ALSA/WASAPI), автостоп в конце; повторный тап — стоп.
+- Стикеры webp и гифки: `image` с фичами `webp`/`gif` (чистый Rust) — открываются везде.
+- Вне скоупа сознательно: звонки (VoIP), секретные чаты (E2E), боты/inline-кнопки —
+  требуют отдельных подсистем; интерфейс (`TelegramService`) под них расширяем.
 
 ### Десктоп (macOS)
 - Иконка окна/дока рисуется в коде (`main.rs::app_icon`, 128x128, без assets),

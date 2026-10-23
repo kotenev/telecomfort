@@ -44,7 +44,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 regex = "1"
-image = { version = "0.25", features = ["png", "jpeg"] }
+image = { version = "0.25", features = ["png", "jpeg", "webp", "gif"] }
+# webp/gif — чистый Rust: статические стикеры и гифки открываются везде
+# (превью в группах, аватары, постеры), без внешних кодеков.
 sha2 = "0.10"
 hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -54,6 +56,8 @@ futures = "0.3"
 url = "2"
 mime_guess = "2"
 rfd = "0.15"
+# rodio — воспроизведение голосовых/аудио (чистый Rust поверх CoreAudio/ALSA/WASAPI).
+rodio = "0.23"
 open = "5"
 base64 = "0.22"
 notify-rust = "4"

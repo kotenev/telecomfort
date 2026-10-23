@@ -19,10 +19,57 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     app.refresh_dialogs();
                 }
             });
+            // Папки сервера + Архив (как вкладки в официальном клиенте).
+            ui.horizontal_wrapped(|ui| {
+                let all_sel = app.folder_sel.is_none();
+                if ui.selectable_label(all_sel, "Все").clicked() {
+                    app.folder_sel = None;
+                }
+                for f in app.folders.clone() {
+                    let sel = app.folder_sel == Some(f.id);
+                    if ui.selectable_label(sel, &f.title).clicked() {
+                        app.folder_sel = Some(f.id);
+                    }
+                }
+                let arch_sel = app.folder_sel == Some(-1);
+                if ui.selectable_label(arch_sel, "📦 Архив").clicked() {
+                    app.folder_sel = Some(-1);
+                }
+            });
             ui.separator();
             let ctx = ui.ctx().clone();
             egui::ScrollArea::vertical().show(ui, |ui| {
+                let folder_sel = app.folder_sel;
+                let peer_set: Option<std::collections::HashSet<i64>> = folder_sel
+                    .and_then(|fid| {
+                        if fid == -1 {
+                            None
+                        } else {
+                            app.folders.iter().find(|f| f.id == fid).map(|f| {
+                                f.peer_ids.iter().copied().collect()
+                            })
+                        }
+                    });
+                let mut shown = 0;
                 for d in app.dialogs.clone() {
+                    // Фильтр вида: Все — без архива; Архив — только архив; папка — её пиры.
+                    if let Some(fid) = folder_sel {
+                        if fid == -1 {
+                            if !d.archived {
+                                continue;
+                            }
+                        } else if d.archived {
+                            continue;
+                        }
+                    } else if d.archived {
+                        continue;
+                    }
+                    if let Some(set) = &peer_set {
+                        if !set.contains(&d.id) {
+                            continue;
+                        }
+                    }
+                    shown += 1;
                     let sel = app.selected_chat == Some(d.id);
                     ui.horizontal(|ui| {
                         let tex = app.ensure_avatar(&ctx, d.id, &d.title);
@@ -38,6 +85,16 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                             .small()
                                             .strong()
                                             .color(egui::Color32::from_rgb(220, 70, 60)),
+                                    );
+                                }
+                                if d.muted {
+                                    ui.label(
+                                        egui::RichText::new("🔇").small().weak(),
+                                    );
+                                }
+                                if d.archived {
+                                    ui.label(
+                                        egui::RichText::new("📦").small().weak(),
                                     );
                                 }
                             });
@@ -58,18 +115,24 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 }
                 if app.dialogs.is_empty() {
                     ui.label("пока пусто — нажмите ↻");
+                } else if shown == 0 {
+                    ui.label(
+                        egui::RichText::new("в этом виде пусто — смените папку/фильтр")
+                            .small()
+                            .weak(),
+                    );
                 }
             });
         });
 
     egui::CentralPanel::default().show(ui, |ui| {
         if let Some(chat_id) = app.selected_chat {
-            let (title, username, protected) = app
+            let (title, username, protected, muted, archived) = app
                 .dialogs
                 .iter()
                 .find(|d| d.id == chat_id)
-                .map(|d| (d.title.clone(), d.username.clone(), d.protected))
-                .unwrap_or_else(|| (format!("chat {chat_id}"), None, false));
+                .map(|d| (d.title.clone(), d.username.clone(), d.protected, d.muted, d.archived))
+                .unwrap_or_else(|| (format!("chat {chat_id}"), None, false, false, false));
             // Шапка: аватар + название + username.
             ui.horizontal(|ui| {
                 let ctx = ui.ctx().clone();
@@ -103,6 +166,15 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("↻ Обновить историю").clicked() {
                     app.load_history(chat_id);
                 }
+                // Управление чатом как в официальном клиенте.
+                let mute_label = if muted { "🔈 Разглушить" } else { "🔇 Мьют" };
+                if ui.small_button(mute_label).clicked() {
+                    app.toggle_mute(chat_id);
+                }
+                let arch_label = if archived { "📤 Из архива" } else { "📦 В архив" };
+                if ui.small_button(arch_label).clicked() {
+                    app.toggle_archive(chat_id);
+                }
                 if ui
                     .small_button("+ Правило для этого чата")
                     .on_hover_text("Добавить per-chat правило автозагрузки")
@@ -111,6 +183,22 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     ensure_rule_for_chat(app, &title, chat_id);
                 }
             });
+            // Закреплённое сообщение — баннер под шапкой.
+            if let Some(pinned) = app.pinned.get(&chat_id).cloned() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "📌 {}",
+                            crate::utils::truncate(&pinned.text, 90)
+                        ))
+                        .small()
+                        .strong(),
+                    );
+                    if ui.small_button("✕").on_hover_text("Открепить").clicked() {
+                        app.toggle_pin(chat_id, pinned.id, true);
+                    }
+                });
+            }
             // Подсказка: какое правило сработает
             ui.label(
                 egui::RichText::new(format!(
@@ -154,6 +242,29 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 }
             });
             ui.separator();
+            // Выбор цели пересылки — окно со списком диалогов.
+            if app.forward_pick.is_some() {
+                let dialogs = app.dialogs.clone();
+                egui::Window::new("➦ Куда переслать?")
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(
+                            egui::RichText::new("Выберите целевой чат:")
+                                .small()
+                                .weak(),
+                        );
+                        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                            for d in dialogs {
+                                if ui.selectable_label(false, &d.title).clicked() {
+                                    app.do_forward(d.id);
+                                }
+                            }
+                        });
+                        if ui.small_button("Отмена").clicked() {
+                            app.forward_pick = None;
+                        }
+                    });
+            }
             composer(app, ui, chat_id);
         } else {
             ui.centered_and_justified(|ui| {
@@ -224,6 +335,14 @@ fn bubble_content(
                 ui.label(egui::RichText::new(format!("⭐ {n}")).small());
             }
         }
+        if let Some(v) = m.views {
+            ui.label(egui::RichText::new(format!("👁 {v}")).small().weak());
+        }
+        if let Some(f) = m.forwards {
+            if f > 0 {
+                ui.label(egui::RichText::new(format!("➦ {f}")).small().weak());
+            }
+        }
     });
     if let Some(f) = &m.file_name {
         ui.horizontal(|ui| {
@@ -255,9 +374,44 @@ fn bubble_content(
     if !m.text.is_empty() {
         ui.label(crate::utils::truncate(&m.text, 2000));
     }
-    // Медиа-воронка Telecomfort.
+    // Гео и контакты — display-only строки.
+    if let Some((lat, long)) = m.geo {
+        ui.label(
+            egui::RichText::new(format!("🌍 {lat:.5}, {long:.5}"))
+                .small()
+                .weak(),
+        );
+    }
+    if let Some((name, phone)) = &m.contact {
+        ui.label(
+            egui::RichText::new(format!("👤 {name} · {phone}"))
+                .small()
+                .strong(),
+        );
+    }
+    // Опрос: вопрос + варианты с голосами, тап — голосовать.
+    if let Some(poll) = &m.poll {
+        poll_card(app, ui, chat_id, m.id, poll);
+    }
+    // Медиа-воронка Telecomfort + плеер голосовых.
     if m.has_media {
         ui.horizontal(|ui| {
+            // Голосовые/аудио — встроенный плеер (rodio), без сохранения в Загрузки.
+            if m.media_kind.as_deref() == Some("audio") {
+                let playing = app
+                    .playback
+                    .as_ref()
+                    .map(|p| p.chat_id == chat_id && p.message_id == m.id)
+                    .unwrap_or(false);
+                let label = if playing { "⏹" } else { "▶" };
+                if ui
+                    .small_button(label)
+                    .on_hover_text(if playing { "Остановить" } else { "Слушать" })
+                    .clicked()
+                {
+                    app.play_audio(chat_id, m);
+                }
+            }
             if ui.small_button("⬇ Скачать (обход защиты)").clicked() {
                 let title = app
                     .dialogs
@@ -287,6 +441,67 @@ fn bubble_content(
                 app.delete_msg(chat_id, m.id);
             }
         }
+        if ui.small_button("📌").on_hover_text("Закрепить в чате").clicked() {
+            app.toggle_pin(chat_id, m.id, false);
+        }
+        if ui.small_button("➦").on_hover_text("Переслать в другой чат").clicked() {
+            app.start_forward(chat_id, m.id);
+        }
+    });
+}
+
+/// Карточка опроса: вопрос, варианты с голосами/выбором, тап — голосовать.
+/// Закрытые/quiz помечаются; multiple-choice — по одному варианту за раз.
+fn poll_card(
+    app: &mut TelecomfortApp,
+    ui: &mut egui::Ui,
+    chat_id: i64,
+    message_id: i32,
+    poll: &crate::telegram::PollInfo,
+) {
+    ui.group(|ui| {
+        ui.vertical(|ui| {
+            let mut title = format!("📊 {}", poll.question);
+            if poll.quiz {
+                title.push_str(" (викторина)");
+            }
+            if poll.closed {
+                title.push_str(" · закрыт");
+            }
+            ui.label(egui::RichText::new(title).strong());
+            if let Some(total) = poll.total_voters {
+                ui.label(
+                    egui::RichText::new(format!("голосов: {total}"))
+                        .small()
+                        .weak(),
+                );
+            }
+            if !poll.closed {
+                for a in &poll.answers {
+                    let mut label = a.text.clone();
+                    if let Some(v) = a.votes {
+                        label.push_str(&format!(" — {v}"));
+                    }
+                    if a.chosen {
+                        label.push_str(" ✓");
+                    }
+                    if ui.small_button(label).clicked() {
+                        app.vote_poll(chat_id, message_id, a.option.clone());
+                    }
+                }
+            } else {
+                for a in &poll.answers {
+                    let mut label = format!("· {}", a.text);
+                    if let Some(v) = a.votes {
+                        label.push_str(&format!(" — {v}"));
+                    }
+                    if a.chosen {
+                        label.push_str(" ✓");
+                    }
+                    ui.label(egui::RichText::new(label).small());
+                }
+            }
+        });
     });
 }
 

@@ -110,14 +110,19 @@ impl GrammersBackend {
         Ok(Some(pid.to_ambient_ref()))
     }
 
-    /// Карта bot_api_id → unread_count через `messages.getPeerDialogs`
+    /// Карта bot_api_id → (unread, muted, archived) через `messages.getPeerDialogs`
     /// (батчами по 100 — серверный лимит на размер запроса).
     /// Best-effort: при ошибках возвращает частичную карту.
     async fn peer_unread_map(
         &self,
         prefs: &[(i64, grammers_session::types::PeerRef)],
-    ) -> Vec<(i64, i32)> {
+    ) -> Vec<(i64, i32, bool, bool)> {
         use grammers_client::tl as tl;
+        // mute_until сравниваем с текущим unix-временем.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i32)
+            .unwrap_or(0);
         let mut out = Vec::new();
         for chunk in prefs.chunks(100) {
             let inputs: Vec<tl::enums::InputDialogPeer> = chunk
@@ -147,7 +152,14 @@ impl GrammersBackend {
                     tl::enums::Dialog::Dialog(d) => d,
                     _ => continue,
                 };
-                out.push((peer_to_bot_id(&inner.peer), inner.unread_count));
+                let muted = match &inner.notify_settings {
+                    tl::enums::PeerNotifySettings::Settings(s) => {
+                        s.mute_until.map(|t| t > now).unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                let archived = inner.folder_id == Some(1);
+                out.push((peer_to_bot_id(&inner.peer), inner.unread_count, muted, archived));
             }
         }
         out
@@ -172,6 +184,8 @@ impl TelegramService for GrammersBackend {
                 username,
                 protected: Self::peer_protected(peer),
                 unread: 0,
+                muted: false,
+                archived: false,
             });
             if let Some(pref) = self.resolve_ref(bot_id).await? {
                 prefs.push((bot_id, pref));
@@ -180,11 +194,13 @@ impl TelegramService for GrammersBackend {
                 break;
             }
         }
-        // Непрочитанные одним батчем (iter_dialogs счётчиков не даёт).
-        // Best-effort: при ошибке остаются нули.
-        for (bot_id, unread) in self.peer_unread_map(&prefs).await {
+        // Непрочитанные/мьют/архив одним батчем (iter_dialogs счётчиков не даёт).
+        // Best-effort: при ошибке остаются нули/false.
+        for (bot_id, unread, muted, archived) in self.peer_unread_map(&prefs).await {
             if let Some(c) = out.iter_mut().find(|c| c.id == bot_id) {
                 c.unread = unread;
+                c.muted = muted;
+                c.archived = archived;
             }
         }
         Ok(out)
@@ -195,64 +211,195 @@ impl TelegramService for GrammersBackend {
         let mut iter = self.client.iter_messages(pref).limit(limit.min(200));
         let mut out = Vec::new();
         while let Some(m) = iter.next().await? {
-            let (kind, name, size) = match m.media() {
-                None => (None, None, None),
-                Some(media) => {
-                    use grammers_client::media::Media as M;
-                    match &media {
-                        M::Photo(p) => (
-                            Some("photo".to_string()),
-                            Some(format!("photo_{}.jpg", m.id())),
-                            p.size().map(|s| s as i64),
-                        ),
-                        M::Document(d) => {
-                            let fname = d.name().map(|s| s.to_string());
-                            let mime = d.mime_type().unwrap_or("");
-                            let kind = if mime.starts_with("video") {
-                                "video"
-                            } else if mime.starts_with("audio") {
-                                "audio"
-                            } else {
-                                "document"
-                            };
-                            (
-                                Some(kind.to_string()),
-                                fname.or_else(|| Some(format!("doc_{}", m.id()))),
-                                d.size().map(|s| s as i64),
-                            )
-                        }
-                        M::Sticker(_) => (
-                            Some("sticker".to_string()),
-                            Some(format!("sticker_{}.webp", m.id())),
-                            media.size().map(|s| s as i64),
-                        ),
-                        _ => (
-                            Some("media".to_string()),
-                            Some(format!("media_{}", m.id())),
-                            media.size().map(|s| s as i64),
-                        ),
-                    }
-                }
-            };
-            out.push(MessageInfo {
-                id: m.id(),
-                chat_id,
-                text: m.text().to_string(),
-                date: m.date().as_second(),
-                has_media: kind.is_some(),
-                media_kind: kind,
-                file_name: name,
-                file_size: size,
-                outgoing: m.outgoing(),
-                // Имя отправителя — для групп/каналов (у своих тоже есть, UI решает).
-                sender: m.sender().and_then(|p| p.name().map(|s| s.to_string())),
-                edited: m.edit_date().is_some(),
-                reactions: m.reaction_count(),
-            });
+            out.push(message_to_info(&m, chat_id));
             if out.len() >= limit {
                 break;
             }
         }
+        Ok(out)
+    }
+
+    async fn pinned_message(&self, chat_id: i64) -> Result<Option<MessageInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let mut iter = self
+            .client
+            .search_messages(pref)
+            .filter(tl::enums::MessagesFilter::InputMessagesFilterPinned)
+            .limit(1);
+        let msg = match iter.next().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!("pinned search failed: {e}");
+                return Ok(None);
+            }
+        };
+        Ok(msg.map(|m| message_to_info(&m, chat_id)))
+    }
+
+    async fn pin_message(&self, chat_id: i64, message_id: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                silent: true,
+                unpin: false,
+                pm_oneside: false,
+                peer: (&pref).into(),
+                id: message_id,
+            })
+            .await
+            .context("pin failed (no rights?)")?;
+        Ok(())
+    }
+
+    async fn unpin_message(&self, chat_id: i64, message_id: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                silent: true,
+                unpin: true,
+                pm_oneside: false,
+                peer: (&pref).into(),
+                id: message_id,
+            })
+            .await
+            .context("unpin failed")?;
+        Ok(())
+    }
+
+    async fn vote(&self, chat_id: i64, message_id: i32, option: Vec<u8>) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::SendVote {
+                peer: (&pref).into(),
+                msg_id: message_id,
+                options: vec![option],
+            })
+            .await
+            .context("vote failed")?;
+        Ok(())
+    }
+
+    async fn forward(&self, from_chat: i64, message_ids: &[i32], to_chat: i64) -> Result<usize> {
+        let from = self.resolve_ref(from_chat).await?.context("source peer not found")?;
+        let to = self.resolve_ref(to_chat).await?.context("target peer not found")?;
+        let sent = self
+            .client
+            .forward_messages(to, message_ids, from)
+            .await
+            .context("forward failed")?;
+        Ok(sent.into_iter().flatten().count())
+    }
+
+    async fn mute(&self, chat_id: i64, muted: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // mute_until = i32::MAX (навсегда) либо 0 (снять). Остальные поля — None (не трогаем).
+        let settings = tl::types::InputPeerNotifySettings {
+            show_previews: None,
+            silent: None,
+            mute_until: Some(if muted { i32::MAX } else { 0 }),
+            sound: None,
+            stories_muted: None,
+            stories_hide_sender: None,
+            stories_sound: None,
+        };
+        self.client
+            .invoke(&tl::functions::account::UpdateNotifySettings {
+                peer: tl::enums::InputNotifyPeer::Peer(tl::types::InputNotifyPeer {
+                    peer: (&pref).into(),
+                }),
+                settings: tl::enums::InputPeerNotifySettings::Settings(settings),
+            })
+            .await
+            .context("mute failed")?;
+        Ok(())
+    }
+
+    async fn archive(&self, chat_id: i64, archived: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::folders::EditPeerFolders {
+                folder_peers: vec![tl::enums::InputFolderPeer::Peer(tl::types::InputFolderPeer {
+                    peer: (&pref).into(),
+                    folder_id: if archived { 1 } else { 0 },
+                })],
+            })
+            .await
+            .context("archive failed")?;
+        Ok(())
+    }
+
+    async fn dialog_filters(&self) -> Result<Vec<super::DialogFilterInfo>> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetDialogFilters {})
+            .await
+            .context("getDialogFilters failed")?;
+        let filters = match res {
+            tl::enums::messages::DialogFilters::Filters(f) => f.filters,
+        };
+        let mut out = Vec::new();
+        for f in filters {
+            let df = match f {
+                tl::enums::DialogFilter::Filter(df) => df,
+                _ => continue,
+            };
+            let title = match &df.title {
+                tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+            };
+            let mut peers: Vec<i64> = df
+                .pinned_peers
+                .iter()
+                .chain(df.include_peers.iter())
+                .filter_map(input_peer_to_bot_id)
+                .collect();
+            peers.sort_unstable();
+            peers.dedup();
+            if title.is_empty() || peers.is_empty() {
+                continue;
+            }
+            out.push(super::DialogFilterInfo { id: df.id, title, peer_ids: peers });
+        }
+        Ok(out)
+    }
+
+    async fn contacts(&self) -> Result<Vec<super::ContactInfo>> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::contacts::GetContacts { hash: 0 })
+            .await
+            .context("getContacts failed")?;
+        let users = match res {
+            tl::enums::contacts::Contacts::Contacts(c) => c.users,
+            _ => return Ok(vec![]),
+        };
+        let mut out = Vec::new();
+        for u in users {
+            let user = match u {
+                tl::enums::User::User(u) => u,
+                _ => continue,
+            };
+            let name = match (&user.first_name, &user.last_name) {
+                (Some(f), Some(l)) => format!("{f} {l}"),
+                (Some(f), None) => f.clone(),
+                (None, Some(l)) => l.clone(),
+                (None, None) => user.username.clone().unwrap_or_else(|| format!("id{}", user.id)),
+            };
+            out.push(super::ContactInfo {
+                name,
+                phone: user.phone.clone().unwrap_or_default(),
+                username: user.username.clone(),
+                user_id: user.id,
+            });
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         Ok(out)
     }
 
@@ -625,6 +772,138 @@ fn peer_to_bot_id(peer: &grammers_client::tl::enums::Peer) -> i64 {
         P::User(u) => u.user_id,
         P::Chat(c) => -c.chat_id,
         P::Channel(c) => -(1_000_000_000_000 + c.channel_id),
+    }
+}
+
+/// bot_api_id из InputPeer (для папок диалогов): та же схема, что peer_to_bot_id.
+fn input_peer_to_bot_id(peer: &grammers_client::tl::enums::InputPeer) -> Option<i64> {
+    use grammers_client::tl as tl;
+    match peer {
+        tl::enums::InputPeer::Empty | tl::enums::InputPeer::PeerSelf => None,
+        tl::enums::InputPeer::User(u) => Some(u.user_id),
+        tl::enums::InputPeer::Chat(c) => Some(-c.chat_id),
+        tl::enums::InputPeer::Channel(c) => Some(-(1_000_000_000_000 + c.channel_id)),
+        tl::enums::InputPeer::UserFromMessage(u) => Some(u.user_id),
+        tl::enums::InputPeer::ChannelFromMessage(c) => {
+            Some(-(1_000_000_000_000 + c.channel_id))
+        }
+    }
+}
+
+fn text_of(t: &grammers_client::tl::enums::TextWithEntities) -> String {
+    match t {
+        grammers_client::tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+    }
+}
+
+/// grammers Message → MessageInfo (единая точка: history, pinned).
+fn message_to_info(m: &grammers_client::message::Message, chat_id: i64) -> MessageInfo {
+    use grammers_client::media::Media as M;
+    let mut kind: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut size: Option<i64> = None;
+    let mut poll: Option<super::PollInfo> = None;
+    let mut geo: Option<(f64, f64)> = None;
+    let mut contact: Option<(String, String)> = None;
+    match m.media() {
+        None => {}
+        Some(media) => match &media {
+            M::Photo(p) => {
+                kind = Some("photo".into());
+                name = Some(format!("photo_{}.jpg", m.id()));
+                size = p.size().map(|s| s as i64);
+            }
+            M::Document(d) => {
+                let fname = d.name().map(|s| s.to_string());
+                let mime = d.mime_type().unwrap_or("");
+                let k = if mime.starts_with("video") {
+                    "video"
+                } else if mime.starts_with("audio") {
+                    "audio"
+                } else {
+                    "document"
+                };
+                kind = Some(k.into());
+                name = fname.or_else(|| Some(format!("doc_{}", m.id())));
+                size = d.size().map(|s| s as i64);
+            }
+            M::Sticker(_) => {
+                kind = Some("sticker".into());
+                name = Some(format!("sticker_{}.webp", m.id()));
+                size = media.size().map(|s| s as i64);
+            }
+            M::Poll(p) => {
+                // Опрос — display-only (скачивать нечего): has_media=false.
+                poll = Some(poll_info(p));
+            }
+            M::Geo(g) => {
+                kind = Some("geo".into());
+                geo = Some((g.latitue(), g.longitude()));
+            }
+            M::Contact(c) => {
+                kind = Some("contact".into());
+                let full = format!("{} {}", c.first_name(), c.last_name())
+                    .trim()
+                    .to_string();
+                contact = Some((full, c.phone_number().to_string()));
+            }
+            _ => {
+                kind = Some("media".into());
+                name = Some(format!("media_{}", m.id()));
+                size = media.size().map(|s| s as i64);
+            }
+        },
+    }
+    MessageInfo {
+        id: m.id(),
+        chat_id,
+        text: m.text().to_string(),
+        date: m.date().as_second(),
+        has_media: kind.is_some(),
+        media_kind: kind,
+        file_name: name,
+        file_size: size,
+        outgoing: m.outgoing(),
+        sender: m.sender().and_then(|p| p.name().map(|s| s.to_string())),
+        edited: m.edit_date().is_some(),
+        reactions: m.reaction_count(),
+        views: m.view_count(),
+        forwards: m.forward_count(),
+        poll,
+        geo,
+        contact,
+    }
+}
+
+/// grammers Poll → PollInfo (варианты + голоса + выбранные).
+fn poll_info(p: &grammers_client::media::Poll) -> super::PollInfo {
+    use std::collections::HashMap;
+    // Карта option-bytes → (votes, chosen).
+    let mut stat: HashMap<Vec<u8>, (Option<i32>, bool)> = HashMap::new();
+    if let Some(voters) = p.iter_voters_summary() {
+        for v in voters {
+            stat.insert(v.option.clone(), (v.voters, v.chosen));
+        }
+    }
+    let answers = p
+        .iter_answers()
+        .map(|a| {
+            let (text, option) = match a {
+                grammers_client::tl::enums::PollAnswer::Answer(t) => {
+                    (text_of(&t.text), t.option.clone())
+                }
+                _ => ("?".to_string(), vec![]),
+            };
+            let (votes, chosen) = stat.get(&option).copied().unwrap_or((None, false));
+            super::PollAnswerInfo { text, option, votes, chosen }
+        })
+        .collect();
+    super::PollInfo {
+        question: text_of(&p.question()),
+        closed: p.closed(),
+        quiz: p.is_quiz(),
+        total_voters: p.total_voters(),
+        answers,
     }
 }
 
