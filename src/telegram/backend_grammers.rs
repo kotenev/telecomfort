@@ -1764,6 +1764,227 @@ impl TelegramService for GrammersBackend {
         Ok(out)
     }
 
+    async fn share_contact(
+        &self,
+        chat_id: i64,
+        phone: &str,
+        first_name: &str,
+        last_name: &str,
+    ) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let input = InputMessage::new().clear_draft(true).media(
+            tl::enums::InputMedia::Contact(tl::types::InputMediaContact {
+                phone_number: phone.to_string(),
+                first_name: first_name.to_string(),
+                last_name: last_name.to_string(),
+                vcard: String::new(),
+            }),
+        );
+        let sent = self.client.send_message(pref, input).await.context("shareContact failed")?;
+        Ok(sent.id())
+    }
+
+    async fn stop_poll(&self, chat_id: i64, message_id: i32) -> Result<()> {
+        use grammers_client::message::InputMessage;
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // Закрытие = правка тем же опросом с closed=true.
+        let msgs = self.client.get_messages_by_id(pref, &[message_id]).await?;
+        let mut closed = msgs
+            .into_iter()
+            .next()
+            .flatten()
+            .and_then(|m| match m.media() {
+                Some(grammers_client::media::Media::Poll(p)) => Some(p.raw.clone()),
+                _ => None,
+            })
+            .context("not a poll message")?;
+        closed.closed = true;
+        let input = InputMessage::new()
+            .text("")
+            .media(tl::enums::InputMedia::Poll(Box::new(tl::types::InputMediaPoll {
+                poll: tl::enums::Poll::Poll(closed),
+                correct_answers: None,
+                attached_media: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })));
+        self.client
+            .edit_message(pref, message_id, input)
+            .await
+            .context("stopPoll failed")?;
+        Ok(())
+    }
+
+    async fn pinned_list(&self, chat_id: i64, limit: usize) -> Result<Vec<MessageInfo>> {
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let mut out = Vec::new();
+        // Закрепы — через поиск с pinned-фильтром (порядок сервера = порядок закрепа).
+        let mut iter = self
+            .client
+            .search_messages(pref)
+            .filter(grammers_client::tl::enums::MessagesFilter::InputMessagesFilterPinned)
+            .limit(limit.min(20));
+        while let Some(m) = iter.next().await? {
+            out.push(message_to_info(&m, chat_id));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn revoke_invite(&self, chat_id: i64, link: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::DeleteExportedChatInvite {
+                peer: (&pref).into(),
+                link: link.to_string(),
+            })
+            .await
+            .context("revoke invite failed")?;
+        Ok(())
+    }
+
+    async fn participants(&self, chat_id: i64, limit: usize) -> Result<Vec<super::ParticipantInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        let res = self
+            .client
+            .invoke(&tl::functions::channels::GetParticipants {
+                channel,
+                filter: tl::enums::ChannelParticipantsFilter::ChannelParticipantsRecent,
+                offset: 0,
+                limit: limit.min(200) as i32,
+                hash: 0,
+            })
+            .await
+            .context("getParticipants failed (не канал/супергруппа?)")?;
+        let (users, parts) = match res {
+            tl::enums::channels::ChannelParticipants::Participants(p) => (p.users, p.participants),
+            tl::enums::channels::ChannelParticipants::NotModified => (vec![], vec![]),
+        };
+        let mut meta: std::collections::HashMap<i64, (String, i64)> =
+            std::collections::HashMap::new();
+        for u in &users {
+            if let tl::enums::User::User(u) = u {
+                let name = match (&u.first_name, &u.last_name) {
+                    (Some(f), Some(l)) => format!("{f} {l}"),
+                    (Some(f), None) => f.clone(),
+                    (None, Some(l)) => l.clone(),
+                    (None, None) => u.username.clone().unwrap_or_else(|| format!("id{}", u.id)),
+                };
+                meta.insert(u.id, (name, u.access_hash.unwrap_or(0)));
+            }
+        }
+        let mut out = Vec::new();
+        for cp in parts {
+            let (uid, admin) = match cp {
+                tl::enums::ChannelParticipant::Creator(c) => (c.user_id, true),
+                tl::enums::ChannelParticipant::Participant(p) => (p.user_id, false),
+                tl::enums::ChannelParticipant::Admin(a) => (a.user_id, true),
+                _ => continue,
+            };
+            let (name, hash) = meta
+                .get(&uid)
+                .cloned()
+                .unwrap_or_else(|| (format!("id {uid}"), 0));
+            out.push(super::ParticipantInfo { id: uid, name, admin, access_hash: hash });
+        }
+        Ok(out)
+    }
+
+    async fn kick_participant(&self, chat_id: i64, user_id: i64) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        // access_hash подтягиваем из списка участников (кэш не храним — один лишний запрос ок).
+        let mut access_hash = 0i64;
+        for p in self.participants(chat_id, 200).await.unwrap_or_default() {
+            if p.id == user_id {
+                access_hash = p.access_hash;
+                break;
+            }
+        }
+        // Бан на просмотр = исключение из канала (нужны права админа).
+        let user = tl::enums::InputPeer::User(tl::types::InputPeerUser {
+            user_id,
+            access_hash,
+        });
+        self.client
+            .invoke(&tl::functions::channels::EditBanned {
+                channel,
+                participant: user,
+                banned_rights: tl::enums::ChatBannedRights::Rights(
+                    tl::types::ChatBannedRights {
+                        until_date: 0,
+                        view_messages: true,
+                        send_messages: false,
+                        send_media: false,
+                        send_stickers: false,
+                        send_gifs: false,
+                        send_games: false,
+                        send_inline: false,
+                        embed_links: false,
+                        send_polls: false,
+                        change_info: false,
+                        invite_users: false,
+                        pin_messages: false,
+                        manage_topics: false,
+                        send_photos: false,
+                        send_videos: false,
+                        send_roundvideos: false,
+                        send_audios: false,
+                        send_voices: false,
+                        send_docs: false,
+                        send_plain: false,
+                        edit_rank: false,
+                        send_reactions: false,
+                        manage_linked_peers: false,
+                    },
+                ),
+            })
+            .await
+            .context("kick failed (нет прав?)")?;
+        Ok(())
+    }
+
+    async fn hide_peer_stories(&self, peer_id: i64, hidden: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(peer_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::stories::TogglePeerStoriesHidden {
+                peer: (&pref).into(),
+                hidden,
+            })
+            .await
+            .context("togglePeerStoriesHidden failed")?;
+        Ok(())
+    }
+
+    async fn edit_story_caption(&self, story_id: i32, caption: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::stories::EditStory {
+                peer: tl::enums::InputPeer::PeerSelf,
+                id: story_id,
+                media: None,
+                media_areas: None,
+                caption: if caption.is_empty() { None } else { Some(caption.to_string()) },
+                entities: None,
+                privacy_rules: None,
+                music: None,
+            })
+            .await
+            .context("editStory failed")?;
+        Ok(())
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();

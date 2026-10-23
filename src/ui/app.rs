@@ -90,6 +90,20 @@ pub enum BgEvent {
     MediaTabLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
     /// Чёрный список загружен.
     BlockedLoaded(Vec<crate::telegram::BlockedInfo>),
+    /// Контакт расшарен.
+    ShareContactSent { chat_id: i64, message_id: i32 },
+    /// Опрос остановлен.
+    PollStopped { chat_id: i64 },
+    /// Все закрепы загружены.
+    PinnedListLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    /// Инвайт отозван.
+    InviteRevoked,
+    /// Участники загружены.
+    ParticipantsLoaded { chat_id: i64, items: Vec<crate::telegram::ParticipantInfo> },
+    /// Подпись сторис обновлена.
+    StoryCaptionSaved { story_id: i32 },
+    /// Перезагрузить ленту сторис.
+    ReloadStories,
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -323,6 +337,19 @@ pub struct TelecomfortApp {
     pub blocked: Vec<crate::telegram::BlockedInfo>,
     pub blocked_loaded: bool,
 
+    // Седьмой parity-пакет: шаринг контактов, опросы-менеджмент, модерация
+    /// Выбор контакта для шаринга: целевой чат.
+    pub contact_share_pick: Option<i64>,
+    /// Все закрепы чата + окно.
+    pub pinned_more: HashMap<i64, Vec<crate::telegram::MessageInfo>>,
+    pub pinned_more_open: Option<i64>,
+    /// Участники чата + окно.
+    pub participants: HashMap<i64, Vec<crate::telegram::ParticipantInfo>>,
+    pub participants_open: Option<i64>,
+    /// Редактирование подписи своей сторис.
+    pub story_edit_open: Option<i32>,
+    pub story_edit_text: String,
+
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
     pub onnx_enabled: bool,
@@ -463,6 +490,13 @@ impl TelecomfortApp {
             profile_username: String::new(),
             blocked: Vec::new(),
             blocked_loaded: false,
+            contact_share_pick: None,
+            pinned_more: HashMap::new(),
+            pinned_more_open: None,
+            participants: HashMap::new(),
+            participants_open: None,
+            story_edit_open: None,
+            story_edit_text: String::new(),
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -731,6 +765,37 @@ impl TelecomfortApp {
                 BgEvent::BlockedLoaded(blocked) => {
                     self.blocked = blocked;
                     self.blocked_loaded = true;
+                    // Сбрасываем флаг, если список пуст и это был первый запрос.
+                }
+                BgEvent::ShareContactSent { chat_id, message_id } => {
+                    self.contact_share_pick = None;
+                    self.log(format!("контакт отправлен (msg {message_id})"));
+                    self.load_history(chat_id);
+                }
+                BgEvent::PollStopped { chat_id } => {
+                    self.log("опрос остановлен".to_string());
+                    self.load_history(chat_id);
+                }
+                BgEvent::PinnedListLoaded { chat_id, items } => {
+                    self.pinned_more.insert(chat_id, items);
+                    self.pinned_more_open = Some(chat_id);
+                }
+                BgEvent::InviteRevoked => {
+                    self.invite_link = None;
+                    self.log("инвайт-ссылка отозвана".to_string());
+                }
+                BgEvent::ParticipantsLoaded { chat_id, items } => {
+                    self.participants.insert(chat_id, items);
+                    self.participants_open = Some(chat_id);
+                }
+                BgEvent::ReloadStories => {
+                    self.refresh_stories();
+                }
+                BgEvent::StoryCaptionSaved { story_id } => {
+                    self.story_edit_open = None;
+                    self.story_edit_text.clear();
+                    self.log(format!("подпись сторис {story_id} обновлена"));
+                    self.refresh_stories();
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -1747,6 +1812,165 @@ impl TelecomfortApp {
             });
         }
         None
+    }
+
+    /// Поделиться контактом из телефонной книги в чат.
+    pub fn share_contact_to(&mut self, chat_id: i64, c: &crate::telegram::ContactInfo) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let (phone, first, last) = (c.phone.clone(), c.name.clone(), String::new());
+        // Имя делим на first/last по первому пробелу (как в официальном клиенте).
+        let (first, last) = match first.split_once(' ') {
+            Some((f, l)) => (f.to_string(), l.to_string()),
+            None => (first, last),
+        };
+        self.contact_share_pick = None;
+        self.rt.spawn(async move {
+            match tg.share_contact(chat_id, &phone, &first, &last).await {
+                Ok(message_id) => {
+                    let _ = tx.send(BgEvent::ShareContactSent { chat_id, message_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("шаринг: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Остановить свой опрос (закрыть голосование).
+    pub fn stop_poll(&mut self, chat_id: i64, message_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.stop_poll(chat_id, message_id).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::PollStopped { chat_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("стоп опроса: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить все закрепы чата (окно).
+    pub fn load_pinned_all(&mut self, chat_id: i64) {
+        if self.pinned_more.contains_key(&chat_id) {
+            self.pinned_more_open = Some(chat_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.pinned_list(chat_id, 10).await {
+                Ok(items) => {
+                    let _ = tx.send(BgEvent::PinnedListLoaded { chat_id, items });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("закрепы: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отозвать текущую инвайт-ссылку чата.
+    pub fn revoke_invite(&mut self, chat_id: i64) {
+        let Some(link) = self.invite_link.clone() else {
+            return;
+        };
+        if link == "загрузка…" {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.revoke_invite(chat_id, &link).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::InviteRevoked);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("отзыв: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить участников канала/супергруппы (окно).
+    pub fn load_participants(&mut self, chat_id: i64) {
+        if self.participants.contains_key(&chat_id) {
+            self.participants_open = Some(chat_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.participants(chat_id, 100).await {
+                Ok(items) => {
+                    let _ = tx.send(BgEvent::ParticipantsLoaded { chat_id, items });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("участники: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Исключить участника (нужны права админа).
+    pub fn kick_participant(&mut self, chat_id: i64, user_id: i64) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.kick_participant(chat_id, user_id).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("участник исключён".into()));
+                    match tg.participants(chat_id, 100).await {
+                        Ok(items) => {
+                            let _ = tx.send(BgEvent::ParticipantsLoaded { chat_id, items });
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("кик: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Скрыть/показать сторис пользователя в ленте.
+    pub fn hide_peer_stories(&mut self, peer_id: i64, hidden: bool) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.hide_peer_stories(peer_id, hidden).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if hidden { "сторис автора скрыты".into() } else { "сторис автора возвращены".into() },
+                    ));
+                    let _ = tx.send(BgEvent::ReloadStories);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("скрытие: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Сохранить подпись своей сторис.
+    pub fn save_story_caption(&mut self, story_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let caption = self.story_edit_text.trim().to_string();
+        self.rt.spawn(async move {
+            match tg.edit_story_caption(story_id, &caption).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::StoryCaptionSaved { story_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подпись: {e:#}")));
+                }
+            }
+        });
     }
 
     /// Загрузить чёрный список.

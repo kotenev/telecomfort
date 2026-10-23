@@ -653,6 +653,55 @@ impl TelegramService for MockTelegram {
         Ok(vec![crate::telegram::BlockedInfo { id: 2003, name: "Спаммер".into() }])
     }
 
+    async fn share_contact(
+        &self,
+        _chat_id: i64,
+        _phone: &str,
+        _first_name: &str,
+        _last_name: &str,
+    ) -> anyhow::Result<i32> {
+        Ok(9300)
+    }
+
+    async fn stop_poll(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn pinned_list(
+        &self,
+        chat_id: i64,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<crate::telegram::MessageInfo>> {
+        Ok(vec![self.pinned_message(chat_id).await?.expect("pinned")])
+    }
+
+    async fn revoke_invite(&self, _chat_id: i64, _link: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn participants(
+        &self,
+        _chat_id: i64,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<crate::telegram::ParticipantInfo>> {
+        Ok(vec![
+            crate::telegram::ParticipantInfo { id: 2001, name: "Анна".into(), admin: false, access_hash: 111 },
+            crate::telegram::ParticipantInfo { id: 2002, name: "Лектор".into(), admin: true, access_hash: 222 },
+        ])
+    }
+
+    async fn kick_participant(&self, _chat_id: i64, _user_id: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn hide_peer_stories(&self, _peer_id: i64, _hidden: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn edit_story_caption(&self, _story_id: i32, _caption: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -877,6 +926,24 @@ mod tests {
         assert!(m.story_reply(2001, 7, "круто!").await.expect("story reply") >= 9200);
         assert_eq!(m.story_views(7).await.expect("story views"), 42);
         m.enable_stealth().await.expect("stealth");
+    }
+
+    /// Контракт седьмого parity-пакета: шаринг контактов, опросы-менеджмент,
+    /// закрепы, инвайты, участники, сторис-менеджмент.
+    #[tokio::test]
+    async fn mock_management_contract_6() {
+        let m = MockTelegram;
+        assert_eq!(m.share_contact(-1001, "+7", "Иван", "").await.expect("share"), 9300);
+        m.stop_poll(-1001, 102).await.expect("stop poll");
+        let pins = m.pinned_list(-1001, 5).await.expect("pins");
+        assert_eq!(pins.len(), 1);
+        m.revoke_invite(-1001, "https://t.me/x").await.expect("revoke");
+        let parts = m.participants(-1002, 100).await.expect("participants");
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().any(|p| p.admin));
+        m.kick_participant(-1002, 2001).await.expect("kick");
+        m.hide_peer_stories(2001, true).await.expect("hide");
+        m.edit_story_caption(7, "новый текст").await.expect("edit story");
     }
 
     /// Контракт шестого parity-пакета: сторис-интерактив, медиапоиск,

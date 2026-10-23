@@ -95,6 +95,15 @@ pub struct ContactInfo {
     pub access_hash: i64,
 }
 
+/// Участник чата (для списка участников групп/каналов).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipantInfo {
+    pub id: i64,
+    pub name: String,
+    pub admin: bool,
+    pub access_hash: i64,
+}
+
 /// Заблокированный пользователь/чат.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockedInfo {
@@ -555,6 +564,44 @@ pub trait TelegramService: Send + Sync {
     /// Чёрный список (пользователи и чаты).
     async fn blocked_list(&self) -> anyhow::Result<Vec<BlockedInfo>> {
         Ok(vec![])
+    }
+    /// Поделиться контактом (карточка в чат).
+    async fn share_contact(
+        &self,
+        _chat_id: i64,
+        _phone: &str,
+        _first_name: &str,
+        _last_name: &str,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("contact share is not implemented for this backend")
+    }
+    /// Остановить свой опрос (закрыть голосование).
+    async fn stop_poll(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("stop poll is not implemented for this backend")
+    }
+    /// Все закреплённые сообщения чата (до limit).
+    async fn pinned_list(&self, _chat_id: i64, _limit: usize) -> anyhow::Result<Vec<MessageInfo>> {
+        Ok(vec![])
+    }
+    /// Отозвать инвайт-ссылку.
+    async fn revoke_invite(&self, _chat_id: i64, _link: &str) -> anyhow::Result<()> {
+        anyhow::bail!("invite revoke is not implemented for this backend")
+    }
+    /// Участники канала/супергруппы (первые N).
+    async fn participants(&self, _chat_id: i64, _limit: usize) -> anyhow::Result<Vec<ParticipantInfo>> {
+        Ok(vec![])
+    }
+    /// Исключить/забанить участника (нужны права админа).
+    async fn kick_participant(&self, _chat_id: i64, _user_id: i64) -> anyhow::Result<()> {
+        anyhow::bail!("kick is not implemented for this backend")
+    }
+    /// Скрыть/показать сторис пользователя (лента).
+    async fn hide_peer_stories(&self, _peer_id: i64, _hidden: bool) -> anyhow::Result<()> {
+        anyhow::bail!("hide stories is not implemented for this backend")
+    }
+    /// Изменить подпись своей сторис.
+    async fn edit_story_caption(&self, _story_id: i32, _caption: &str) -> anyhow::Result<()> {
+        anyhow::bail!("story edit is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

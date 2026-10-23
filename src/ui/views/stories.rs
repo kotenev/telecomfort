@@ -102,6 +102,20 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     });
                 });
         }
+        // Окно правки подписи своей сторис.
+        if let Some(sid) = app.story_edit_open {
+            egui::Window::new("✏️ Подпись сторис").collapsible(false).show(ui.ctx(), |ui| {
+                ui.text_edit_multiline(&mut app.story_edit_text);
+                ui.horizontal(|ui| {
+                    if ui.button("Сохранить").clicked() {
+                        app.save_story_caption(sid);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.story_edit_open = None;
+                    }
+                });
+            });
+        }
         // Окно зрителей своей сторис.
         if let Some(sid) = app.story_viewers_open {
             let (count, names) =
@@ -219,6 +233,14 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                             },
                                         );
                                     }
+                                    if ui
+                                        .small_button("✏️")
+                                        .on_hover_text("Изменить подпись")
+                                        .clicked()
+                                    {
+                                        app.story_edit_open = Some(story_id);
+                                        app.story_edit_text.clear();
+                                    }
                                     // Просмотры своей сторис (лениво, один раз; тап — кто смотрел).
                                     match app.story_views.get(&story_id).copied() {
                                         Some(v) => {
@@ -263,6 +285,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                         .clicked()
                                     {
                                         app.story_react(peer_id, story_id, "❤️");
+                                    }
+                                    if ui
+                                        .small_button("🙈")
+                                        .on_hover_text("Скрыть сторис этого автора из ленты")
+                                        .clicked()
+                                    {
+                                        app.hide_peer_stories(peer_id, true);
                                     }
                                 }
                             });
