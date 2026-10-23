@@ -44,6 +44,10 @@ impl TelegramService for MockTelegram {
                 media_kind: Some("video".into()),
                 file_name: Some("lecture12.mp4".into()),
                 file_size: Some(180_000_000),
+                outgoing: false,
+                sender: Some("Лектор".into()),
+                edited: false,
+                reactions: Some(5),
             },
             MessageInfo {
                 id: 102,
@@ -54,6 +58,10 @@ impl TelegramService for MockTelegram {
                 media_kind: Some("document".into()),
                 file_name: Some("phys_levels.epub".into()),
                 file_size: Some(4_200_000),
+                outgoing: true,
+                sender: None,
+                edited: true,
+                reactions: None,
             },
             MessageInfo {
                 id: 103,
@@ -64,6 +72,10 @@ impl TelegramService for MockTelegram {
                 media_kind: Some("audio".into()),
                 file_name: Some("hw_voice.ogg".into()),
                 file_size: Some(2_000_000),
+                outgoing: false,
+                sender: Some("Анна".into()),
+                edited: false,
+                reactions: None,
             },
         ])
     }
@@ -257,7 +269,82 @@ impl TelegramService for MockTelegram {
         })
     }
 
+    /// Демо-отправка: синтетический id, приложение само добавит сообщение в историю.
+    async fn send_text(
+        &self,
+        _chat_id: i64,
+        text: &str,
+        _reply_to: Option<i32>,
+    ) -> anyhow::Result<i32> {
+        // Детерминированный id из хэша текста, чтобы демо было стабильным.
+        let mut h: i32 = 9000;
+        for b in text.bytes() {
+            h = h.wrapping_add(b as i32);
+        }
+        Ok(h)
+    }
+
+    async fn edit_text(&self, _chat_id: i64, _message_id: i32, _text: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete_messages(&self, _chat_id: i64, _message_ids: &[i32]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn react(&self, _chat_id: i64, _message_id: i32, _emoji: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn send_file(
+        &self,
+        _chat_id: i64,
+        path: &std::path::Path,
+        _caption: &str,
+    ) -> anyhow::Result<i32> {
+        let mut h: i32 = 9500;
+        for b in path.as_os_str().as_encoded_bytes() {
+            h = h.wrapping_add(*b as i32);
+        }
+        Ok(h)
+    }
+
     fn is_connected(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telegram::TelegramService;
+
+    /// Демо-контракт композера: отправка/правка/удаление/реакции/файлы — Ok.
+    #[tokio::test]
+    async fn mock_messaging_contract() {
+        let m = MockTelegram;
+        let id = m.send_text(-1001, "привет", None).await.expect("send");
+        assert!(id >= 9000);
+        let id2 = m.send_text(-1001, "ответ", Some(id)).await.expect("reply");
+        assert_ne!(id, id2);
+        m.edit_text(-1001, id, "привет!").await.expect("edit");
+        m.delete_messages(-1001, &[id]).await.expect("delete");
+        m.react(-1001, id, "👍").await.expect("react");
+        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption").await.expect("file");
+        assert!(fid >= 9500);
+        m.mark_read(-1001).await.expect("mark_read");
+        assert!(m.avatar_path(-1001).await.expect("avatar").is_none());
+    }
+
+    /// Мок-история несёт новые поля (исходящие/отправитель/реакции).
+    #[tokio::test]
+    async fn mock_history_has_chat_fields() {
+        let m = MockTelegram;
+        let items = m.history(-1001, 10).await.expect("history");
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().any(|x| x.outgoing));
+        assert!(items.iter().any(|x| x.sender.is_some()));
+        assert!(items.iter().any(|x| x.reactions == Some(5)));
+        assert!(items.iter().any(|x| x.edited));
     }
 }

@@ -109,12 +109,57 @@ impl GrammersBackend {
         };
         Ok(Some(pid.to_ambient_ref()))
     }
+
+    /// Карта bot_api_id → unread_count через `messages.getPeerDialogs`
+    /// (батчами по 100 — серверный лимит на размер запроса).
+    /// Best-effort: при ошибках возвращает частичную карту.
+    async fn peer_unread_map(
+        &self,
+        prefs: &[(i64, grammers_session::types::PeerRef)],
+    ) -> Vec<(i64, i32)> {
+        use grammers_client::tl as tl;
+        let mut out = Vec::new();
+        for chunk in prefs.chunks(100) {
+            let inputs: Vec<tl::enums::InputDialogPeer> = chunk
+                .iter()
+                .map(|(_, pref)| {
+                    tl::enums::InputDialogPeer::Peer(tl::types::InputDialogPeer {
+                        peer: pref.into(),
+                    })
+                })
+                .collect();
+            let res = match self
+                .client
+                .invoke(&tl::functions::messages::GetPeerDialogs { peers: inputs })
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("getPeerDialogs failed: {e}");
+                    continue;
+                }
+            };
+            let dialogs = match res {
+                tl::enums::messages::PeerDialogs::Dialogs(d) => d.dialogs,
+            };
+            for dlg in dialogs {
+                let inner = match dlg {
+                    tl::enums::Dialog::Dialog(d) => d,
+                    _ => continue,
+                };
+                out.push((peer_to_bot_id(&inner.peer), inner.unread_count));
+            }
+        }
+        out
+    }
 }
 
 #[async_trait]
 impl TelegramService for GrammersBackend {
     async fn dialogs(&self) -> Result<Vec<ChatInfo>> {
+        use grammers_session::types::PeerRef;
         let mut out = Vec::new();
+        let mut prefs: Vec<(i64, PeerRef)> = Vec::new();
         let mut iter = self.client.iter_dialogs();
         while let Some(d) = iter.next().await? {
             let peer = d.peer();
@@ -128,8 +173,18 @@ impl TelegramService for GrammersBackend {
                 protected: Self::peer_protected(peer),
                 unread: 0,
             });
+            if let Some(pref) = self.resolve_ref(bot_id).await? {
+                prefs.push((bot_id, pref));
+            }
             if out.len() >= 300 {
                 break;
+            }
+        }
+        // Непрочитанные одним батчем (iter_dialogs счётчиков не даёт).
+        // Best-effort: при ошибке остаются нули.
+        for (bot_id, unread) in self.peer_unread_map(&prefs).await {
+            if let Some(c) = out.iter_mut().find(|c| c.id == bot_id) {
+                c.unread = unread;
             }
         }
         Ok(out)
@@ -188,6 +243,11 @@ impl TelegramService for GrammersBackend {
                 media_kind: kind,
                 file_name: name,
                 file_size: size,
+                outgoing: m.outgoing(),
+                // Имя отправителя — для групп/каналов (у своих тоже есть, UI решает).
+                sender: m.sender().and_then(|p| p.name().map(|s| s.to_string())),
+                edited: m.edit_date().is_some(),
+                reactions: m.reaction_count(),
             });
             if out.len() >= limit {
                 break;
@@ -368,6 +428,118 @@ impl TelegramService for GrammersBackend {
             phone: me.phone().map(|s| s.to_string()),
             username: me.username().map(|s| s.to_string()),
         })
+    }
+
+    async fn send_text(&self, chat_id: i64, text: &str, reply_to: Option<i32>) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let sent = self
+            .client
+            .send_message(pref, InputMessage::new().text(text).reply_to(reply_to))
+            .await
+            .context("send_message failed")?;
+        Ok(sent.id())
+    }
+
+    async fn edit_text(&self, chat_id: i64, message_id: i32, text: &str) -> Result<()> {
+        use grammers_client::message::InputMessage;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .edit_message(pref, message_id, InputMessage::new().text(text))
+            .await
+            .context("edit_message failed")?;
+        Ok(())
+    }
+
+    async fn delete_messages(&self, chat_id: i64, message_ids: &[i32]) -> Result<()> {
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .delete_messages(pref, message_ids)
+            .await
+            .context("delete_messages failed")?;
+        Ok(())
+    }
+
+    async fn react(&self, chat_id: i64, message_id: i32, emoji: &str) -> Result<()> {
+        use grammers_client::message::InputReactions;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let msgs = self.client.get_messages_by_id(pref, &[message_id]).await?;
+        let msg = msgs
+            .into_iter()
+            .next()
+            .flatten()
+            .context("message not found (deleted?)")?;
+        // Повтор той же реакции сервером переключается (toggle) — убирается.
+        msg.react(InputReactions::emoticon(emoji))
+            .await
+            .context("sendReaction failed")?;
+        Ok(())
+    }
+
+    async fn mark_read(&self, chat_id: i64) -> Result<()> {
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // Best-effort: счётчик в UI всё равно обновится следующим refresh_dialogs.
+        if let Err(e) = self.client.mark_as_read(pref).await {
+            tracing::debug!("mark_as_read failed: {e}");
+        }
+        Ok(())
+    }
+
+    async fn send_file(&self, chat_id: i64, path: &Path, caption: &str) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let uploaded = self.client.upload_file(path).await.context("upload_file failed")?;
+        let is_photo = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+            .unwrap_or(false);
+        let input = if is_photo {
+            InputMessage::new().text(caption).photo(uploaded)
+        } else {
+            InputMessage::new().text(caption).document(uploaded)
+        };
+        let sent = self.client.send_message(pref, input).await.context("send file failed")?;
+        Ok(sent.id())
+    }
+
+    async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
+        let dir = super::avatars_cache_dir();
+        std::fs::create_dir_all(&dir).ok();
+        let dest = dir.join(format!("{chat_id}.jpg"));
+        // Кэш: не качаем повторно (аватар меняется редко; stale чистится удалением файла).
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            if meta.len() > 0 {
+                return Ok(Some(dest));
+            }
+        }
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let mut iter = self.client.iter_profile_photos(pref);
+        let photo = match iter.next().await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("profile photos failed: {e}");
+                return Ok(None);
+            }
+        };
+        let photo = match photo {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        let media = grammers_client::media::Media::Photo(photo);
+        match self.client.download_media(&media, &dest).await {
+            Ok(_) => {
+                if std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
+                    Ok(Some(dest))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                tracing::debug!("avatar download failed: {e}");
+                Ok(None)
+            }
+        }
     }
 
     fn is_connected(&self) -> bool {

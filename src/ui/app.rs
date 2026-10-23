@@ -24,6 +24,16 @@ pub enum BgEvent {
     UploadProgress { local_path: String, done: u64, total: u64 },
     /// Прогресс скачивания из MTProto (параллельные чанки + resume).
     MediaProgress { label: String, done: u64, total: u64 },
+    /// Своё отправленное сообщение (серверный id) — добавить в историю.
+    SentMessage { chat_id: i64, item: crate::telegram::MessageInfo },
+    /// Своя правка применена — обновить текст локально.
+    EditedMessage { chat_id: i64, message_id: i32, text: String },
+    /// Удаление применено — выкинуть локально.
+    DeletedMessages { chat_id: i64, message_ids: Vec<i32> },
+    /// Перезагрузить историю чата (после реакций/чужих действий).
+    ReloadHistory { chat_id: i64 },
+    /// Аватар скачался — запомнить файл, сбросить текстуру-идентикон.
+    AvatarReady { chat_id: i64, path: PathBuf },
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -110,6 +120,22 @@ pub struct TelecomfortApp {
     /// Чистится implicitly: ключ — путь файла, stale-превью приемлемы.
     pub dl_thumbs: HashMap<String, egui::TextureHandle>,
 
+    // Чаты: композер и пузыри (паритет с официальным клиентом)
+    /// Черновики ввода по чатам (сохраняются при переключении диалогов).
+    pub composer: HashMap<i64, String>,
+    /// Текущий текст ввода (синкается с composer при select_chat).
+    pub composer_current: String,
+    /// Поиск по загруженной истории текущего чата.
+    pub chat_search: String,
+    /// Ответ: (chat_id, msg_id, сниппет цитаты).
+    pub reply_to: Option<(i64, i32, String)>,
+    /// Режим правки: (chat_id, msg_id) — текст уже подставлен в композер.
+    pub editing: Option<(i64, i32)>,
+    /// Кэш текстур аватаров (chat_id → текстура 64px) + файлы + запрошенные.
+    pub avatars: HashMap<i64, egui::TextureHandle>,
+    pub avatar_files: HashMap<i64, PathBuf>,
+    avatar_requested: HashSet<i64>,
+
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
     pub onnx_enabled: bool,
@@ -178,6 +204,14 @@ impl TelecomfortApp {
             dl_filter: "Все".into(),
             dl_cluster_threshold: cfg.downloader.cluster_max_dist.min(10),
             dl_thumbs: HashMap::new(),
+            composer: HashMap::new(),
+            composer_current: String::new(),
+            chat_search: String::new(),
+            reply_to: None,
+            editing: None,
+            avatars: HashMap::new(),
+            avatar_files: HashMap::new(),
+            avatar_requested: HashSet::new(),
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -277,6 +311,33 @@ impl TelecomfortApp {
                         }
                     }
                     self.history.insert(chat_id, items);
+                }
+                BgEvent::SentMessage { chat_id, item } => {
+                    self.log(format!("отправлено (msg {})", item.id));
+                    self.history.entry(chat_id).or_default().push(item);
+                }
+                BgEvent::EditedMessage { chat_id, message_id, text } => {
+                    if let Some(items) = self.history.get_mut(&chat_id) {
+                        if let Some(m) = items.iter_mut().find(|m| m.id == message_id) {
+                            m.text = text;
+                            m.edited = true;
+                        }
+                    }
+                    self.log(format!("правка применена (msg {message_id})"));
+                }
+                BgEvent::DeletedMessages { chat_id, message_ids } => {
+                    if let Some(items) = self.history.get_mut(&chat_id) {
+                        items.retain(|m| !message_ids.contains(&m.id));
+                    }
+                    self.log(format!("удалено сообщений: {}", message_ids.len()));
+                }
+                BgEvent::ReloadHistory { chat_id } => {
+                    self.load_history(chat_id);
+                }
+                BgEvent::AvatarReady { chat_id, path } => {
+                    self.avatar_files.insert(chat_id, path);
+                    // Сбрасываем идентикон — следующий кадр подхватит фото.
+                    self.avatars.remove(&chat_id);
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -679,6 +740,229 @@ impl TelecomfortApp {
                 }
             }
         });
+    }
+
+    /// Выбрать чат: сохранить черновик, подставить черновик нового,
+    /// сбросить reply/edit/поиск, загрузить историю, отметить прочитанным.
+    pub fn select_chat(&mut self, chat_id: i64) {
+        if let Some(old) = self.selected_chat {
+            if old != chat_id {
+                self.composer.insert(old, std::mem::take(&mut self.composer_current));
+            }
+        }
+        self.selected_chat = Some(chat_id);
+        self.composer_current = self.composer.get(&chat_id).cloned().unwrap_or_default();
+        self.reply_to = None;
+        self.editing = None;
+        self.chat_search.clear();
+        self.load_history(chat_id);
+        let tg = Arc::clone(&self.tg);
+        self.rt.spawn(async move {
+            let _ = tg.mark_read(chat_id).await;
+        });
+    }
+
+    /// Отправить текущее (или сохранить правку). Пустое — игнор.
+    pub fn send_current(&mut self) {
+        let Some(chat_id) = self.selected_chat else {
+            return;
+        };
+        let text = self.composer_current.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        if let Some((ec, em)) = self.editing {
+            // Режим правки: текст уже в композере.
+            self.editing = None;
+            self.composer_current.clear();
+            self.composer.insert(chat_id, String::new());
+            self.rt.spawn(async move {
+                match tg.edit_text(ec, em, &text).await {
+                    Ok(()) => {
+                        let _ = tx.send(BgEvent::EditedMessage {
+                            chat_id: ec,
+                            message_id: em,
+                            text,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BgEvent::Error(format!("правка: {e:#}")));
+                    }
+                }
+            });
+            return;
+        }
+        let reply = self.reply_to.clone().filter(|(c, _, _)| *c == chat_id).map(|(_, m, _)| m);
+        self.reply_to = None;
+        self.composer_current.clear();
+        self.composer.insert(chat_id, String::new());
+        self.rt.spawn(async move {
+            match tg.send_text(chat_id, &text, reply).await {
+                Ok(sent_id) => {
+                    let item = crate::telegram::MessageInfo {
+                        id: sent_id,
+                        chat_id,
+                        text,
+                        date: chrono::Local::now().timestamp(),
+                        has_media: false,
+                        media_kind: None,
+                        file_name: None,
+                        file_size: None,
+                        outgoing: true,
+                        sender: None,
+                        edited: false,
+                        reactions: None,
+                    };
+                    let _ = tx.send(BgEvent::SentMessage { chat_id, item });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("отправка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Начать ответ на сообщение (подставляет баннер над композером).
+    pub fn start_reply(&mut self, chat_id: i64, msg: &crate::telegram::MessageInfo) {
+        let snippet = if msg.text.is_empty() {
+            msg.file_name.clone().unwrap_or_else(|| format!("медиа #{}", msg.id))
+        } else {
+            crate::utils::truncate(&msg.text, 80)
+        };
+        self.editing = None;
+        self.reply_to = Some((chat_id, msg.id, snippet));
+    }
+
+    /// Начать правку своего сообщения (текст — в композер).
+    pub fn start_edit(&mut self, chat_id: i64, msg: &crate::telegram::MessageInfo) {
+        self.reply_to = None;
+        self.editing = Some((chat_id, msg.id));
+        self.composer_current = msg.text.clone();
+        self.composer.insert(chat_id, msg.text.clone());
+    }
+
+    /// Удалить сообщение (revoke — у всех).
+    pub fn delete_msg(&mut self, chat_id: i64, message_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.delete_messages(chat_id, &[message_id]).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::DeletedMessages {
+                        chat_id,
+                        message_ids: vec![message_id],
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("удаление: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Поставить реакцию (повтор той же сервером убирается — toggle).
+    pub fn react_to(&mut self, chat_id: i64, message_id: i32, emoji: &str) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let emoji = emoji.to_string();
+        self.rt.spawn(async move {
+            match tg.react(chat_id, message_id, &emoji).await {
+                Ok(()) => {
+                    // Счётчики — только с сервера: перезагружаем историю.
+                    let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("реакция: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Прикрепить файл: выбор через нативный диалог → заливка → отправка
+    /// (фото — как фото, остальное — документом; подпись — текст композера).
+    pub fn attach_file(&mut self) {
+        let Some(chat_id) = self.selected_chat else {
+            self.log("сначала выберите чат");
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new().pick_file() else {
+            return;
+        };
+        let caption = self.composer_current.trim().to_string();
+        self.composer_current.clear();
+        self.composer.insert(chat_id, String::new());
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.log(format!("заливка файла: {}…", path.display()));
+        self.rt.spawn(async move {
+            match tg.send_file(chat_id, &path, &caption).await {
+                Ok(sent_id) => {
+                    let item = crate::telegram::MessageInfo {
+                        id: sent_id,
+                        chat_id,
+                        text: caption,
+                        date: chrono::Local::now().timestamp(),
+                        has_media: true,
+                        media_kind: Some("document".into()),
+                        file_name: path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string()),
+                        file_size: std::fs::metadata(&path).ok().map(|m| m.len() as i64),
+                        outgoing: true,
+                        sender: None,
+                        edited: false,
+                        reactions: None,
+                    };
+                    let _ = tx.send(BgEvent::SentMessage { chat_id, item });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("отправка файла: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Аватар чата 64px: кэш → файл → запрос скачивания → идентикон.
+    /// Идентикон возвращается сразу (и как fallback без фото).
+    pub fn ensure_avatar(
+        &mut self,
+        ctx: &egui::Context,
+        chat_id: i64,
+        title: &str,
+    ) -> egui::TextureHandle {
+        if let Some(t) = self.avatars.get(&chat_id) {
+            return t.clone();
+        }
+        if let Some(p) = self.avatar_files.get(&chat_id).cloned() {
+            if let Ok(img) = image::open(&p) {
+                let thumb = img.resize(64, 64, image::imageops::FilterType::Triangle);
+                let tex = ctx.load_texture(
+                    format!("avatar::{chat_id}"),
+                    to_egui(&thumb),
+                    egui::TextureOptions::default(),
+                );
+                self.avatars.insert(chat_id, tex.clone());
+                return tex;
+            }
+        }
+        if self.avatar_requested.insert(chat_id) {
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                if let Ok(Some(path)) = tg.avatar_path(chat_id).await {
+                    let _ = tx.send(BgEvent::AvatarReady { chat_id, path });
+                }
+            });
+        }
+        let tex = ctx.load_texture(
+            format!("avatar::{chat_id}"),
+            identicon(title, chat_id),
+            egui::TextureOptions::default(),
+        );
+        self.avatars.insert(chat_id, tex.clone());
+        tex
     }
 
     /// Одна фоновая итерация с актуальным снапшотом настроек.
@@ -1297,6 +1581,76 @@ fn to_egui(img: &image::DynamicImage) -> egui::ColorImage {
     egui::ColorImage::new([w, h], pixels)
 }
 
+/// Время сообщения: сегодня — ЧЧ:ММ, старше — ДД.ММ. Пусто при битом timestamp.
+pub fn format_msg_time(ts: i64) -> String {
+    if ts <= 0 {
+        return String::new();
+    }
+    let dt = chrono::DateTime::from_timestamp(ts, 0)
+        .map(|u| u.with_timezone(&chrono::Local))
+        .unwrap_or_else(chrono::Local::now);
+    let today = chrono::Local::now().date_naive();
+    if dt.date_naive() == today {
+        dt.format("%H:%M").to_string()
+    } else {
+        dt.format("%d.%m").to_string()
+    }
+}
+
+/// Идентикон чата 64x64 (fallback, когда фото профиля нет/не скачалось):
+/// детерминированный цвет из хэша id+title + зеркальный 8x8-паттерн.
+pub fn identicon(title: &str, id: i64) -> egui::ColorImage {
+    const S: usize = 64;
+    // FNV-1a по title+id.
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    for b in title.bytes().chain(id.to_le_bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01B3);
+    }
+    let hue = (h % 360) as f32;
+    // HSV(насыщ. 0.5, ярк. 0.72) → RGB.
+    let (br, bg, bb) = hsv_to_rgb(hue, 0.5, 0.72);
+    let mut pixels = Vec::with_capacity(S * S);
+    for y in 0..S {
+        for x in 0..S {
+            // Зеркальная колонка 0..=3 → 8x8-клетка 8px.
+            let col = (x / 8).min(7 - x / 8);
+            let row = y / 8;
+            let bit = (h.rotate_left((row * 4 + col) as u32) >> 63) & 1;
+            // Лёгкий вертикальный градиент для объёма.
+            let shade = 0.9 + 0.2 * (y as f32 / S as f32);
+            let (mut r, mut g, mut b) = (
+                (br * shade).clamp(0.0, 255.0) as u8,
+                (bg * shade).clamp(0.0, 255.0) as u8,
+                (bb * shade).clamp(0.0, 255.0) as u8,
+            );
+            if bit == 1 {
+                // Светлая клетка.
+                r = r.saturating_add(90);
+                g = g.saturating_add(90);
+                b = b.saturating_add(90);
+            }
+            pixels.push(egui::Color32::from_rgb(r, g, b));
+        }
+    }
+    egui::ColorImage::new([S, S], pixels)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    ((r + m) * 255.0, (g + m) * 255.0, (b + m) * 255.0)
+}
+
 impl eframe::App for TelecomfortApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump_events();
@@ -1352,5 +1706,38 @@ impl eframe::App for TelecomfortApp {
             Screen::Downloads => super::views::downloads::show(self, ui),
             Screen::Settings => super::views::settings::show(self, ui),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identicon_is_deterministic_and_sized() {
+        let a = identicon("Друзья", 2001);
+        let b = identicon("Друзья", 2001);
+        assert_eq!(a.size, [64, 64]);
+        assert_eq!(a.pixels, b.pixels);
+        // Не сплошной цвет: есть и фон, и клетки паттерна.
+        let first = a.pixels[0];
+        assert!(a.pixels.iter().any(|&p| p != first));
+        // Разные чаты — разные иконки.
+        let c = identicon("Учёба", 2002);
+        assert_ne!(a.pixels, c.pixels);
+        // Пустой title не паникует.
+        let e = identicon("", 0);
+        assert_eq!(e.size, [64, 64]);
+    }
+
+    #[test]
+    fn msg_time_formats() {
+        assert_eq!(format_msg_time(0), "");
+        assert_eq!(format_msg_time(-5), "");
+        // 2024-06-15 12:00 UTC — формат зависит от локальной зоны,
+        // проверяем только структуру.
+        let s = format_msg_time(1_718_443_200);
+        assert!(s.contains(':') || s.contains('.'), "{s}");
+        assert_eq!(s.len(), 5, "{s}");
     }
 }
