@@ -702,6 +702,39 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
+    async fn story_albums(&self) -> anyhow::Result<Vec<crate::telegram::StoryAlbumInfo>> {
+        Ok(vec![crate::telegram::StoryAlbumInfo { album_id: 1, title: "Лучшее".into(), story_count: 3 }])
+    }
+
+    async fn create_album(&self, _title: &str, _story_ids: &[i32]) -> anyhow::Result<i32> {
+        Ok(10)
+    }
+
+    async fn delete_album(&self, _album_id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn poll_voters(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+        _option: Option<Vec<u8>>,
+    ) -> anyhow::Result<(i32, Vec<String>)> {
+        Ok((7, vec!["Анна".into(), "Лектор".into()]))
+    }
+
+    async fn create_folder(&self, _title: &str, _peer_ids: &[i64]) -> anyhow::Result<i32> {
+        Ok(7)
+    }
+
+    async fn rename_folder(&self, _id: i32, _title: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn delete_folder(&self, _id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -944,6 +977,23 @@ mod tests {
         m.kick_participant(-1002, 2001).await.expect("kick");
         m.hide_peer_stories(2001, true).await.expect("hide");
         m.edit_story_caption(7, "новый текст").await.expect("edit story");
+    }
+
+    /// Контракт восьмого parity-пакета: подборки сторис, голоса поимённо, CRUD папок.
+    #[tokio::test]
+    async fn mock_management_contract_7() {
+        let m = MockTelegram;
+        let albums = m.story_albums().await.expect("albums");
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].story_count, 3);
+        assert_eq!(m.create_album("Избранное", &[7, 8]).await.expect("create album"), 10);
+        m.delete_album(10).await.expect("delete album");
+        let (count, voters) = m.poll_voters(-1002, 103, None).await.expect("voters");
+        assert_eq!(count, 7);
+        assert_eq!(voters.len(), 2);
+        assert_eq!(m.create_folder("Работа", &[-1001]).await.expect("create folder"), 7);
+        m.rename_folder(7, "Офис").await.expect("rename");
+        m.delete_folder(7).await.expect("delete folder");
     }
 
     /// Контракт шестого parity-пакета: сторис-интерактив, медиапоиск,

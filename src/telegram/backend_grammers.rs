@@ -1985,6 +1985,202 @@ impl TelegramService for GrammersBackend {
         Ok(())
     }
 
+    async fn story_albums(&self) -> Result<Vec<super::StoryAlbumInfo>> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::GetAlbums {
+                peer: tl::enums::InputPeer::PeerSelf,
+                hash: 0,
+            })
+            .await
+            .context("getAlbums failed")?;
+        let albums = match res {
+            tl::enums::stories::Albums::Albums(a) => a.albums,
+            _ => return Ok(vec![]),
+        };
+        let mut out = Vec::new();
+        for a in albums {
+            if let tl::enums::StoryAlbum::Album(al) = a {
+                // Число сторис: icon fields не считаем; берём заглушку через длину?
+                // Точного count в этом слое нет — покажем 0, UI уточнит при открытии.
+                // Лучше: вытащим из icon? Нет. Оставляем 0 — честно, без выдумок.
+                // UPD: stories у альбома нет в ответе; count недоступен.
+                out.push(super::StoryAlbumInfo {
+                    album_id: al.album_id,
+                    title: al.title,
+                    story_count: 0,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn create_album(&self, title: &str, story_ids: &[i32]) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let title = title.trim();
+        if title.is_empty() || story_ids.is_empty() {
+            anyhow::bail!("нужны название и хотя бы одна сторис");
+        }
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::CreateAlbum {
+                peer: tl::enums::InputPeer::PeerSelf,
+                title: title.to_string(),
+                stories: story_ids.to_vec(),
+            })
+            .await
+            .context("createAlbum failed")?;
+        match res {
+            tl::enums::StoryAlbum::Album(al) => Ok(al.album_id),
+        }
+    }
+
+    async fn delete_album(&self, album_id: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::stories::DeleteAlbum {
+                peer: tl::enums::InputPeer::PeerSelf,
+                album_id,
+            })
+            .await
+            .context("deleteAlbum failed")?;
+        Ok(())
+    }
+
+    async fn poll_voters(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        option: Option<Vec<u8>>,
+    ) -> Result<(i32, Vec<String>)> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetPollVotes {
+                peer: (&pref).into(),
+                id: message_id,
+                option,
+                offset: None,
+                limit: 20,
+            })
+            .await
+            .context("getPollVotes failed")?;
+        let list = match res {
+            tl::enums::messages::VotesList::List(l) => l,
+        };
+        let names = users_map(&list.users);
+        let mut voters = Vec::new();
+        for v in &list.votes {
+            if let tl::enums::MessagePeerVote::Vote(vv) = v {
+                let pid = peer_to_bot_id(&vv.peer);
+                if let Some(n) = names.get(&pid).cloned() {
+                    voters.push(n);
+                }
+            }
+        }
+        Ok((list.count, voters))
+    }
+
+    async fn create_folder(&self, title: &str, peer_ids: &[i64]) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let title = title.trim();
+        if title.is_empty() {
+            anyhow::bail!("пустое название папки");
+        }
+        // id выбираем сами: max+1 поверх существующих (сервер принимает клиентский id).
+        let existing = self.dialog_filters().await.unwrap_or_default();
+        let new_id = existing.iter().map(|f| f.id).max().unwrap_or(0).max(1) + 1;
+        let inputs: Vec<tl::enums::InputPeer> = {
+            let mut v = Vec::new();
+            for pid in peer_ids {
+                if let Some(pref) = self.resolve_ref(*pid).await.unwrap_or(None) {
+                    v.push((&pref).into());
+                }
+            }
+            v
+        };
+        let txt = tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+            text: title.to_string(),
+            entities: vec![],
+        });
+        self.client
+            .invoke(&tl::functions::messages::UpdateDialogFilter {
+                id: new_id,
+                filter: Some(tl::enums::DialogFilter::Filter(tl::types::DialogFilter {
+                    contacts: false,
+                    non_contacts: false,
+                    groups: false,
+                    broadcasts: false,
+                    bots: false,
+                    exclude_muted: false,
+                    exclude_read: false,
+                    exclude_archived: false,
+                    title_noanimate: false,
+                    id: new_id,
+                    title: txt,
+                    emoticon: None,
+                    color: None,
+                    pinned_peers: vec![],
+                    include_peers: inputs,
+                    exclude_peers: vec![],
+                })),
+            })
+            .await
+            .context("createFolder failed")?;
+        Ok(new_id)
+    }
+
+    async fn rename_folder(&self, id: i32, title: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let title = title.trim();
+        if title.is_empty() {
+            anyhow::bail!("пустое название папки");
+        }
+        // Читаем текущий фильтр, чтобы не потерять состав и настройки.
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetDialogFilters {})
+            .await
+            .context("getDialogFilters failed")?;
+        let filters = match res {
+            tl::enums::messages::DialogFilters::Filters(f) => f.filters,
+        };
+        let mut current = None;
+        for f in filters {
+            if let tl::enums::DialogFilter::Filter(df) = f {
+                if df.id == id {
+                    current = Some(df);
+                    break;
+                }
+            }
+        }
+        let mut df = current.context("папка не найдена")?;
+        let txt = tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+            text: title.to_string(),
+            entities: vec![],
+        });
+        df.title = txt;
+        self.client
+            .invoke(&tl::functions::messages::UpdateDialogFilter {
+                id,
+                filter: Some(tl::enums::DialogFilter::Filter(df)),
+            })
+            .await
+            .context("renameFolder failed")?;
+        Ok(())
+    }
+
+    async fn delete_folder(&self, id: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::messages::UpdateDialogFilter { id, filter: None })
+            .await
+            .context("deleteFolder failed")?;
+        Ok(())
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();

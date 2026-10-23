@@ -21,6 +21,21 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             {
                 app.enable_stealth();
             }
+            if ui
+                .small_button("🗂 Подборки")
+                .on_hover_text("Хайлайтс-подборки своих сторис")
+                .clicked()
+            {
+                app.albums_loaded = false;
+                app.load_albums();
+            }
+            if ui
+                .small_button("＋ Подборка")
+                .on_hover_text("Создать подборку из своих сторис")
+                .clicked()
+            {
+                app.album_create_open = true;
+            }
             let ads = app
                 .stories
                 .iter()
@@ -133,6 +148,58 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         app.story_viewers_open = None;
                     }
                 });
+        }
+
+        if !app.albums.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("🗂");
+                for a in app.albums.clone() {
+                    ui.group(|ui| {
+                        ui.label(egui::RichText::new(&a.title).strong());
+                        ui.label(egui::RichText::new(format!("{} шт.", a.story_count)).small().weak());
+                        if ui.small_button("🗑").on_hover_text("Удалить подборку").clicked() {
+                            app.delete_album(a.album_id);
+                        }
+                    });
+                }
+            });
+        }
+        // Окно создания подборки: название + выбор своих сторис.
+        if app.album_create_open {
+            let own: Vec<(i32, String)> = app
+                .stories
+                .iter()
+                .filter(|c| Some(c.info.peer_id) == app.me_id)
+                .map(|c| (c.info.story_id, c.info.caption.clone()))
+                .collect();
+            egui::Window::new("＋ Новая подборка").collapsible(false).show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Название:");
+                    ui.text_edit_singleline(&mut app.album_create_title);
+                });
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for (sid, cap) in own {
+                        let mut sel = app.album_pick.contains(&sid);
+                        let label = if cap.is_empty() { format!("#{sid}") } else { crate::utils::truncate(&cap, 50) };
+                        if ui.checkbox(&mut sel, label).changed() {
+                            if sel {
+                                app.album_pick.insert(sid);
+                            } else {
+                                app.album_pick.remove(&sid);
+                            }
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Создать").clicked() {
+                        app.do_create_album();
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.album_create_open = false;
+                        app.album_pick.clear();
+                    }
+                });
+            });
         }
 
         let n = app.stories.len();

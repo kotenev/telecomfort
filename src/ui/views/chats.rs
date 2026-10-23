@@ -86,6 +86,82 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     app.folder_sel = Some(-1);
                 }
             });
+            // Управление папками: создать/переименовать/удалить.
+            ui.horizontal(|ui| {
+                if ui.small_button("＋ Папка").on_hover_text("Создать папку диалогов").clicked() {
+                    app.folder_create_open = true;
+                    app.folder_create_title.clear();
+                    app.folder_create_peers.clear();
+                }
+                if ui.small_button("⚙ Папки").on_hover_text("Переименовать/удалить папки сервера").clicked() {
+                    app.folder_rename = Some((-1, String::new()));
+                }
+            });
+            if app.folder_create_open {
+                egui::Window::new("＋ Новая папка").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Название:");
+                        ui.text_edit_singleline(&mut app.folder_create_title);
+                    });
+                    ui.label("Диалоги в папке:");
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for d in app.dialogs.clone() {
+                            if d.archived {
+                                continue;
+                            }
+                            let mut sel = app.folder_create_peers.contains(&d.id);
+                            if ui.checkbox(&mut sel, &d.title).changed() {
+                                if sel {
+                                    app.folder_create_peers.insert(d.id);
+                                } else {
+                                    app.folder_create_peers.remove(&d.id);
+                                }
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Создать").clicked() {
+                            app.do_create_folder();
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.folder_create_open = false;
+                        }
+                    });
+                });
+            }
+            if app.folder_rename.is_some() {
+                let folders = app.folders.clone();
+                egui::Window::new("⚙ Папки сервера").collapsible(false).show(ui.ctx(), |ui| {
+                    for f in folders {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("[{}] {}", f.id, f.title));
+                            if ui.small_button("✏️").clicked() {
+                                app.folder_rename = Some((f.id, f.title.clone()));
+                            }
+                            if ui.small_button("🗑").clicked() {
+                                app.do_delete_folder(f.id);
+                            }
+                        });
+                    }
+                    if let Some((fid, _)) = app.folder_rename.clone() {
+                        if fid >= 0 {
+                            ui.horizontal(|ui| {
+                                ui.label("Новое название:");
+                                if let Some((_, name)) = app.folder_rename.as_mut() {
+                                    ui.text_edit_singleline(name);
+                                }
+                                if ui.button("OK").clicked() {
+                                    let name = app.folder_rename.as_ref().map(|(_, n)| n.clone()).unwrap_or_default();
+                                    app.do_rename_folder(fid, name);
+                                }
+                            });
+                        }
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.folder_rename = None;
+                    }
+                });
+            }
             ui.separator();
             let ctx = ui.ctx().clone();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -374,6 +450,21 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                             app.forward_pick = None;
                         }
                     });
+            }
+            // Окно голосов опроса.
+            if let Some(mid) = app.poll_voters_open {
+                let (count, names) = app.poll_voters.get(&mid).cloned().unwrap_or((0, vec![]));
+                egui::Window::new(format!("👥 Голоса ({count})")).collapsible(false).show(ui.ctx(), |ui| {
+                    if names.is_empty() {
+                        ui.label("пока пусто");
+                    }
+                    for n in names.iter().take(50) {
+                        ui.label(format!("• {n}"));
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.poll_voters_open = None;
+                    }
+                });
             }
             composer(app, ui, chat_id);
             // Окна: создание топика/канала, подтверждение, инвайт, запланированные.
@@ -826,6 +917,13 @@ fn poll_card(
             if !poll.closed {
                 if ui.small_button("■ Остановить").on_hover_text("Закрыть голосование").clicked() {
                     app.stop_poll(chat_id, message_id);
+                }
+                let vlabel = match app.poll_voters.get(&message_id) {
+                    Some((total, _)) => format!("👥 {total}"),
+                    None => "👥".to_string(),
+                };
+                if ui.small_button(vlabel).on_hover_text("Кто голосовал").clicked() {
+                    app.load_poll_voters(chat_id, message_id, None);
                 }
                 for a in &poll.answers {
                     let mut label = a.text.clone();
