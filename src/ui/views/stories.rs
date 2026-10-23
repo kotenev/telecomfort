@@ -169,11 +169,15 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 ui.label("🗂");
                 for a in app.albums.clone() {
                     ui.group(|ui| {
-                        ui.label(egui::RichText::new(&a.title).strong());
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(false, egui::RichText::new(&a.title).strong()).clicked() {
+                                app.open_album(a.album_id);
+                            }
+                            if ui.small_button("🗑").on_hover_text("Удалить подборку").clicked() {
+                                app.delete_album(a.album_id);
+                            }
+                        });
                         ui.label(egui::RichText::new(format!("{} шт.", a.story_count)).small().weak());
-                        if ui.small_button("🗑").on_hover_text("Удалить подборку").clicked() {
-                            app.delete_album(a.album_id);
-                        }
                     });
                 }
             });
@@ -213,6 +217,38 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         app.album_pick.clear();
                     }
                 });
+            });
+        }
+        // Окно содержимого подборки (превью через общий кэш архивных миниатюр).
+        if let Some(aid) = app.album_open {
+            let items = app.album_stories.get(&aid).cloned().unwrap_or_default();
+            egui::Window::new(format!("🗂 Подборка #{aid}")).collapsible(false).show(ui.ctx(), |ui| {
+                if items.is_empty() {
+                    ui.label("пусто или грузится…");
+                }
+                let ctx = ui.ctx().clone();
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for it in items {
+                        ui.horizontal(|ui| {
+                            if let Some(tex) = app.ensure_archive_thumb(&ctx, it.peer_id, it.story_id) {
+                                let size = tex.size_vec2();
+                                let scale = (72.0 / size.x.max(1.0)).min(72.0 / size.y.max(1.0));
+                                ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
+                            } else {
+                                ui.label(egui::RichText::new("▨ …").weak());
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(format!("#{0}", it.story_id)).strong());
+                                if !it.caption.is_empty() {
+                                    ui.label(crate::utils::truncate(&it.caption, 60));
+                                }
+                            });
+                        });
+                    }
+                });
+                if ui.button("Закрыть").clicked() {
+                    app.album_open = None;
+                }
             });
         }
 
@@ -409,6 +445,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                         .clicked()
                                     {
                                         app.hide_peer_stories(peer_id, true);
+                                    }
+                                    if ui
+                                        .small_button("↗️")
+                                        .on_hover_text("Репост к себе (с атрибуцией автора)")
+                                        .clicked()
+                                    {
+                                        app.forward_story(peer_id, story_id);
                                     }
                                 }
                             });

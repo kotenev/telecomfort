@@ -330,6 +330,9 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("⏰").on_hover_text("Запланированные сообщения").clicked() {
                     app.load_scheduled(chat_id);
                 }
+                if ui.small_button("📊").on_hover_text("Статистика канала").clicked() {
+                    app.load_channel_stats(chat_id);
+                }
                 if ui.small_button("📌×N").on_hover_text("Все закреплённые сообщения").clicked() {
                     app.load_pinned_all(chat_id);
                 }
@@ -540,9 +543,8 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         for p in items {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{} {}", if p.admin { "⭐" } else { "•" }, p.name));
-                                let admin_label = if p.admin { "⬇ Разжаловать" } else { "⬆ Админ" };
-                                if ui.small_button(admin_label).on_hover_text("Назначить/снять админа (нужны права)").clicked() {
-                                    app.toggle_admin(cid, &p);
+                                if ui.small_button("⚙ Права").on_hover_text("Назначить/снять/настроить админа (нужны права)").clicked() {
+                                    app.open_admin_editor(cid, &p);
                                 }
                                 if !p.admin {
                                     if ui.small_button("🚫").on_hover_text("Исключить").clicked() {
@@ -556,6 +558,65 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         app.participants_open = None;
                     }
                 });
+            }
+            // Редактор прав администратора: тонкие галки как в официальном клиенте.
+            if app.admin_edit.is_some() {
+                let mut close = false;
+                let mut apply = false;
+                egui::Window::new("🛡 Права администратора")
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        if let Some(ed) = app.admin_edit.as_mut() {
+                            ui.label(format!("{} · id {}", ed.user_name, ed.user_id));
+                            ui.horizontal(|ui| {
+                                ui.label("Титул:");
+                                ui.text_edit_singleline(&mut ed.title);
+                            });
+                            egui::Grid::new("admin_rights_grid").show(ui, |ui| {
+                                let r = &mut ed.rights;
+                                ui.checkbox(&mut r.change_info, "Инфо");
+                                ui.checkbox(&mut r.post_messages, "Посты");
+                                ui.end_row();
+                                ui.checkbox(&mut r.edit_messages, "Правка");
+                                ui.checkbox(&mut r.delete_messages, "Удаление");
+                                ui.end_row();
+                                ui.checkbox(&mut r.ban_users, "Бан");
+                                ui.checkbox(&mut r.invite_users, "Инвайты");
+                                ui.end_row();
+                                ui.checkbox(&mut r.pin_messages, "Закрепы");
+                                ui.checkbox(&mut r.manage_call, "Звонки");
+                                ui.end_row();
+                                ui.checkbox(&mut r.manage_topics, "Топики");
+                                ui.checkbox(&mut r.post_stories, "Посты сторис");
+                                ui.end_row();
+                                ui.checkbox(&mut r.edit_stories, "Правка сторис");
+                                ui.checkbox(&mut r.delete_stories, "Удаление сторис");
+                                ui.end_row();
+                                ui.checkbox(&mut r.manage_direct_messages, "Директ");
+                                ui.label("");
+                                ui.end_row();
+                            });
+                            ui.label(
+                                egui::RichText::new("Пустой набор = разжаловать. Без анонимности и права добавлять админов.")
+                                    .small()
+                                    .weak(),
+                            );
+                            ui.horizontal(|ui| {
+                                if ui.button("Применить").clicked() {
+                                    apply = true;
+                                }
+                                if ui.button("Отмена").clicked() {
+                                    close = true;
+                                }
+                            });
+                        }
+                    });
+                if apply {
+                    app.apply_admin_rights();
+                }
+                if close {
+                    app.admin_edit = None;
+                }
             }
             // Окно шаринга контакта: выбор из телефонной книги.
             if app.contact_share_pick.is_some() {
@@ -584,6 +645,22 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         app.contact_share_pick = None;
                     }
                 });
+            }
+            if let Some(cid) = app.channel_stats_open {
+                if let Some(st) = app.channel_stats.get(&cid).cloned() {
+                    egui::Window::new("📊 Статистика канала").collapsible(false).show(ui.ctx(), |ui| {
+                        ui.label(format!("Подписчики: {} (было {})", st.followers, st.followers_prev));
+                        ui.label(format!("Просмотры на пост: {:.0}", st.views_per_post));
+                        ui.label(format!("Репосты на пост: {:.1}", st.shares_per_post));
+                        ui.label(format!("Реакции на пост: {:.1}", st.reactions_per_post));
+                        ui.label(format!("Просмотры сторис: {:.0}", st.views_per_story));
+                        ui.label(format!("С уведомлениями: {:.0}%", st.notifications_pct));
+                        ui.label(egui::RichText::new("без графиков — только сводные числа").small().weak());
+                        if ui.button("Закрыть").clicked() {
+                            app.channel_stats_open = None;
+                        }
+                    });
+                }
             }
             // Подтверждения опасных действий — глобальное окно в app.rs (работает с любого экрана).
             if let Some(cid) = app.slowmode_open {
@@ -759,6 +836,11 @@ fn bubble_content(
     if !m.text.is_empty() {
         ui.label(crate::utils::truncate(&m.text, 2000));
     }
+    // Показываем перевод под текстом, если запрошен.
+    if let Some(tr) = app.translations.get(&(chat_id, m.id)) {
+        ui.separator();
+        ui.label(egui::RichText::new(crate::utils::truncate(tr, 2000)).italics().weak());
+    }
     // Стикеры: превью по месту (качается в кэш, не в Загрузки).
     if m.media_kind.as_deref() == Some("sticker") {
         let ctx = ui.ctx().clone();
@@ -904,6 +986,11 @@ fn bubble_content(
         if ui.small_button("➦").on_hover_text("Переслать в другой чат").clicked() {
             app.start_forward(chat_id, m.id);
         }
+        // 🌐 Перевод: повторный тап скрывает.
+        let has_tr = app.translations.contains_key(&(chat_id, m.id));
+        if ui.small_button(if has_tr { "🌐✓" } else { "🌐" }).on_hover_text("Перевести сообщение (авто: кириллица→en, иначе→ru)").clicked() {
+            app.translate_message(chat_id, m);
+        }
         if ui.small_button("🔗").on_hover_text("Скопировать ссылку на сообщение").clicked() {
             let link = message_link(app, chat_id, m.id);
             ui.ctx().copy_text(link.clone());
@@ -1046,6 +1133,14 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             if let Some(chat_id) = app.selected_chat {
                 app.send_album_pick(chat_id);
             }
+        }
+        let mut sched = app.attach_scheduled;
+        if ui
+            .checkbox(&mut sched, "⏰")
+            .on_hover_text("Отложить следующее вложение (часы — из окна ⏰)")
+            .changed()
+        {
+            app.attach_scheduled = sched;
         }
         if ui
             .button("👤")

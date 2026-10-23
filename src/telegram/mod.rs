@@ -105,12 +105,83 @@ pub struct ParticipantInfo {
     pub admin: bool,
     pub access_hash: i64,
 }
-
 /// Заблокированный пользователь/чат.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockedInfo {
     pub id: i64,
     pub name: String,
+}
+
+/// Тонкие права администратора канала/супергруппы (как в официальном клиенте: галки в окне).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AdminRights {
+    pub change_info: bool,
+    pub post_messages: bool,
+    pub edit_messages: bool,
+    pub delete_messages: bool,
+    pub ban_users: bool,
+    pub invite_users: bool,
+    pub pin_messages: bool,
+    pub manage_call: bool,
+    pub manage_topics: bool,
+    pub post_stories: bool,
+    pub edit_stories: bool,
+    pub delete_stories: bool,
+    pub manage_direct_messages: bool,
+}
+
+impl AdminRights {
+    /// Полный набор (кроме анонимности и добавления админов — как раньше).
+    pub fn full() -> Self {
+        Self {
+            change_info: true,
+            post_messages: true,
+            edit_messages: true,
+            delete_messages: true,
+            ban_users: true,
+            invite_users: true,
+            pin_messages: true,
+            manage_call: true,
+            manage_topics: true,
+            post_stories: true,
+            edit_stories: true,
+            delete_stories: true,
+            manage_direct_messages: true,
+        }
+    }
+    /// Пустой набор = обычный участник (разжаловать).
+    pub fn none() -> Self {
+        Self {
+            change_info: false,
+            post_messages: false,
+            edit_messages: false,
+            delete_messages: false,
+            ban_users: false,
+            invite_users: false,
+            pin_messages: false,
+            manage_call: false,
+            manage_topics: false,
+            post_stories: false,
+            edit_stories: false,
+            delete_stories: false,
+            manage_direct_messages: false,
+        }
+    }
+    pub fn any(&self) -> bool {
+        self.change_info
+            || self.post_messages
+            || self.edit_messages
+            || self.delete_messages
+            || self.ban_users
+            || self.invite_users
+            || self.pin_messages
+            || self.manage_call
+            || self.manage_topics
+            || self.post_stories
+            || self.edit_stories
+            || self.delete_stories
+            || self.manage_direct_messages
+    }
 }
 
 /// Подборка сторис (хайлайтс) текущего пользователя.
@@ -119,6 +190,18 @@ pub struct StoryAlbumInfo {
     pub album_id: i32,
     pub title: String,
     pub story_count: i32,
+}
+
+/// Базовая аналитика канала (без графиков).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelStats {
+    pub followers: i64,
+    pub followers_prev: i64,
+    pub views_per_post: f64,
+    pub shares_per_post: f64,
+    pub reactions_per_post: f64,
+    pub views_per_story: f64,
+    pub notifications_pct: f64,
 }
 
 /// Зритель сторис (имя для списка просмотревших).
@@ -331,6 +414,7 @@ pub trait TelegramService: Send + Sync {
         _path: &std::path::Path,
         _caption: &str,
         _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("file sending is not implemented for this backend")
     }
@@ -392,7 +476,7 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("scheduled send is not implemented for this backend")
     }
     /// Сохранить черновик на сервере (синк между устройствами).
-    async fn save_draft(&self, _chat_id: i64, _text: &str) -> anyhow::Result<()> {
+    async fn save_draft(&self, _chat_id: i64, _text: &str, _reply_to: Option<i32>) -> anyhow::Result<()> {
         Ok(())
     }
     /// Активные сессии текущего аккаунта.
@@ -575,7 +659,7 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("dialog pins are not implemented for this backend")
     }
     /// Отправить альбом файлов (2+). Возвращает id сообщений.
-    async fn send_album(&self, _chat_id: i64, _paths: &[std::path::PathBuf], _caption: &str) -> anyhow::Result<Vec<i32>> {
+    async fn send_album(&self, _chat_id: i64, _paths: &[std::path::PathBuf], _caption: &str, _schedule_at: Option<std::time::SystemTime>) -> anyhow::Result<Vec<i32>> {
         anyhow::bail!("albums are not implemented for this backend")
     }
     /// Архив своих сторис.
@@ -632,8 +716,9 @@ pub trait TelegramService: Send + Sync {
     async fn edit_story_caption(&self, _story_id: i32, _caption: &str) -> anyhow::Result<()> {
         anyhow::bail!("story edit is not implemented for this backend")
     }
-    /// Назначить/снять админа (без права добавлять админов и анонимности).
-    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _admin: bool, _title: &str) -> anyhow::Result<()> {
+    /// Назначить/снять админа с тонкими правами (нужны права владельца).
+    /// Пустой набор прав = разжаловать.
+    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _rights: AdminRights, _title: &str) -> anyhow::Result<()> {
         anyhow::bail!("admin management is not implemented for this backend")
     }
     /// Слоумод чата (0 — выкл, иначе секунды задержки).
@@ -647,6 +732,14 @@ pub trait TelegramService: Send + Sync {
     /// Создать подборку из своих сторис. Возвращает album_id.
     async fn create_album(&self, _title: &str, _story_ids: &[i32]) -> anyhow::Result<i32> {
         anyhow::bail!("story albums are not implemented for this backend")
+    }
+    /// Содержимое подборки (сторис).
+    async fn album_stories(&self, _album_id: i32) -> anyhow::Result<Vec<StoryInfo>> {
+        Ok(vec![])
+    }
+    /// Базовая аналитика канала.
+    async fn channel_stats(&self, _chat_id: i64) -> anyhow::Result<ChannelStats> {
+        anyhow::bail!("channel stats are not implemented for this backend")
     }
     /// Удалить подборку.
     async fn delete_album(&self, _album_id: i32) -> anyhow::Result<()> {
@@ -672,6 +765,24 @@ pub trait TelegramService: Send + Sync {
     /// Удалить папку диалогов.
     async fn delete_folder(&self, _id: i32) -> anyhow::Result<()> {
         anyhow::bail!("folder management is not implemented for this backend")
+    }
+    /// Перевести текст сообщения (Premium API сервера; без Premium — ошибка).
+    /// Возвращает переведённый текст.
+    async fn translate_message(&self, _chat_id: i64, _message_id: i32, _to_lang: &str) -> anyhow::Result<String> {
+        anyhow::bail!("translation is not implemented for this backend")
+    }
+    /// Репост чужой сторис к себе (скачивание → заливка → sendStory с fwd_from).
+    /// Возвращает id новой сторис.
+    async fn forward_story(&self, _peer_id: i64, _story_id: i32, _caption: &str) -> anyhow::Result<i32> {
+        anyhow::bail!("story repost is not implemented for this backend")
+    }
+    /// Эмодзи-статус аккаунта (document_id кастомного эмодзи; None — снять).
+    async fn set_emoji_status(&self, _document_id: Option<i64>) -> anyhow::Result<()> {
+        anyhow::bail!("emoji status is not implemented for this backend")
+    }
+    /// Дефолтные эмодзи-статусы (document_id).
+    async fn default_emoji_statuses(&self) -> anyhow::Result<Vec<i64>> {
+        Ok(vec![])
     }
     fn is_connected(&self) -> bool;
 }
