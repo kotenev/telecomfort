@@ -74,6 +74,10 @@
    Участники канала/супергруппы (👥: список, админы ⭐, кик 🚫 через `channels.editBanned`).
    Редактирование подписи своей сторис (✏️ → `stories.editStory`).
    Скрытие чужих сторис из ленты (🙈 на карточке → `stories.togglePeerStoriesHidden`).
+   Подборки сторис (🗂: список/создание из своих сторис с выбором/удаление, `stories.getAlbums/createAlbum/deleteAlbum`).
+   Голоса в опросах поимённо (👥 на карточке → окно со списком, `messages.getPollVotes`).
+   Папки диалогов: создание (＋ Папка, выбор чатов, id=max+1, `messages.updateDialogFilter`),
+   переименование/удаление (⚙ Папки), вкладки-фильтры остаются.
    В демо всё работает на моке (синтетические id 9000+).
 
 Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
@@ -91,7 +95,7 @@ cargo run
 # запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
 cargo run --features ort
 
-# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/медиапоиск/сторис-интерактив/модерация/мок-контракты) + видео + чанки + multi-DC + бандл
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/медиапоиск/сторис-интерактив/модерация/подборки/мок-контракты) + видео + чанки + multi-DC + бандл
 cargo test
 
 # проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
@@ -143,6 +147,8 @@ src/
                         + story_react/story_pin/story_viewers/media_search/username/avatar/delete_contact/blocked
                         + share_contact/stop_poll/pinned_list/revoke_invite/participants/kick
                         + hide_stories/edit_story_caption
+                        + story_albums/create_album/delete_album/poll_voters
+                        + create_folder/rename_folder/delete_folder
    media/mod.rs       — AutoDownloader: matches_rules/should_download/download_many → MTProto (чанки+resume+прогресс) → sha256+pHash → Yandex → Calibre (+прогресс, семафор ×4)
    media/mtproto.rs     — Multi-DC докачка: chunk_ranges/resume_start/.part + DcAffinity + auth-перенос + upload.getFile precise ×N + writer seek + прогресс
     media/h264.rs        — Встроенный H.264-декодер первого кадра (чистый Rust, rusty_h264): avcC+mdat → Annex B → YUV→RGB

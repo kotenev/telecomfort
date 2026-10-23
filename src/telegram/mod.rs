@@ -111,6 +111,14 @@ pub struct BlockedInfo {
     pub name: String,
 }
 
+/// Подборка сторис (хайлайтс) текущего пользователя.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryAlbumInfo {
+    pub album_id: i32,
+    pub title: String,
+    pub story_count: i32,
+}
+
 /// Зритель сторис (имя для списка просмотревших).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryViewer {
@@ -602,6 +610,39 @@ pub trait TelegramService: Send + Sync {
     /// Изменить подпись своей сторис.
     async fn edit_story_caption(&self, _story_id: i32, _caption: &str) -> anyhow::Result<()> {
         anyhow::bail!("story edit is not implemented for this backend")
+    }
+    /// Подборки сторис (хайлайтс) текущего пользователя.
+    async fn story_albums(&self) -> anyhow::Result<Vec<StoryAlbumInfo>> {
+        Ok(vec![])
+    }
+    /// Создать подборку из своих сторис. Возвращает album_id.
+    async fn create_album(&self, _title: &str, _story_ids: &[i32]) -> anyhow::Result<i32> {
+        anyhow::bail!("story albums are not implemented for this backend")
+    }
+    /// Удалить подборку.
+    async fn delete_album(&self, _album_id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("story albums are not implemented for this backend")
+    }
+    /// Кто голосовал в опросе (всего, имена). `option=None` — все варианты.
+    async fn poll_voters(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+        _option: Option<Vec<u8>>,
+    ) -> anyhow::Result<(i32, Vec<String>)> {
+        Ok((0, vec![]))
+    }
+    /// Создать папку диалогов (id = max+1). Возвращает id.
+    async fn create_folder(&self, _title: &str, _peer_ids: &[i64]) -> anyhow::Result<i32> {
+        anyhow::bail!("folder management is not implemented for this backend")
+    }
+    /// Переименовать папку (состав и настройки сохраняются).
+    async fn rename_folder(&self, _id: i32, _title: &str) -> anyhow::Result<()> {
+        anyhow::bail!("folder management is not implemented for this backend")
+    }
+    /// Удалить папку диалогов.
+    async fn delete_folder(&self, _id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("folder management is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

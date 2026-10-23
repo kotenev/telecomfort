@@ -90,6 +90,14 @@ pub enum BgEvent {
     MediaTabLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
     /// Чёрный список загружен.
     BlockedLoaded(Vec<crate::telegram::BlockedInfo>),
+    /// Подборки загружены.
+    AlbumsLoaded(Vec<crate::telegram::StoryAlbumInfo>),
+    /// Подборка создана/удалена.
+    AlbumChanged,
+    /// Голоса загружены.
+    PollVotersLoaded { message_id: i32, count: i32, voters: Vec<String> },
+    /// Папки перезагрузить.
+    FoldersChanged,
     /// Контакт расшарен.
     ShareContactSent { chat_id: i64, message_id: i32 },
     /// Опрос остановлен.
@@ -336,6 +344,20 @@ pub struct TelecomfortApp {
     /// Чёрный список + флаг загрузки.
     pub blocked: Vec<crate::telegram::BlockedInfo>,
     pub blocked_loaded: bool,
+    /// Подборки сторис + окно создания (выбор своих сторис).
+    pub albums: Vec<crate::telegram::StoryAlbumInfo>,
+    pub albums_loaded: bool,
+    pub album_create_open: bool,
+    pub album_create_title: String,
+    pub album_pick: std::collections::HashSet<i32>,
+    /// Голоса в опросе (msg_id → (всего, имена)) + окно.
+    pub poll_voters: HashMap<i32, (i32, Vec<String>)>,
+    pub poll_voters_open: Option<i32>,
+    /// Папки: окно создания (выбор диалогов) + переименование.
+    pub folder_create_open: bool,
+    pub folder_create_title: String,
+    pub folder_create_peers: std::collections::HashSet<i64>,
+    pub folder_rename: Option<(i32, String)>,
 
     // Седьмой parity-пакет: шаринг контактов, опросы-менеджмент, модерация
     /// Выбор контакта для шаринга: целевой чат.
@@ -490,6 +512,17 @@ impl TelecomfortApp {
             profile_username: String::new(),
             blocked: Vec::new(),
             blocked_loaded: false,
+            albums: Vec::new(),
+            albums_loaded: false,
+            album_create_open: false,
+            album_create_title: String::new(),
+            album_pick: std::collections::HashSet::new(),
+            poll_voters: HashMap::new(),
+            poll_voters_open: None,
+            folder_create_open: false,
+            folder_create_title: String::new(),
+            folder_create_peers: std::collections::HashSet::new(),
+            folder_rename: None,
             contact_share_pick: None,
             pinned_more: HashMap::new(),
             pinned_more_open: None,
@@ -765,7 +798,28 @@ impl TelecomfortApp {
                 BgEvent::BlockedLoaded(blocked) => {
                     self.blocked = blocked;
                     self.blocked_loaded = true;
-                    // Сбрасываем флаг, если список пуст и это был первый запрос.
+                }
+                BgEvent::AlbumsLoaded(albums) => {
+                    self.albums = albums;
+                    self.albums_loaded = true;
+                }
+                BgEvent::AlbumChanged => {
+                    self.album_create_open = false;
+                    self.album_create_title.clear();
+                    self.album_pick.clear();
+                    self.load_albums();
+                }
+                BgEvent::PollVotersLoaded { message_id, count, voters } => {
+                    self.poll_voters.insert(message_id, (count, voters));
+                    self.poll_voters_open = Some(message_id);
+                }
+                BgEvent::FoldersChanged => {
+                    self.folder_create_open = false;
+                    self.folder_create_title.clear();
+                    self.folder_create_peers.clear();
+                    self.folder_rename = None;
+                    self.load_folders();
+                    self.refresh_dialogs();
                 }
                 BgEvent::ShareContactSent { chat_id, message_id } => {
                     self.contact_share_pick = None;
@@ -1968,6 +2022,148 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("подпись: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить подборки сторис (лента хайлайтс).
+    pub fn load_albums(&mut self) {
+        if self.albums_loaded {
+            return;
+        }
+        self.albums_loaded = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.story_albums().await {
+                Ok(a) => {
+                    let _ = tx.send(BgEvent::AlbumsLoaded(a));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подборки: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Удалить подборку.
+    pub fn delete_album(&mut self, album_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.delete_album(album_id).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("подборка удалена".into()));
+                    let _ = tx.send(BgEvent::AlbumChanged);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подборка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Создать подборку из отмеченных своих сторис.
+    pub fn do_create_album(&mut self) {
+        let title = self.album_create_title.trim().to_string();
+        let ids: Vec<i32> = self.album_pick.iter().copied().collect();
+        if title.is_empty() || ids.is_empty() {
+            self.log("подборка: нужны название и хотя бы одна сторис".to_string());
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.create_album(&title, &ids).await {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::Log(format!("подборка создана (album {id})")));
+                    let _ = tx.send(BgEvent::AlbumChanged);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подборка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить голоса опроса (окно со списком).
+    pub fn load_poll_voters(&mut self, chat_id: i64, message_id: i32, option: Option<Vec<u8>>) {
+        if self.poll_voters.contains_key(&message_id) {
+            self.poll_voters_open = Some(message_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.poll_voters(chat_id, message_id, option).await {
+                Ok((count, voters)) => {
+                    let _ = tx.send(BgEvent::PollVotersLoaded { message_id, count, voters });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("голоса: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Создать папку диалогов из отмеченных чатов.
+    pub fn do_create_folder(&mut self) {
+        let title = self.folder_create_title.trim().to_string();
+        let peers: Vec<i64> = self.folder_create_peers.iter().copied().collect();
+        if title.is_empty() {
+            self.log("папка: нужно название".to_string());
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.create_folder(&title, &peers).await {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::Log(format!("папка создана (id {id})")));
+                    let _ = tx.send(BgEvent::FoldersChanged);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("папка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Переименовать папку (окно переименования).
+    pub fn do_rename_folder(&mut self, folder_id: i32, title: String) {
+        let title = title.trim().to_string();
+        self.folder_rename = None;
+        if title.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.rename_folder(folder_id, &title).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("папка переименована".to_string()));
+                    let _ = tx.send(BgEvent::FoldersChanged);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("папка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Удалить папку диалогов.
+    pub fn do_delete_folder(&mut self, folder_id: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.delete_folder(folder_id).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("папка удалена".to_string()));
+                    let _ = tx.send(BgEvent::FoldersChanged);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("папка: {e:#}")));
                 }
             }
         });
