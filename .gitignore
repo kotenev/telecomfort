@@ -1,0 +1,16 @@
+# Rust / Cargo (Cargo.lock коммитим намеренно — бинарный крейт)
+/target/
+
+# IDE
+.idea/
+.vscode/
+
+# Kilo sessions
+.kilo/
+
+# OS
+.DS_Store
+
+# Локальные секреты и рантайм-данные (не коммитить!)
+.env
+*.session
