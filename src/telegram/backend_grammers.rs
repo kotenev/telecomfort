@@ -928,6 +928,447 @@ impl TelegramService for GrammersBackend {
         anyhow::bail!("sendStory: id новой сторис не найден")
     }
 
+    async fn delete_stories(&self, story_ids: &[i32]) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::stories::DeleteStories {
+                peer: tl::enums::InputPeer::PeerSelf,
+                id: story_ids.to_vec(),
+            })
+            .await
+            .context("deleteStories failed")?;
+        Ok(())
+    }
+
+    async fn forum_topics(&self, chat_id: i64) -> Result<Vec<super::TopicInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let res = match self
+            .client
+            .invoke(&tl::functions::messages::GetForumTopics {
+                peer: (&pref).into(),
+                q: None,
+                offset_date: 0,
+                offset_id: 0,
+                offset_topic: 0,
+                limit: 100,
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("getForumTopics failed (не форум?): {e}");
+                return Ok(vec![]);
+            }
+        };
+        let t = match res {
+            tl::enums::messages::ForumTopics::Topics(t) => t,
+        };
+        let mut out = Vec::new();
+        for f in t.topics {
+            if let tl::enums::ForumTopic::Topic(topic) = f {
+                out.push(super::TopicInfo { id: topic.id, title: topic.title });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn create_topic(&self, chat_id: i64, title: &str) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::CreateForumTopic {
+                title_missing: false,
+                peer: (&pref).into(),
+                title: title.to_string(),
+                icon_color: None,
+                icon_emoji_id: None,
+                random_id,
+                send_as: None,
+            })
+            .await
+            .context("createForumTopic failed")?;
+        // Ответ — Updates: ищем id нового топика.
+        let updates = match res {
+            tl::enums::Updates::Updates(u) => u.updates,
+            tl::enums::Updates::Combined(u) => u.updates,
+            _ => vec![],
+        };
+        for u in &updates {
+            // Новый топик приходит служебным сообщением с reply_to header;
+            // надёжнее — перечитать список и взять максимальный id.
+            let _ = u;
+        }
+        let topics = self.forum_topics(chat_id).await?;
+        topics
+            .into_iter()
+            .map(|t| t.id)
+            .max()
+            .context("createForumTopic: топик не найден после создания")
+    }
+
+    async fn topic_history(
+        &self,
+        chat_id: i64,
+        topic_id: i32,
+        limit: usize,
+    ) -> Result<Vec<MessageInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // messages.search с top_msg_id — единственный способ читать топик
+        // (у HistoryIter топ-фильтра нет, пустой q + фильтр Empty = весь топик).
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::Search {
+                peer: (&pref).into(),
+                q: String::new(),
+                from_id: None,
+                saved_peer_id: None,
+                saved_reaction: None,
+                top_msg_id: Some(topic_id),
+                filter: tl::enums::MessagesFilter::InputMessagesFilterEmpty,
+                min_date: 0,
+                max_date: 0,
+                offset_id: 0,
+                add_offset: 0,
+                limit: limit.min(200) as i32,
+                max_id: 0,
+                min_id: 0,
+                hash: 0,
+            })
+            .await
+            .context("topic search failed")?;
+        let (messages, users) = match res {
+            tl::enums::messages::Messages::Messages(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::Slice(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users),
+            _ => (vec![], vec![]),
+        };
+        let names = users_map(&users);
+        Ok(messages
+            .into_iter()
+            .filter_map(|m| raw_to_info(&m, chat_id, Some(topic_id), &names))
+            .collect())
+    }
+
+    async fn send_to_topic(&self, chat_id: i64, topic_id: i32, text: &str) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_nanos() & 0x7FFF_FFFF_FFFF_FFFF) as i64)
+            .unwrap_or(1);
+        // Сырой sendMessage с top_msg_id — grammers InputMessage топики не умеет.
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::SendMessage {
+                no_webpage: true,
+                silent: false,
+                background: false,
+                clear_draft: true,
+                noforwards: false,
+                update_stickersets_order: false,
+                invert_media: false,
+                peer: (&pref).into(),
+                reply_to: Some(tl::enums::InputReplyTo::Message(
+                    tl::types::InputReplyToMessage {
+                        reply_to_msg_id: topic_id,
+                        top_msg_id: Some(topic_id),
+                        reply_to_peer_id: None,
+                        quote_text: None,
+                        quote_entities: None,
+                        quote_offset: None,
+                        monoforum_peer_id: None,
+                        todo_item_id: None,
+                        poll_option: None,
+                    },
+                )),
+                message: text.to_string(),
+                random_id,
+                reply_markup: None,
+                entities: None,
+                schedule_date: None,
+                schedule_repeat_period: None,
+                send_as: None,
+                quick_reply_shortcut: None,
+                allow_paid_floodskip: false,
+                allow_paid_stars: None,
+                effect: None,
+                suggested_post: None,
+                rich_message: None,
+            })
+            .await
+            .context("send to topic failed")?;
+        // Ответ — Updates: вытаскиваем id отправленного из NewMessage.
+        let updates = match res {
+            tl::enums::Updates::Updates(u) => u.updates,
+            tl::enums::Updates::Combined(u) => u.updates,
+            _ => vec![],
+        };
+        for u in &updates {
+            match u {
+                tl::enums::Update::NewMessage(m) => {
+                    if let tl::enums::Message::Message(mm) = &m.message {
+                        return Ok(mm.id);
+                    }
+                }
+                tl::enums::Update::NewChannelMessage(m) => {
+                    if let tl::enums::Message::Message(mm) = &m.message {
+                        return Ok(mm.id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        anyhow::bail!("send to topic: id не найден в Updates")
+    }
+
+    async fn global_search(&self, query: &str, limit: usize) -> Result<Vec<(i64, MessageInfo)>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut iter = self.client.search_all_messages().query(q).limit(limit.min(100));
+        let mut out = Vec::new();
+        while let Some(m) = iter.next().await? {
+            let pref = m
+                .peer_ref()
+                .await
+                .map_err(|e| anyhow::anyhow!("peer_ref: {e}"))?
+                .context("global search: no peer")?;
+            let bot_id = pref.id.bot_api_dialog_id().unwrap_or(0);
+            out.push((bot_id, message_to_info(&m, bot_id)));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn scheduled_history(&self, chat_id: i64) -> Result<Vec<MessageInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetScheduledHistory { peer: (&pref).into(), hash: 0 })
+            .await
+            .context("getScheduledHistory failed")?;
+        let (messages, users) = match res {
+            tl::enums::messages::Messages::Messages(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::Slice(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users),
+            _ => (vec![], vec![]),
+        };
+        let names = users_map(&users);
+        Ok(messages
+            .into_iter()
+            .filter_map(|m| raw_to_info(&m, chat_id, None, &names))
+            .collect())
+    }
+
+    async fn cancel_scheduled(&self, chat_id: i64, message_id: i32) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::DeleteScheduledMessages {
+                peer: (&pref).into(),
+                id: vec![message_id],
+            })
+            .await
+            .context("deleteScheduledMessages failed")?;
+        Ok(())
+    }
+
+    async fn create_channel(
+        &self,
+        title: &str,
+        about: &str,
+        broadcast: bool,
+    ) -> Result<i64> {
+        use grammers_client::tl as tl;
+        let title = title.trim();
+        if title.is_empty() {
+            anyhow::bail!("пустое название");
+        }
+        let res = self
+            .client
+            .invoke(&tl::functions::channels::CreateChannel {
+                broadcast,
+                megagroup: !broadcast,
+                for_import: false,
+                forum: false,
+                title: title.to_string(),
+                about: about.to_string(),
+                geo_point: None,
+                address: None,
+                ttl_period: None,
+            })
+            .await
+            .context("createChannel failed")?;
+        // Ответ — Updates с новым чатом: берём первый Channel.
+        let (updates, chats) = match res {
+            tl::enums::Updates::Updates(u) => (u.updates, u.chats),
+            tl::enums::Updates::Combined(u) => (u.updates, u.chats),
+            _ => (vec![], vec![]),
+        };
+        let _ = updates;
+        for c in &chats {
+            if let tl::enums::Chat::Channel(ch) = c {
+                return Ok(-(1_000_000_000_000 + ch.id));
+            }
+        }
+        anyhow::bail!("createChannel: новый чат не найден в Updates")
+    }
+
+    async fn invite_link(&self, chat_id: i64) -> Result<String> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::ExportChatInvite {
+                legacy_revoke_permanent: false,
+                request_needed: false,
+                peer: (&pref).into(),
+                expire_date: None,
+                usage_limit: None,
+                title: None,
+                subscription_pricing: None,
+            })
+            .await
+            .context("exportChatInvite failed (нет прав?)")?;
+        match res {
+            tl::enums::ExportedChatInvite::ChatInviteExported(e) => Ok(e.link),
+            _ => anyhow::bail!("неожиданный тип инвайта"),
+        }
+    }
+
+    async fn block_user(&self, chat_id: i64, blocked: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        if blocked {
+            self.client
+                .invoke(&tl::functions::contacts::Block {
+                    my_stories_from: false,
+                    id: (&pref).into(),
+                })
+                .await
+                .context("block failed")?;
+        } else {
+            self.client
+                .invoke(&tl::functions::contacts::Unblock {
+                    my_stories_from: false,
+                    id: (&pref).into(),
+                })
+                .await
+                .context("unblock failed")?;
+        }
+        Ok(())
+    }
+
+    async fn clear_history(&self, chat_id: i64, revoke: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        // Каналы/супергруппы — через channels.deleteHistory, иначе messages.
+        if pref.id.kind() == grammers_session::types::PeerKind::Channel {
+            let channel: tl::enums::InputChannel = pref.into();
+            self.client
+                .invoke(&tl::functions::channels::DeleteHistory {
+                    for_everyone: revoke,
+                    channel,
+                    max_id: 0,
+                })
+                .await
+                .context("clear history failed (нет прав?)")?;
+        } else {
+            self.client
+                .invoke(&tl::functions::messages::DeleteHistory {
+                    just_clear: true,
+                    revoke,
+                    peer: pref.into(),
+                    max_id: 0,
+                    min_date: None,
+                    max_date: None,
+                })
+                .await
+                .context("clear history failed")?;
+        }
+        Ok(())
+    }
+
+    async fn leave_channel(&self, chat_id: i64) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        self.client
+            .invoke(&tl::functions::channels::LeaveChannel { channel })
+            .await
+            .context("leave failed")?;
+        Ok(())
+    }
+
+    async fn add_contact(&self, phone: &str, first_name: &str, last_name: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let phone = phone.trim().replace([' ', '-', '(', ')'], "");
+        if phone.len() < 5 || first_name.trim().is_empty() {
+            anyhow::bail!("нужны телефон и имя");
+        }
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        self.client
+            .invoke(&tl::functions::contacts::ImportContacts {
+                contacts: vec![tl::enums::InputContact::InputPhoneContact(
+                    tl::types::InputPhoneContact {
+                        client_id: random_id,
+                        phone,
+                        first_name: first_name.trim().to_string(),
+                        last_name: last_name.trim().to_string(),
+                        note: None,
+                    },
+                )],
+            })
+            .await
+            .context("importContacts failed")?;
+        Ok(())
+    }
+
+    async fn download_web_photo(
+        &self,
+        photo: &super::WebPreviewPhoto,
+        dest: &Path,
+    ) -> Result<PathBuf> {
+        use grammers_client::tl as tl;
+        // Собираем grammers::Photo из сохранённых id/hash/ref (sizes пустые —
+        // download возьмёт thumb_size "w", dc — из dc_id).
+        let raw = tl::enums::Photo::Photo(tl::types::Photo {
+            has_stickers: false,
+            id: photo.photo_id,
+            access_hash: photo.access_hash,
+            file_reference: photo.file_reference.clone(),
+            date: 0,
+            sizes: vec![],
+            video_sizes: None,
+            dc_id: photo.dc_id,
+        });
+        let media = grammers_client::media::Media::Photo(
+            grammers_client::media::Photo::from_raw(raw),
+        );
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        self.client
+            .download_media(&media, dest)
+            .await
+            .context("web photo download failed")?;
+        Ok(dest.to_path_buf())
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();
@@ -1077,12 +1518,14 @@ fn text_of(t: &grammers_client::tl::enums::TextWithEntities) -> String {
 /// grammers Message → MessageInfo (единая точка: history, pinned).
 fn message_to_info(m: &grammers_client::message::Message, chat_id: i64) -> MessageInfo {
     use grammers_client::media::Media as M;
+    use grammers_client::tl as tl;
     let mut kind: Option<String> = None;
     let mut name: Option<String> = None;
     let mut size: Option<i64> = None;
     let mut poll: Option<super::PollInfo> = None;
     let mut geo: Option<(f64, f64)> = None;
     let mut contact: Option<(String, String)> = None;
+    let mut web: Option<super::WebPreview> = None;
     match m.media() {
         None => {}
         Some(media) => match &media {
@@ -1119,11 +1562,31 @@ fn message_to_info(m: &grammers_client::message::Message, chat_id: i64) -> Messa
                 geo = Some((g.latitue(), g.longitude()));
             }
             M::Contact(c) => {
-                kind = Some("contact".into());
+                kind = Some("contact".to_string());
                 let full = format!("{} {}", c.first_name(), c.last_name())
                     .trim()
                     .to_string();
                 contact = Some((full, c.phone_number().to_string()));
+            }
+            M::WebPage(w) => {
+                if let tl::enums::WebPage::Page(page) = &w.raw.webpage {
+                    kind = Some("webpage".to_string());
+                    let photo = match &page.photo {
+                        Some(tl::enums::Photo::Photo(p)) => Some(super::WebPreviewPhoto {
+                            photo_id: p.id,
+                            access_hash: p.access_hash,
+                            file_reference: p.file_reference.clone(),
+                            dc_id: p.dc_id,
+                        }),
+                        _ => None,
+                    };
+                    web = Some(super::WebPreview {
+                        url: page.url.clone(),
+                        title: page.title.clone().unwrap_or_default(),
+                        description: page.description.clone().unwrap_or_default(),
+                        photo,
+                    });
+                }
             }
             _ => {
                 kind = Some("media".into());
@@ -1150,6 +1613,8 @@ fn message_to_info(m: &grammers_client::message::Message, chat_id: i64) -> Messa
         poll,
         geo,
         contact,
+        web_preview: web,
+        topic_id: None,
     }
 }
 
@@ -1215,4 +1680,209 @@ fn extract_story_media(
         }
     }
     None
+}
+
+/// user_id → отображаемое имя из ответа с пользователями (топики/запланированные).
+fn users_map(users: &[grammers_client::tl::enums::User]) -> std::collections::HashMap<i64, String> {
+    use grammers_client::tl::enums::User as U;
+    let mut out = std::collections::HashMap::new();
+    for u in users {
+        if let U::User(u) = u {
+            let name = match (&u.first_name, &u.last_name) {
+                (Some(f), Some(l)) => format!("{f} {l}"),
+                (Some(f), None) => f.clone(),
+                (None, Some(l)) => l.clone(),
+                (None, None) => u.username.clone().unwrap_or_else(|| format!("id{}", u.id)),
+            };
+            out.insert(u.id, name);
+        }
+    }
+    out
+}
+
+/// Сырое `tl::enums::Message` → `MessageInfo` (топики, запланированные):
+/// grammers-обёртки там нет, маппим вручную. Отправитель — по карте users
+/// (её нет в Slice — тогда только «вы»/id), медиа — метки + имена
+/// (скачивание всё равно идёт по id через `get_messages_by_id`).
+fn raw_to_info(
+    m: &grammers_client::tl::enums::Message,
+    chat_id: i64,
+    topic: Option<i32>,
+    users: &std::collections::HashMap<i64, String>,
+) -> Option<MessageInfo> {
+    use grammers_client::tl as tl;
+    let mm = match m {
+        tl::enums::Message::Message(m) => m,
+        _ => return None,
+    };
+    let (outgoing, sender) = match &mm.from_id {
+        Some(p) => {
+            let id = peer_to_bot_id(p);
+            let name = users.get(&id).cloned().or_else(|| {
+                mm.post_author.clone().or_else(|| {
+                    if mm.out {
+                        Some("вы".to_string())
+                    } else {
+                        None
+                    }
+                })
+            });
+            (mm.out, name)
+        }
+        None => (mm.out, mm.post_author.clone()),
+    };
+    let mut kind: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut poll: Option<super::PollInfo> = None;
+    let mut geo: Option<(f64, f64)> = None;
+    let mut contact: Option<(String, String)> = None;
+    let mut web: Option<super::WebPreview> = None;
+    match &mm.media {
+        None => {}
+        Some(media) => match media {
+            tl::enums::MessageMedia::Photo(_) => {
+                kind = Some("photo".to_string());
+                name = Some(format!("photo_{}.jpg", mm.id));
+            }
+            tl::enums::MessageMedia::Document(d) => {
+                let mut fname = format!("doc_{}", mm.id);
+                let mut k = "document";
+                if let Some(doc) = &d.document {
+                    if let tl::enums::Document::Document(dd) = doc {
+                        for a in &dd.attributes {
+                            match a {
+                                tl::enums::DocumentAttribute::Filename(f) => {
+                                    fname = f.file_name.clone();
+                                }
+                                tl::enums::DocumentAttribute::Sticker(_) => {
+                                    k = "sticker";
+                                }
+                                _ => {}
+                            }
+                        }
+                        // Стикеры уже покрыты именем sticker_<id>.webp для превью.
+                        if k == "sticker" {
+                            fname = format!("sticker_{}.webp", mm.id);
+                        }
+                        if dd.mime_type.starts_with("video") {
+                            k = "video";
+                        } else if dd.mime_type.starts_with("audio") {
+                            k = "audio";
+                        }
+                    }
+                }
+                kind = Some(k.to_string());
+                name = Some(fname);
+            }
+            tl::enums::MessageMedia::Poll(p) => {
+                if let tl::enums::Poll::Poll(raw) = &p.poll {
+                    let question = text_of(&raw.question);
+                    let mut stat: std::collections::HashMap<Vec<u8>, (Option<i32>, bool)> =
+                        std::collections::HashMap::new();
+                    let mut total_voters = None;
+                    if let tl::enums::PollResults::Results(rr) = &p.results {
+                        total_voters = rr.total_voters;
+                        for v in rr.results.iter().flatten() {
+                            if let tl::enums::PollAnswerVoters::Voters(v) = v {
+                                stat.insert(v.option.clone(), (v.voters, v.chosen));
+                            }
+                        }
+                    }
+                    let answers = raw
+                        .answers
+                        .iter()
+                        .map(|a| match a {
+                            tl::enums::PollAnswer::Answer(t) => {
+                                let (votes, chosen) =
+                                    stat.get(&t.option).copied().unwrap_or((None, false));
+                                super::PollAnswerInfo {
+                                    text: text_of(&t.text),
+                                    option: t.option.clone(),
+                                    votes,
+                                    chosen,
+                                }
+                            }
+                            _ => super::PollAnswerInfo {
+                                text: "?".to_string(),
+                                option: vec![],
+                                votes: None,
+                                chosen: false,
+                            },
+                        })
+                        .collect();
+                    poll = Some(super::PollInfo {
+                        question,
+                        closed: raw.closed,
+                        quiz: raw.quiz,
+                        total_voters,
+                        answers,
+                    });
+                }
+            }
+            tl::enums::MessageMedia::Geo(g) => {
+                if let tl::enums::GeoPoint::Point(pt) = &g.geo {
+                    kind = Some("geo".to_string());
+                    geo = Some((pt.lat, pt.long));
+                }
+            }
+            tl::enums::MessageMedia::Contact(c) => {
+                kind = Some("contact".to_string());
+                contact = Some((
+                    format!("{} {}", c.first_name, c.last_name).trim().to_string(),
+                    c.phone_number.clone(),
+                ));
+            }
+            tl::enums::MessageMedia::WebPage(w) => {
+                if let tl::enums::WebPage::Page(page) = &w.webpage {
+                    let photo = match &page.photo {
+                        Some(tl::enums::Photo::Photo(p)) => Some(super::WebPreviewPhoto {
+                            photo_id: p.id,
+                            access_hash: p.access_hash,
+                            file_reference: p.file_reference.clone(),
+                            dc_id: p.dc_id,
+                        }),
+                        _ => None,
+                    };
+                    web = Some(super::WebPreview {
+                        url: page.url.clone(),
+                        title: page.title.clone().unwrap_or_default(),
+                        description: page.description.clone().unwrap_or_default(),
+                        photo,
+                    });
+                }
+            }
+            _ => {
+                kind = Some("media".to_string());
+                name = Some(format!("media_{}", mm.id));
+            }
+        },
+    }
+    let reactions = mm.reactions.as_ref().map(|r| match r {
+        tl::enums::MessageReactions::Reactions(rr) => rr.results.iter().map(|c| match c {
+            tl::enums::ReactionCount::Count(cc) => cc.count,
+            _ => 0,
+        }).sum(),
+        _ => 0,
+    });
+    Some(MessageInfo {
+        id: mm.id,
+        chat_id,
+        text: mm.message.clone(),
+        date: mm.date as i64,
+        has_media: kind.is_some(),
+        media_kind: kind,
+        file_name: name,
+        file_size: None,
+        outgoing,
+        sender,
+        edited: mm.edit_date.is_some(),
+        reactions,
+        views: mm.views,
+        forwards: mm.forwards,
+        poll,
+        geo,
+        contact,
+        web_preview: web,
+        topic_id: topic,
+    })
 }

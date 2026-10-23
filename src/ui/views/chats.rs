@@ -18,7 +18,57 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("↻").on_hover_text("Обновить").clicked() {
                     app.refresh_dialogs();
                 }
+                if ui
+                    .small_button("＋")
+                    .on_hover_text("Создать группу/канал")
+                    .clicked()
+                {
+                    app.create_chat_open = true;
+                }
             });
+            // Глобальный поиск по всем чатам (серверный).
+            ui.horizontal(|ui| {
+                ui.label("🌍");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.gsearch)
+                        .hint_text("глобальный поиск…")
+                        .desired_width(160.0),
+                );
+                let go = ui.small_button("🔍").clicked()
+                    || (resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                if go {
+                    app.do_global_search();
+                }
+            });
+            if !app.gsearch_results.is_empty() {
+                let count = app.gsearch_results.len();
+                ui.label(
+                    egui::RichText::new(format!("найдено: {count} (клик — открыть чат)"))
+                        .small()
+                        .weak(),
+                );
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for (cid, m) in app.gsearch_results.clone() {
+                        let title = app
+                            .dialogs
+                            .iter()
+                            .find(|d| d.id == cid)
+                            .map(|d| d.title.clone())
+                            .unwrap_or_else(|| format!("chat {cid}"));
+                        if ui
+                            .selectable_label(
+                                false,
+                                format!("{}: {}", title, crate::utils::truncate(&m.text, 60)),
+                            )
+                            .clicked()
+                        {
+                            app.select_chat(cid);
+                        }
+                    }
+                });
+                ui.separator();
+            }
             // Папки сервера + Архив (как вкладки в официальном клиенте).
             ui.horizontal_wrapped(|ui| {
                 let all_sel = app.folder_sel.is_none();
@@ -175,6 +225,29 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button(arch_label).clicked() {
                     app.toggle_archive(chat_id);
                 }
+                // Модерация и управление: блок, инвайт, очистка, выход, запланированные.
+                if ui.small_button("🚫").on_hover_text("Заблокировать пользователя").clicked() {
+                    app.toggle_block(chat_id, false);
+                }
+                if ui.small_button("✅").on_hover_text("Разблокировать пользователя").clicked() {
+                    app.toggle_block(chat_id, true);
+                }
+                if ui.small_button("🔗").on_hover_text("Пригласительная ссылка").clicked() {
+                    app.load_invite_link(chat_id);
+                }
+                if ui.small_button("🧹").on_hover_text("Очистить историю").clicked() {
+                    app.confirm_action = Some(
+                        crate::ui::app::ConfirmAction::ClearHistory { chat_id, revoke: false },
+                    );
+                }
+                if ui.small_button("🚪").on_hover_text("Покинуть канал/супергруппу").clicked() {
+                    app.confirm_action = Some(
+                        crate::ui::app::ConfirmAction::LeaveChannel { chat_id },
+                    );
+                }
+                if ui.small_button("⏰").on_hover_text("Запланированные сообщения").clicked() {
+                    app.load_scheduled(chat_id);
+                }
                 if ui
                     .small_button("+ Правило для этого чата")
                     .on_hover_text("Добавить per-chat правило автозагрузки")
@@ -196,6 +269,25 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     );
                     if ui.small_button("✕").on_hover_text("Открепить").clicked() {
                         app.toggle_pin(chat_id, pinned.id, true);
+                    }
+                });
+            }
+            // Топики форума: вкладки под шапкой (пусто — не форум).
+            if !app.topics.is_empty() || app.topic_sel.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("🧵");
+                    let all_sel = app.topic_sel.is_none();
+                    if ui.selectable_label(all_sel, "Все").clicked() {
+                        app.select_topic(chat_id, None);
+                    }
+                    for t in app.topics.clone() {
+                        let sel = app.topic_sel == Some(t.id);
+                        if ui.selectable_label(sel, &t.title).clicked() {
+                            app.select_topic(chat_id, Some(t.id));
+                        }
+                    }
+                    if ui.small_button("＋").on_hover_text("Создать топик").clicked() {
+                        app.topic_create_open = true;
                     }
                 });
             }
@@ -266,6 +358,77 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     });
             }
             composer(app, ui, chat_id);
+            // Окна: создание топика/канала, подтверждение, инвайт, запланированные.
+            if app.topic_create_open {
+                egui::Window::new("🧵 Новый топик").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.label("Название топика:");
+                    ui.text_edit_singleline(&mut app.topic_create_title);
+                    ui.horizontal(|ui| {
+                        if ui.button("Создать").clicked() {
+                            app.do_create_topic(chat_id);
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.topic_create_open = false;
+                            app.topic_create_title.clear();
+                        }
+                    });
+                });
+            }
+            if let Some(link) = app.invite_link.clone() {
+                egui::Window::new("🔗 Пригласительная ссылка").collapsible(false).show(
+                    ui.ctx(),
+                    |ui| {
+                        ui.label("Поделитесь ссылкой (выделите и скопируйте):");
+                        ui.label(egui::RichText::new(link).strong());
+                        if ui.button("Закрыть").clicked() {
+                            app.invite_link = None;
+                        }
+                    },
+                );
+            }
+            // Подтверждения опасных действий — глобальное окно в app.rs (работает с любого экрана).
+            if app.scheduled_open {
+                egui::Window::new("⏰ Запланированные").collapsible(false).show(ui.ctx(), |ui| {
+                    if app.scheduled.is_empty() {
+                        ui.label("нет запланированных сообщений");
+                    }
+                    for m in app.scheduled.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(crate::utils::truncate(&m.text, 60));
+                            if ui.small_button("✕").on_hover_text("Отменить").clicked() {
+                                app.toggle_scheduled_cancel(chat_id, m.id);
+                            }
+                        });
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.scheduled_open = false;
+                    }
+                });
+            }
+            if app.create_chat_open {
+                egui::Window::new("＋ Новая группа/канал").collapsible(false).show(
+                    ui.ctx(),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Название:");
+                            ui.text_edit_singleline(&mut app.create_chat_title);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Описание:");
+                            ui.text_edit_singleline(&mut app.create_chat_about);
+                        });
+                        ui.checkbox(&mut app.create_chat_broadcast, "Канал (иначе — группа)");
+                        ui.horizontal(|ui| {
+                            if ui.button("Создать").clicked() {
+                                app.do_create_channel();
+                            }
+                            if ui.button("Отмена").clicked() {
+                                app.create_chat_open = false;
+                            }
+                        });
+                    },
+                );
+            }
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("Выберите диалог слева");
@@ -374,7 +537,7 @@ fn bubble_content(
     if !m.text.is_empty() {
         ui.label(crate::utils::truncate(&m.text, 2000));
     }
-    // Стикеры: превью по тапу (качается в кэш, не в Загрузки).
+    // Стикеры: превью по месту (качается в кэш, не в Загрузки).
     if m.media_kind.as_deref() == Some("sticker") {
         let ctx = ui.ctx().clone();
         if let Some(tex) = app.ensure_sticker(&ctx, chat_id, m) {
@@ -389,6 +552,62 @@ fn bubble_content(
                     .weak(),
             );
         }
+    }
+    // Видео: превью первого кадра (встроенные декодеры, кэш) + ⬇.
+    if m.media_kind.as_deref() == Some("video") {
+        let ctx = ui.ctx().clone();
+        if let Some(tex) = app.ensure_video_thumb(&ctx, m) {
+            let size = tex.size_vec2();
+            let scale =
+                (160.0 / size.x.max(1.0)).min(160.0 / size.y.max(1.0));
+            ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
+        } else {
+            ui.label(
+                egui::RichText::new("🎬 видео (превью грузится…)")
+                    .small()
+                    .weak(),
+            );
+        }
+    }
+    // Веб-превью ссылки: карточка с фото, заголовком и кнопкой.
+    if let Some(web) = &m.web_preview {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                if let Some(photo) = &web.photo {
+                    let ctx = ui.ctx().clone();
+                    if let Some(tex) = app.ensure_web_thumb(&ctx, photo) {
+                        let size = tex.size_vec2();
+                        let scale =
+                            (80.0 / size.x.max(1.0)).min(80.0 / size.y.max(1.0));
+                        ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
+                    }
+                }
+                ui.vertical(|ui| {
+                    if !web.title.is_empty() {
+                        ui.label(egui::RichText::new(&web.title).strong());
+                    }
+                    if !web.description.is_empty() {
+                        ui.label(
+                            egui::RichText::new(crate::utils::truncate(&web.description, 140))
+                                .small()
+                                .weak(),
+                        );
+                    }
+                    if !web.url.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(crate::utils::truncate(&web.url, 60))
+                                    .small()
+                                    .weak(),
+                            );
+                            if ui.small_button("↗").on_hover_text("Открыть ссылку").clicked() {
+                                let _ = open::that(web.url.clone());
+                            }
+                        });
+                    }
+                });
+            });
+        });
     }
     // Гео и контакты — display-only строки.
     if let Some((lat, long)) = m.geo {
@@ -574,9 +793,15 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         }
         let send_label = if app.editing.is_some() { "💾 Сохранить" } else { "➤ Отправить" };
         if ui.button(send_label).clicked() || hotkey {
-            // Черновик текущего чата уже в composer_current; select_chat сохранит.
-            let _ = chat_id;
-            app.send_current();
+            // В топике — отправка в топик, иначе обычная.
+            if app.topic_sel.is_some() {
+                let _ = chat_id;
+                app.send_to_current_topic();
+            } else {
+                // Черновик текущего чата уже в composer_current; select_chat сохранит.
+                let _ = chat_id;
+                app.send_current();
+            }
         }
     });
     // Окно отложенной отправки: часы задержки.

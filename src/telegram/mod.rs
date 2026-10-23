@@ -58,6 +58,10 @@ pub struct MessageInfo {
     pub geo: Option<(f64, f64)>,
     /// Контакт (имя, телефон), если сообщение — карточка контакта.
     pub contact: Option<(String, String)>,
+    /// Веб-превью ссылки, если есть.
+    pub web_preview: Option<WebPreview>,
+    /// ID топика форума (None — общий чат). Заполняется чтением топика.
+    pub topic_id: Option<i32>,
 }
 
 /// Один вариант ответа опроса.
@@ -96,6 +100,31 @@ pub struct DialogFilterInfo {
     pub id: i32,
     pub title: String,
     pub peer_ids: Vec<i64>,
+}
+
+/// Топик форума (`messages.getForumTopics`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopicInfo {
+    pub id: i32,
+    pub title: String,
+}
+
+/// Веб-превью ссылки (карточка под сообщением).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebPreview {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    pub photo: Option<WebPreviewPhoto>,
+}
+
+/// Фото веб-превью (скачивается отдельно в кэш).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebPreviewPhoto {
+    pub photo_id: i64,
+    pub access_hash: i64,
+    pub file_reference: Vec<u8>,
+    pub dc_id: i32,
 }
 
 /// Активная сессия (`account.getAuthorizations`).
@@ -358,6 +387,84 @@ pub trait TelegramService: Send + Sync {
         _caption: &str,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("story publishing is not implemented for this backend")
+    }
+    /// Удалить свои сторис по id.
+    async fn delete_stories(&self, _story_ids: &[i32]) -> anyhow::Result<()> {
+        anyhow::bail!("story deletion is not implemented for this backend")
+    }
+    /// Топики форума чата (пусто — не форум).
+    async fn forum_topics(&self, _chat_id: i64) -> anyhow::Result<Vec<TopicInfo>> {
+        Ok(vec![])
+    }
+    /// Создать топик форума.
+    async fn create_topic(&self, _chat_id: i64, _title: &str) -> anyhow::Result<i32> {
+        anyhow::bail!("forum topics are not implemented for this backend")
+    }
+    /// История топика (сырой getHistory с top_msg_id + свой парсер).
+    async fn topic_history(
+        &self,
+        _chat_id: i64,
+        _topic_id: i32,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        Ok(vec![])
+    }
+    /// Отправить текст в топик (top_msg_id).
+    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, _text: &str) -> anyhow::Result<i32> {
+        anyhow::bail!("forum topics are not implemented for this backend")
+    }
+    /// Глобальный поиск по всем чатам. Возвращает (chat_id, сообщение).
+    async fn global_search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<(i64, MessageInfo)>> {
+        Ok(vec![])
+    }
+    /// Запланированные сообщения чата.
+    async fn scheduled_history(&self, _chat_id: i64) -> anyhow::Result<Vec<MessageInfo>> {
+        Ok(vec![])
+    }
+    /// Отменить запланированное сообщение.
+    async fn cancel_scheduled(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        anyhow::bail!("scheduled messages are not implemented for this backend")
+    }
+    /// Создать группу (megagroup) или канал (broadcast). Возвращает chat_id.
+    async fn create_channel(&self, _title: &str, _about: &str, _broadcast: bool) -> anyhow::Result<i64> {
+        anyhow::bail!("channel creation is not implemented for this backend")
+    }
+    /// Пригласительная ссылка чата.
+    async fn invite_link(&self, _chat_id: i64) -> anyhow::Result<String> {
+        anyhow::bail!("invite links are not implemented for this backend")
+    }
+    /// Заблокировать/разблокировать пользователя (1-1 чат).
+    async fn block_user(&self, _chat_id: i64, _blocked: bool) -> anyhow::Result<()> {
+        anyhow::bail!("block is not implemented for this backend")
+    }
+    /// Очистить историю (just_clear — у себя, revoke — у всех; сервер проверяет права).
+    async fn clear_history(&self, _chat_id: i64, _revoke: bool) -> anyhow::Result<()> {
+        anyhow::bail!("clear history is not implemented for this backend")
+    }
+    /// Покинуть канал/супергруппу.
+    async fn leave_channel(&self, _chat_id: i64) -> anyhow::Result<()> {
+        anyhow::bail!("leave is not implemented for this backend")
+    }
+    /// Добавить контакт по телефону.
+    async fn add_contact(
+        &self,
+        _phone: &str,
+        _first_name: &str,
+        _last_name: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("add contact is not implemented for this backend")
+    }
+    /// Скачать фото веб-превью в кэш (для карточек ссылок).
+    async fn download_web_photo(
+        &self,
+        _photo: &WebPreviewPhoto,
+        _dest: &std::path::Path,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        anyhow::bail!("web preview download is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

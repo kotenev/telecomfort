@@ -157,6 +157,20 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                         .small()
                                         .weak(),
                                 );
+                                // Свои сторис — можно удалить (с подтверждением).
+                                if app.me_id == Some(peer_id) {
+                                    if ui
+                                        .small_button("🗑 Удалить")
+                                        .on_hover_text("Удалить свою сторис")
+                                        .clicked()
+                                    {
+                                        app.confirm_action = Some(
+                                            crate::ui::app::ConfirmAction::DeleteStories {
+                                                story_ids: vec![story_id],
+                                            },
+                                        );
+                                    }
+                                }
                             });
                             let show_blurred = is_ad && app.auto_hide_ads && !revealed;
                             let tex = {

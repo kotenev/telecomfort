@@ -59,6 +59,8 @@ impl TelegramService for MockTelegram {
                 poll: None,
                 geo: None,
                 contact: None,
+                web_preview: None,
+                topic_id: None,
             },
             MessageInfo {
                 id: 102,
@@ -97,6 +99,8 @@ impl TelegramService for MockTelegram {
                 }),
                 geo: None,
                 contact: None,
+                web_preview: None,
+                topic_id: None,
             },
             MessageInfo {
                 id: 103,
@@ -116,6 +120,13 @@ impl TelegramService for MockTelegram {
                 poll: None,
                 geo: Some((55.7558, 37.6173)),
                 contact: Some(("Анна".into(), "+7 900 000-00-00".into())),
+                web_preview: Some(crate::telegram::WebPreview {
+                    url: "https://example.com".into(),
+                    title: "Пример".into(),
+                    description: "Описание страницы".into(),
+                    photo: None,
+                }),
+                topic_id: None,
             },
         ])
     }
@@ -421,6 +432,140 @@ impl TelegramService for MockTelegram {
         Ok(h)
     }
 
+    async fn delete_stories(&self, _story_ids: &[i32]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn forum_topics(&self, _chat_id: i64) -> anyhow::Result<Vec<crate::telegram::TopicInfo>> {
+        Ok(vec![
+            crate::telegram::TopicInfo { id: 1, title: "Общее".into() },
+            crate::telegram::TopicInfo { id: 2, title: "Оффтопик".into() },
+        ])
+    }
+
+    async fn create_topic(&self, _chat_id: i64, _title: &str) -> anyhow::Result<i32> {
+        Ok(3)
+    }
+
+    async fn topic_history(
+        &self,
+        chat_id: i64,
+        topic_id: i32,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<crate::telegram::MessageInfo>> {
+        Ok(vec![crate::telegram::MessageInfo {
+            id: 201,
+            chat_id,
+            text: format!("сообщение топика {topic_id}"),
+            date: 1_700_000_000,
+            has_media: false,
+            media_kind: None,
+            file_name: None,
+            file_size: None,
+            outgoing: false,
+            sender: Some("Анна".into()),
+            edited: false,
+            reactions: None,
+            views: None,
+            forwards: None,
+            poll: None,
+            geo: None,
+            contact: None,
+            web_preview: None,
+            topic_id: Some(topic_id),
+        }])
+    }
+
+    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, text: &str) -> anyhow::Result<i32> {
+        let mut h: i32 = 9600;
+        for b in text.bytes() {
+            h = h.wrapping_add(b as i32);
+        }
+        Ok(h)
+    }
+
+    async fn global_search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<(i64, crate::telegram::MessageInfo)>> {
+        let items = self.history(-1001, 10).await?;
+        Ok(items.into_iter().map(|m| (-1001, m)).collect())
+    }
+
+    async fn scheduled_history(
+        &self,
+        chat_id: i64,
+    ) -> anyhow::Result<Vec<crate::telegram::MessageInfo>> {
+        Ok(vec![crate::telegram::MessageInfo {
+            id: 301,
+            chat_id,
+            text: "отложенное напоминание".into(),
+            date: 1_800_000_000,
+            has_media: false,
+            media_kind: None,
+            file_name: None,
+            file_size: None,
+            outgoing: true,
+            sender: None,
+            edited: false,
+            reactions: None,
+            views: None,
+            forwards: None,
+            poll: None,
+            geo: None,
+            contact: None,
+            web_preview: None,
+            topic_id: None,
+        }])
+    }
+
+    async fn cancel_scheduled(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn create_channel(
+        &self,
+        title: &str,
+        _about: &str,
+        _broadcast: bool,
+    ) -> anyhow::Result<i64> {
+        Ok(-(1_000_000_000_000 + title.len() as i64))
+    }
+
+    async fn invite_link(&self, chat_id: i64) -> anyhow::Result<String> {
+        Ok(format!("https://t.me/c/{}/1", chat_id.abs()))
+    }
+
+    async fn block_user(&self, _chat_id: i64, _blocked: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn clear_history(&self, _chat_id: i64, _revoke: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn leave_channel(&self, _chat_id: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn add_contact(
+        &self,
+        _phone: &str,
+        _first_name: &str,
+        _last_name: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn download_web_photo(
+        &self,
+        _photo: &crate::telegram::WebPreviewPhoto,
+        dest: &std::path::Path,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        Ok(dest.to_path_buf())
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -451,6 +596,8 @@ impl TelegramService for MockTelegram {
             poll: None,
             geo: None,
             contact: None,
+            web_preview: None,
+            topic_id: None,
         }))
     }
 
@@ -599,5 +746,32 @@ mod tests {
         let sid =
             m.publish_story(std::path::Path::new("photo.jpg"), "привет").await.expect("story");
         assert!(sid >= 700);
+    }
+
+    /// Контракт четвёртого parity-пакета: сторис-менеджмент, топики, поиск,
+    /// запланированные, создание, модерация, контакты.
+    #[tokio::test]
+    async fn mock_management_contract_3() {
+        let m = MockTelegram;
+        m.delete_stories(&[7]).await.expect("delete stories");
+        let topics = m.forum_topics(-1002).await.expect("topics");
+        assert_eq!(topics.len(), 2);
+        assert_eq!(m.create_topic(-1002, "Новинки").await.expect("create topic"), 3);
+        let th = m.topic_history(-1002, 2, 10).await.expect("topic history");
+        assert_eq!(th.len(), 1);
+        assert_eq!(th[0].topic_id, Some(2));
+        assert!(m.send_to_topic(-1002, 2, "в топик").await.expect("send topic") >= 9600);
+        let gs = m.global_search("лекция", 10).await.expect("global search");
+        assert!(!gs.is_empty());
+        let sch = m.scheduled_history(-1001).await.expect("scheduled");
+        assert_eq!(sch.len(), 1);
+        m.cancel_scheduled(-1001, 301).await.expect("cancel");
+        let cid = m.create_channel("Новости", "о нас", true).await.expect("create");
+        assert!(cid < -1_000_000_000_000);
+        assert!(m.invite_link(-1001).await.expect("invite").starts_with("https://t.me/"));
+        m.block_user(2001, true).await.expect("block");
+        m.clear_history(-1001, false).await.expect("clear");
+        m.leave_channel(-1002).await.expect("leave");
+        m.add_contact("+7 900 000-00-02", "Иван", "").await.expect("add contact");
     }
 }
