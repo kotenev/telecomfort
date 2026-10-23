@@ -14,6 +14,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             {
                 app.pick_story();
             }
+            if ui
+                .small_button("🥷 Стелс")
+                .on_hover_text("Не палить просмотры сторис (прошлые + будущие)")
+                .clicked()
+            {
+                app.enable_stealth();
+            }
             let ads = app
                 .stories
                 .iter()
@@ -70,6 +77,30 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             if !open {
                 app.story_publish = None;
             }
+        }
+
+        // Окно ответа на сторис (текст уходит в чат автора).
+        if app.story_reply_open {
+            let target = app.story_reply_target;
+            egui::Window::new("💬 Ответить на сторис")
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(
+                        egui::RichText::new("Ответ уйдёт в личные сообщения автора сторис.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.text_edit_multiline(&mut app.story_reply_text);
+                    ui.horizontal(|ui| {
+                        if ui.button("Отправить").clicked() && target.is_some() {
+                            app.do_story_reply();
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.story_reply_open = false;
+                            app.story_reply_target = None;
+                        }
+                    });
+                });
         }
 
         let n = app.stories.len();
@@ -170,6 +201,33 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                             },
                                         );
                                     }
+                                    // Просмотры своей сторис (лениво, один раз).
+                                    match app.story_views.get(&story_id).copied() {
+                                        Some(v) => {
+                                            ui.label(
+                                                egui::RichText::new(format!("👁 {v}"))
+                                                    .small()
+                                                    .weak(),
+                                            );
+                                        }
+                                        None => {
+                                            if ui
+                                                .small_button("👁")
+                                                .on_hover_text("Показать просмотры")
+                                                .clicked()
+                                            {
+                                                app.load_story_views(story_id);
+                                            }
+                                        }
+                                    }
+                                } else if ui
+                                    .small_button("💬 Ответить")
+                                    .on_hover_text("Ответить на сторис текстом (уйдёт в чат автора)")
+                                    .clicked()
+                                {
+                                    app.story_reply_target = Some((peer_id, story_id));
+                                    app.story_reply_text.clear();
+                                    app.story_reply_open = true;
                                 }
                             });
                             let show_blurred = is_ad && app.auto_hide_ads && !revealed;

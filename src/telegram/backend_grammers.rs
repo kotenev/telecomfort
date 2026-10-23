@@ -1369,6 +1369,202 @@ impl TelegramService for GrammersBackend {
         Ok(dest.to_path_buf())
     }
 
+    async fn create_poll(
+        &self,
+        chat_id: i64,
+        question: &str,
+        options: &[String],
+        quiz: bool,
+        correct: Option<usize>,
+        anonymous: bool,
+        multiple_choice: bool,
+    ) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        use grammers_client::tl as tl;
+        let question = question.trim();
+        let options: Vec<String> =
+            options.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if question.is_empty() || options.len() < 2 || options.len() > 10 {
+            anyhow::bail!("вопрос + от 2 до 10 вариантов");
+        }
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let rnd = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0)
+        };
+        let txt = |t: String| {
+            tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                text: t,
+                entities: vec![],
+            })
+        };
+        let poll = tl::enums::Poll::Poll(tl::types::Poll {
+            id: rnd(),
+            closed: false,
+            public_voters: !anonymous,
+            multiple_choice,
+            quiz,
+            open_answers: false,
+            revoting_disabled: false,
+            shuffle_answers: false,
+            hide_results_until_close: false,
+            creator: quiz,
+            subscribers_only: false,
+            question: txt(question.to_string()),
+            answers: options
+                .into_iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                        text: txt(text),
+                        option: format!("opt{i}").into_bytes(),
+                        media: None,
+                        added_by: None,
+                        date: None,
+                    })
+                })
+                .collect(),
+            close_period: None,
+            close_date: None,
+            countries_iso2: None,
+            hash: rnd(),
+        });
+        let input = InputMessage::new()
+            .clear_draft(true)
+            .media(tl::enums::InputMedia::Poll(Box::new(tl::types::InputMediaPoll {
+                poll,
+                correct_answers: if quiz {
+                    correct.map(|i| vec![i as i32])
+                } else {
+                    None
+                },
+                attached_media: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })));
+        let sent =
+            self.client.send_message(pref, input).await.context("createPoll failed")?;
+        Ok(sent.id())
+    }
+
+    async fn send_geo(&self, chat_id: i64, lat: f64, long: f64) -> Result<i32> {
+        use grammers_client::message::InputMessage;
+        use grammers_client::tl as tl;
+        if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&long) {
+            anyhow::bail!("неверные координаты");
+        }
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let input = InputMessage::new().clear_draft(true).media(
+            tl::enums::InputMedia::GeoPoint(tl::types::InputMediaGeoPoint {
+                geo_point: tl::enums::InputGeoPoint::Point(tl::types::InputGeoPoint {
+                    lat,
+                    long,
+                    accuracy_radius: None,
+                }),
+            }),
+        );
+        let sent = self.client.send_message(pref, input).await.context("sendGeo failed")?;
+        Ok(sent.id())
+    }
+
+    async fn story_reply(&self, peer_id: i64, story_id: i32, text: &str) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let text = text.trim();
+        if text.is_empty() {
+            anyhow::bail!("пустой ответ");
+        }
+        let pref = self.resolve_ref(peer_id).await?.context("peer not found")?;
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_nanos() & 0x7FFF_FFFF_FFFF_FFFF) as i64)
+            .unwrap_or(1);
+        // Сырой SendMessage: grammers InputMessage не умеет reply_to сторис.
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::SendMessage {
+                no_webpage: true,
+                silent: false,
+                background: false,
+                clear_draft: true,
+                noforwards: false,
+                update_stickersets_order: false,
+                invert_media: false,
+                peer: (&pref).into(),
+                reply_to: Some(tl::enums::InputReplyTo::Story(
+                    tl::types::InputReplyToStory { peer: (&pref).into(), story_id },
+                )),
+                message: text.to_string(),
+                random_id,
+                reply_markup: None,
+                entities: None,
+                schedule_date: None,
+                schedule_repeat_period: None,
+                send_as: None,
+                quick_reply_shortcut: None,
+                allow_paid_floodskip: false,
+                allow_paid_stars: None,
+                effect: None,
+                suggested_post: None,
+                rich_message: None,
+            })
+            .await
+            .context("story reply failed")?;
+        let updates = match res {
+            tl::enums::Updates::Updates(u) => u.updates,
+            tl::enums::Updates::Combined(u) => u.updates,
+            _ => vec![],
+        };
+        for u in &updates {
+            match u {
+                tl::enums::Update::NewMessage(m) => {
+                    if let tl::enums::Message::Message(mm) = &m.message {
+                        return Ok(mm.id);
+                    }
+                }
+                tl::enums::Update::NewChannelMessage(m) => {
+                    if let tl::enums::Message::Message(mm) = &m.message {
+                        return Ok(mm.id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        anyhow::bail!("story reply: id не найден в Updates")
+    }
+
+    async fn story_views(&self, story_id: i32) -> Result<i32> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::GetStoryViewsList {
+                just_contacts: true,
+                reactions_first: false,
+                forwards_first: false,
+                peer: tl::enums::InputPeer::PeerSelf,
+                q: None,
+                id: story_id,
+                offset: String::new(),
+                limit: 1,
+            })
+            .await
+            .context("getStoryViewsList failed")?;
+        match res {
+            tl::enums::stories::StoryViewsList::List(l) => Ok(l.views_count),
+        }
+    }
+
+    async fn enable_stealth(&self) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::stories::ActivateStealthMode { past: true, future: true })
+            .await
+            .context("stealth failed")?;
+        Ok(())
+    }
+
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {
         let dir = super::avatars_cache_dir();
         std::fs::create_dir_all(&dir).ok();

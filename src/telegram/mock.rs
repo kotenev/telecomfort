@@ -566,6 +566,44 @@ impl TelegramService for MockTelegram {
         Ok(dest.to_path_buf())
     }
 
+    async fn create_poll(
+        &self,
+        _chat_id: i64,
+        _question: &str,
+        options: &[String],
+        _quiz: bool,
+        _correct: Option<usize>,
+        _anonymous: bool,
+        _multiple_choice: bool,
+    ) -> anyhow::Result<i32> {
+        Ok(9000 + options.len() as i32)
+    }
+
+    async fn send_geo(&self, _chat_id: i64, _lat: f64, _long: f64) -> anyhow::Result<i32> {
+        Ok(9100)
+    }
+
+    async fn story_reply(
+        &self,
+        _peer_id: i64,
+        _story_id: i32,
+        text: &str,
+    ) -> anyhow::Result<i32> {
+        let mut h: i32 = 9200;
+        for b in text.bytes() {
+            h = h.wrapping_add(b as i32);
+        }
+        Ok(h)
+    }
+
+    async fn story_views(&self, _story_id: i32) -> anyhow::Result<i32> {
+        Ok(42)
+    }
+
+    async fn enable_stealth(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -773,5 +811,20 @@ mod tests {
         m.clear_history(-1001, false).await.expect("clear");
         m.leave_channel(-1002).await.expect("leave");
         m.add_contact("+7 900 000-00-02", "Иван", "").await.expect("add contact");
+    }
+
+    /// Контракт пятого parity-пакета: опросы, гео, сторис-интерактив.
+    #[tokio::test]
+    async fn mock_management_contract_4() {
+        let m = MockTelegram;
+        let pid = m
+            .create_poll(-1002, "Когда?", &["Завтра".into(), "Сегодня".into()], false, None, true, false)
+            .await
+            .expect("create poll");
+        assert!(pid >= 9002);
+        assert_eq!(m.send_geo(-1002, 55.75, 37.61).await.expect("geo"), 9100);
+        assert!(m.story_reply(2001, 7, "круто!").await.expect("story reply") >= 9200);
+        assert_eq!(m.story_views(7).await.expect("story views"), 42);
+        m.enable_stealth().await.expect("stealth");
     }
 }
