@@ -54,6 +54,26 @@ pub enum BgEvent {
     ProfileLoaded(crate::telegram::ProfileInfo),
     /// Сторис опубликована.
     StoryPublished { story_id: i32 },
+    /// Топики форума чата.
+    TopicsLoaded { chat_id: i64, topics: Vec<crate::telegram::TopicInfo> },
+    /// История топика (заменяет общую историю в UI).
+    TopicHistoryLoaded { chat_id: i64, topic_id: i32, items: Vec<crate::telegram::MessageInfo> },
+    /// Создан новый топик.
+    TopicCreated { chat_id: i64, topic_id: i32 },
+    /// Результаты глобального поиска.
+    GlobalSearchResults(Vec<(i64, crate::telegram::MessageInfo)>),
+    /// Запланированные сообщения чата.
+    ScheduledLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    /// Инвайт-ссылка готова.
+    InviteLinkReady(String),
+    /// Видео-превью скачалось в кэш.
+    VideoThumbReady { message_id: i32, path: PathBuf },
+    /// Фото веб-превью скачалось в кэш.
+    WebThumbReady { photo_id: i64, path: PathBuf },
+    /// Канал/группа созданы.
+    ChannelCreated { chat_id: i64 },
+    /// Сторис удалены — перезагрузить ленту.
+    StoriesDeleted,
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -99,6 +119,17 @@ pub struct AudioPlayback {
 pub struct StoryPublish {
     pub path: PathBuf,
     pub caption: String,
+}
+
+/// Опасное действие, требующее подтверждения окном.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    /// Очистить историю чата (revoke — и у всех).
+    ClearHistory { chat_id: i64, revoke: bool },
+    /// Покинуть канал/супергруппу.
+    LeaveChannel { chat_id: i64 },
+    /// Удалить свои сторис.
+    DeleteStories { story_ids: Vec<i32> },
 }
 
 pub struct TelecomfortApp {
@@ -181,7 +212,7 @@ pub struct TelecomfortApp {
     pub folder_sel: Option<i32>,
     /// Контакты телефонной книги + флаг загрузки.
     pub contacts: Vec<crate::telegram::ContactInfo>,
-    contacts_loaded: bool,
+    pub contacts_loaded: bool,
     /// Выбор цели пересылки: (from_chat, msg_ids).
     pub forward_pick: Option<(i64, Vec<i32>)>,
     /// Активное воспроизведение голосового/аудио.
@@ -205,6 +236,44 @@ pub struct TelecomfortApp {
     pub profile_loaded: bool,
     /// Публикация сторис: выбранный файл + подпись + окно.
     pub story_publish: Option<StoryPublish>,
+    /// ID своего аккаунта (для «мои сторис»).
+    pub me_id: Option<i64>,
+
+    // Четвёртый parity-пакет: топики/поиск/превью/модерация/создание
+    /// Топики форума текущего чата + выбранный (None = общий чат).
+    pub topics: Vec<crate::telegram::TopicInfo>,
+    pub topic_sel: Option<i32>,
+    /// Создание топика: окно + название.
+    pub topic_create_open: bool,
+    pub topic_create_title: String,
+    /// Глобальный поиск: запрос + результаты (chat_id, сообщение).
+    pub gsearch: String,
+    pub gsearch_results: Vec<(i64, crate::telegram::MessageInfo)>,
+    /// Видео-превью в пузырях (msg_id → текстура) + файлы + запрошенные.
+    pub video_thumbs: HashMap<i32, egui::TextureHandle>,
+    pub video_thumb_files: HashMap<i32, PathBuf>,
+    video_thumb_requested: HashSet<i32>,
+    /// Веб-превью: фото (photo_id → текстура) + файлы + запрошенные.
+    pub web_thumbs: HashMap<i64, egui::TextureHandle>,
+    pub web_thumb_files: HashMap<i64, PathBuf>,
+    web_thumb_requested: HashSet<i64>,
+    /// Создание группы/канала: окно + поля.
+    pub create_chat_open: bool,
+    pub create_chat_title: String,
+    pub create_chat_about: String,
+    pub create_chat_broadcast: bool,
+    /// Инвайт-ссылка: текст + окно.
+    pub invite_link: Option<String>,
+    /// Подтверждения опасных действий: очистка/выход/удаление сторис.
+    pub confirm_action: Option<ConfirmAction>,
+    /// Запланированные сообщения текущего чата + окно.
+    pub scheduled_open: bool,
+    pub scheduled: Vec<crate::telegram::MessageInfo>,
+    /// Добавление контакта: окно + поля.
+    pub contact_add_open: bool,
+    pub contact_add_phone: String,
+    pub contact_add_first: String,
+    pub contact_add_last: String,
 
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
@@ -301,6 +370,31 @@ impl TelecomfortApp {
             profile_about: String::new(),
             profile_loaded: false,
             story_publish: None,
+            me_id: None,
+            topics: Vec::new(),
+            topic_sel: None,
+            topic_create_open: false,
+            topic_create_title: String::new(),
+            gsearch: String::new(),
+            gsearch_results: Vec::new(),
+            video_thumbs: HashMap::new(),
+            video_thumb_files: HashMap::new(),
+            video_thumb_requested: HashSet::new(),
+            web_thumbs: HashMap::new(),
+            web_thumb_files: HashMap::new(),
+            web_thumb_requested: HashSet::new(),
+            create_chat_open: false,
+            create_chat_title: String::new(),
+            create_chat_about: String::new(),
+            create_chat_broadcast: false,
+            invite_link: None,
+            confirm_action: None,
+            scheduled_open: false,
+            scheduled: Vec::new(),
+            contact_add_open: false,
+            contact_add_phone: String::new(),
+            contact_add_first: String::new(),
+            contact_add_last: String::new(),
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -480,6 +574,54 @@ impl TelecomfortApp {
                 BgEvent::StoryPublished { story_id } => {
                     self.story_publish = None;
                     self.log(format!("сторис опубликована (id {story_id})"));
+                    self.refresh_stories();
+                }
+                BgEvent::TopicsLoaded { chat_id, topics } => {
+                    if self.selected_chat == Some(chat_id) {
+                        self.topics = topics;
+                    }
+                }
+                BgEvent::TopicHistoryLoaded { chat_id, topic_id, items } => {
+                    if self.selected_chat == Some(chat_id) {
+                        self.topic_sel = Some(topic_id);
+                        self.history.insert(chat_id, items);
+                    }
+                }
+                BgEvent::TopicCreated { chat_id, topic_id } => {
+                    self.topic_create_open = false;
+                    self.topic_create_title.clear();
+                    self.log(format!("топик создан (id {topic_id})"));
+                    self.load_topics(chat_id);
+                }
+                BgEvent::GlobalSearchResults(results) => {
+                    self.gsearch_results = results;
+                    self.log(format!("глобальный поиск: {}", self.gsearch_results.len()));
+                }
+                BgEvent::ScheduledLoaded { chat_id, items } => {
+                    if self.selected_chat == Some(chat_id) {
+                        self.scheduled = items;
+                        self.scheduled_open = true;
+                    }
+                }
+                BgEvent::InviteLinkReady(link) => {
+                    self.invite_link = Some(link);
+                }
+                BgEvent::VideoThumbReady { message_id, path } => {
+                    self.video_thumb_files.insert(message_id, path);
+                    self.video_thumbs.remove(&message_id);
+                }
+                BgEvent::WebThumbReady { photo_id, path } => {
+                    self.web_thumb_files.insert(photo_id, path);
+                    self.web_thumbs.remove(&photo_id);
+                }
+                BgEvent::ChannelCreated { chat_id } => {
+                    self.create_chat_open = false;
+                    self.create_chat_title.clear();
+                    self.create_chat_about.clear();
+                    self.log(format!("чат создан (id {chat_id})"));
+                    self.refresh_dialogs();
+                }
+                BgEvent::StoriesDeleted => {
                     self.refresh_stories();
                 }
                 BgEvent::Stories(stories) => {
@@ -715,6 +857,7 @@ impl TelecomfortApp {
                     } else {
                         info.name.clone()
                     };
+                    self.me_id = Some(info.id);
                 }
                 BgEvent::Log(s) => self.log(s),
                 BgEvent::Error(s) => {
@@ -906,8 +1049,11 @@ impl TelecomfortApp {
         self.reply_to = None;
         self.editing = None;
         self.chat_search.clear();
+        self.topics.clear();
+        self.topic_sel = None;
         self.load_history(chat_id);
         self.load_pinned(chat_id);
+        self.load_topics(chat_id);
         let tg = Arc::clone(&self.tg);
         self.rt.spawn(async move {
             let _ = tg.mark_read(chat_id).await;
@@ -972,6 +1118,8 @@ impl TelecomfortApp {
                         poll: None,
                         geo: None,
                         contact: None,
+                        web_preview: None,
+                        topic_id: None,
                     };
                     let _ = tx.send(BgEvent::SentMessage { chat_id, item });
                 }
@@ -1077,6 +1225,8 @@ impl TelecomfortApp {
                         poll: None,
                         geo: None,
                         contact: None,
+                        web_preview: None,
+                        topic_id: None,
                     };
                     let _ = tx.send(BgEvent::SentMessage { chat_id, item });
                 }
@@ -1603,6 +1753,456 @@ impl TelecomfortApp {
                 }
             }
         });
+    }
+
+    /// Удалить свои сторис (с подтверждением через confirm_action).
+    pub fn delete_stories(&mut self, story_ids: Vec<i32>) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.delete_stories(&story_ids).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("сторис удалены".into()));
+                    // Перезагрузка сторис — через refresh_stories вызывающего.
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("удаление сторис: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить топики форума чата (пусто — не форум).
+    pub fn load_topics(&mut self, chat_id: i64) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.forum_topics(chat_id).await {
+                Ok(topics) => {
+                    let _ = tx.send(BgEvent::TopicsLoaded { chat_id, topics });
+                }
+                Err(e) => {
+                    tracing::debug!("topics failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Выбрать топик: None — общий чат (обычная история), Some — история топика.
+    pub fn select_topic(&mut self, chat_id: i64, topic: Option<i32>) {
+        self.topic_sel = topic;
+        self.reply_to = None;
+        self.editing = None;
+        match topic {
+            None => self.load_history(chat_id),
+            Some(tid) => {
+                let tg = Arc::clone(&self.tg);
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    match tg.topic_history(chat_id, tid, 100).await {
+                        Ok(items) => {
+                            let _ = tx.send(BgEvent::TopicHistoryLoaded {
+                                chat_id,
+                                topic_id: tid,
+                                items,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("топик: {e:#}")));
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Создать топик форума.
+    pub fn do_create_topic(&mut self, chat_id: i64) {
+        let title = self.topic_create_title.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.create_topic(chat_id, &title).await {
+                Ok(topic_id) => {
+                    let _ = tx.send(BgEvent::TopicCreated { chat_id, topic_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("топик: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отправить в текущий топик (если выбран) — иначе обычная отправка.
+    pub fn send_to_current_topic(&mut self) -> bool {
+        let (Some(chat_id), Some(topic_id)) = (self.selected_chat, self.topic_sel) else {
+            return false;
+        };
+        let text = self.composer_current.trim().to_string();
+        if text.is_empty() {
+            return false;
+        }
+        self.composer_current.clear();
+        self.composer.insert(chat_id, String::new());
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.send_to_topic(chat_id, topic_id, &text).await {
+                Ok(sent_id) => {
+                    let item = crate::telegram::MessageInfo {
+                        id: sent_id,
+                        chat_id,
+                        text,
+                        date: chrono::Local::now().timestamp(),
+                        has_media: false,
+                        media_kind: None,
+                        file_name: None,
+                        file_size: None,
+                        outgoing: true,
+                        sender: None,
+                        edited: false,
+                        reactions: None,
+                        views: None,
+                        forwards: None,
+                        poll: None,
+                        geo: None,
+                        contact: None,
+                        web_preview: None,
+                        topic_id: Some(topic_id),
+                    };
+                    let _ = tx.send(BgEvent::SentMessage { chat_id, item });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("топик: {e:#}")));
+                }
+            }
+        });
+        true
+    }
+
+    /// Глобальный поиск по всем чатам (серверный, лимит 50).
+    pub fn do_global_search(&mut self) {
+        let q = self.gsearch.trim().to_string();
+        if q.is_empty() {
+            self.gsearch_results.clear();
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.global_search(&q, 50).await {
+                Ok(results) => {
+                    let _ = tx.send(BgEvent::GlobalSearchResults(results));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("поиск: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить запланированные сообщения чата (окно ⏰).
+    pub fn load_scheduled(&mut self, chat_id: i64) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.scheduled_history(chat_id).await {
+                Ok(items) => {
+                    let _ = tx.send(BgEvent::ScheduledLoaded { chat_id, items });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("запланированные: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Создать группу (megagroup) или канал (broadcast).
+    pub fn do_create_channel(&mut self) {
+        let title = self.create_chat_title.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let about = self.create_chat_about.trim().to_string();
+        let broadcast = self.create_chat_broadcast;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.create_channel(&title, &about, broadcast).await {
+                Ok(chat_id) => {
+                    let _ = tx.send(BgEvent::ChannelCreated { chat_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("создание: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Запросить инвайт-ссылку чата (окно с текстом).
+    pub fn load_invite_link(&mut self, chat_id: i64) {
+        self.invite_link = Some("загрузка…".into());
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.invite_link(chat_id).await {
+                Ok(link) => {
+                    let _ = tx.send(BgEvent::InviteLinkReady(link));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("инвайт: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отменить запланированное сообщение (и убрать локально).
+    pub fn toggle_scheduled_cancel(&mut self, chat_id: i64, message_id: i32) {
+        self.scheduled.retain(|m| m.id != message_id);
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            if let Err(e) = tg.cancel_scheduled(chat_id, message_id).await {
+                let _ = tx.send(BgEvent::Error(format!("отмена: {e:#}")));
+            }
+        });
+    }
+
+    /// Выполнить подтверждённое опасное действие.
+    pub fn do_confirm_action(&mut self) {
+        let Some(action) = self.confirm_action.take() else {
+            return;
+        };
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        match action {
+            ConfirmAction::ClearHistory { chat_id, revoke } => {
+                self.rt.spawn(async move {
+                    match tg.clear_history(chat_id, revoke).await {
+                        Ok(()) => {
+                            let _ = tx.send(BgEvent::Log("история очищена".into()));
+                            let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("очистка: {e:#}")));
+                        }
+                    }
+                });
+            }
+            ConfirmAction::LeaveChannel { chat_id } => {
+                self.rt.spawn(async move {
+                    match tg.leave_channel(chat_id).await {
+                        Ok(()) => {
+                            let _ = tx.send(BgEvent::Log("вы покинули чат".into()));
+                            let _ = tx.send(BgEvent::ReloadDialogs);
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("выход: {e:#}")));
+                        }
+                    }
+                });
+            }
+            ConfirmAction::DeleteStories { story_ids } => {
+                self.rt.spawn(async move {
+                    match tg.delete_stories(&story_ids).await {
+                        Ok(()) => {
+                            let _ = tx.send(BgEvent::Log("сторис удалены".into()));
+                            let _ = tx.send(BgEvent::StoriesDeleted);
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("удаление сторис: {e:#}")));
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Заблокировать/разблокировать пользователя (1-1 чат).
+    pub fn toggle_block(&mut self, chat_id: i64, blocked: bool) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.block_user(chat_id, !blocked).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if !blocked { "пользователь заблокирован".into() } else { "разблокирован".into() },
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("блок: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Добавить контакт по телефону (экран Контакты).
+    pub fn do_add_contact(&mut self) {
+        let (phone, first, last) = (
+            self.contact_add_phone.trim().to_string(),
+            self.contact_add_first.trim().to_string(),
+            self.contact_add_last.trim().to_string(),
+        );
+        if phone.len() < 5 || first.is_empty() {
+            self.log("нужны телефон и имя".to_string());
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.add_contact(&phone, &first, &last).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(format!("контакт {first} добавлен")));
+                    match tg.contacts().await {
+                        Ok(c) => {
+                            let _ = tx.send(BgEvent::ContactsLoaded(c));
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("контакт: {e:#}")));
+                }
+            }
+        });
+        self.contact_add_open = false;
+        self.contact_add_phone.clear();
+        self.contact_add_first.clear();
+        self.contact_add_last.clear();
+    }
+
+    /// Видео-превью в пузыре (160px): кэш → файл → builtin-декодер в фоне.
+    pub fn ensure_video_thumb(
+        &mut self,
+        ctx: &egui::Context,
+        msg: &crate::telegram::MessageInfo,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.video_thumbs.get(&msg.id) {
+            return Some(t.clone());
+        }
+        if let Some(p) = self.video_thumb_files.get(&msg.id).cloned() {
+            if let Ok(img) = image::open(&p) {
+                let thumb = img.resize(160, 160, image::imageops::FilterType::Triangle);
+                let tex = ctx.load_texture(
+                    format!("videothumb::{}", msg.id),
+                    to_egui(&thumb),
+                    egui::TextureOptions::default(),
+                );
+                self.video_thumbs.insert(msg.id, tex.clone());
+                return Some(tex);
+            }
+        }
+        if self.video_thumb_requested.insert(msg.id) {
+            // Тяжёлый декод — в фоне; файл нужен download_message_media по id.
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            let (chat_id, mid) = (msg.chat_id, msg.id);
+            let fname = msg.file_name.clone().unwrap_or_else(|| format!("video_{mid}.mp4"));
+            self.rt.spawn(async move {
+                let dir = crate::telegram::stickers_cache_dir().join("video");
+                std::fs::create_dir_all(&dir).ok();
+                let dest = dir.join(format!("{chat_id}_{mid}_{fname}"));
+                let ok = if dest.exists() {
+                    true
+                } else {
+                    tg.download_message_media(chat_id, mid, &dir).await.is_ok() && {
+                        // download кладёт файл со своим именем — ищем свежий.
+                        if !dest.exists() {
+                            if let Ok(mut entries) = std::fs::read_dir(&dir) {
+                                let mut best: Option<(
+                                    std::time::SystemTime,
+                                    std::path::PathBuf,
+                                )> = None;
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p == dest {
+                                        continue;
+                                    }
+                                    if let Ok(meta) = entry.metadata() {
+                                        if let Ok(mtime) = meta.modified() {
+                                            if best.as_ref().map(|(t, _)| *t < mtime).unwrap_or(true) {
+                                                best = Some((mtime, p));
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some((_, src)) = best {
+                                    std::fs::rename(&src, &dest).ok();
+                                }
+                            }
+                        }
+                        dest.exists()
+                    }
+                };
+                if !ok {
+                    return;
+                }
+                // Постер первого кадра встроенными декодерами (без ffmpeg).
+                let poster = dest.with_extension("poster.jpg");
+                if !poster.exists() {
+                    if let Some(frame) =
+                        tokio::task::spawn_blocking({
+                            let dest = dest.clone();
+                            move || crate::media::video::first_frame_builtin(&dest)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    {
+                        crate::media::video::save_poster_jpeg(&frame, &poster);
+                    }
+                }
+                if poster.exists() {
+                    let _ = tx.send(BgEvent::VideoThumbReady { message_id: mid, path: poster });
+                }
+            });
+        }
+        None
+    }
+
+    /// Фото веб-превью (80px): кэш → файл → скачивание в фоне.
+    pub fn ensure_web_thumb(
+        &mut self,
+        ctx: &egui::Context,
+        photo: &crate::telegram::WebPreviewPhoto,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.web_thumbs.get(&photo.photo_id) {
+            return Some(t.clone());
+        }
+        if let Some(p) = self.web_thumb_files.get(&photo.photo_id).cloned() {
+            if let Ok(img) = image::open(&p) {
+                let thumb = img.resize(80, 80, image::imageops::FilterType::Triangle);
+                let tex = ctx.load_texture(
+                    format!("webthumb::{}", photo.photo_id),
+                    to_egui(&thumb),
+                    egui::TextureOptions::default(),
+                );
+                self.web_thumbs.insert(photo.photo_id, tex.clone());
+                return Some(tex);
+            }
+        }
+        if self.web_thumb_requested.insert(photo.photo_id) {
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            let ph = photo.clone();
+            self.rt.spawn(async move {
+                let dir = crate::telegram::stickers_cache_dir().join("web");
+                std::fs::create_dir_all(&dir).ok();
+                let dest = dir.join(format!("{}.jpg", ph.photo_id));
+                if !dest.exists() {
+                    if tg.download_web_photo(&ph, &dest).await.is_err() {
+                        return;
+                    }
+                }
+                if dest.exists() {
+                    let _ = tx.send(BgEvent::WebThumbReady { photo_id: ph.photo_id, path: dest });
+                }
+            });
+        }
+        None
     }
 
     /// Одна фоновая итерация с актуальным снапшотом настроек.
@@ -2350,6 +2950,39 @@ impl eframe::App for TelecomfortApp {
             Screen::Downloads => super::views::downloads::show(self, ui),
             Screen::Contacts => super::views::contacts::show(self, ui),
             Screen::Settings => super::views::settings::show(self, ui),
+        }
+        // Глобальное окно подтверждения опасных действий (с любого экрана).
+        if let Some(action) = self.confirm_action.clone() {
+            let (title, text): (&str, String) = match &action {
+                ConfirmAction::ClearHistory { revoke, .. } => (
+                    "🧹 Очистить историю?",
+                    if *revoke {
+                        "Удалить у всех участников (где позволяют права).".to_string()
+                    } else {
+                        "Очистить только у себя.".to_string()
+                    },
+                ),
+                ConfirmAction::LeaveChannel { .. } => (
+                    "🚪 Покинуть чат?",
+                    "Вы больше не будете получать сообщения этого канала/супергруппы."
+                        .to_string(),
+                ),
+                ConfirmAction::DeleteStories { story_ids } => (
+                    "🗑 Удалить сторис?",
+                    format!("Удалить {} шт. безвозвратно?", story_ids.len()),
+                ),
+            };
+            egui::Window::new(title).collapsible(false).show(ui.ctx(), |ui| {
+                ui.label(text);
+                ui.horizontal(|ui| {
+                    if ui.button("Подтвердить").clicked() {
+                        self.do_confirm_action();
+                    }
+                    if ui.button("Отмена").clicked() {
+                        self.confirm_action = None;
+                    }
+                });
+            });
         }
     }
 }

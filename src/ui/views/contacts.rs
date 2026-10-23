@@ -11,6 +11,37 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             .small()
             .weak(),
     );
+    ui.horizontal(|ui| {
+        if ui.small_button("↻ Обновить").clicked() {
+            app.contacts_loaded = false;
+            app.load_contacts();
+        }
+        if ui.small_button("＋ Добавить").on_hover_text("Добавить контакт по телефону").clicked() {
+            app.contact_add_open = true;
+        }
+    });
+    if app.contact_add_open {
+        egui::Window::new("＋ Новый контакт").collapsible(false).show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Телефон:");
+                ui.text_edit_singleline(&mut app.contact_add_phone);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Имя:");
+                ui.text_edit_singleline(&mut app.contact_add_first);
+                ui.label("Фамилия:");
+                ui.text_edit_singleline(&mut app.contact_add_last);
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Добавить").clicked() {
+                    app.do_add_contact();
+                }
+                if ui.button("Отмена").clicked() {
+                    app.contact_add_open = false;
+                }
+            });
+        });
+    }
     ui.separator();
     if app.contacts.is_empty() {
         ui.horizontal(|ui| {
