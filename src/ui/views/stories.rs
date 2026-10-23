@@ -30,6 +30,20 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 app.load_albums();
             }
             if ui
+                .small_button(if app.stories_archive_open { "🗂 Лента" } else { "🗄 Архив" })
+                .on_hover_text("Архив своих сторис (лента/архив)")
+                .clicked()
+            {
+                if app.stories_archive_open {
+                    app.stories_archive_open = false;
+                } else {
+                    app.stories_archive_open = true;
+                    if app.stories_archive.is_empty() {
+                        app.load_archive();
+                    }
+                }
+            }
+            if ui
                 .small_button("＋ Подборка")
                 .on_hover_text("Создать подборку из своих сторис")
                 .clicked()
@@ -199,6 +213,42 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         app.album_pick.clear();
                     }
                 });
+            });
+        }
+
+        // Окно архива сторис: превью + подпись + дата.
+        if app.stories_archive_open {
+            egui::Window::new("🗄 Архив сторис").collapsible(false).show(ui.ctx(), |ui| {
+                if app.stories_archive.is_empty() {
+                    ui.label("архив пуст или грузится…");
+                }
+                let items = app.stories_archive.clone();
+                let ctx = ui.ctx().clone();
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for it in items {
+                        ui.horizontal(|ui| {
+                            if let Some(tex) = app.ensure_archive_thumb(&ctx, it.peer_id, it.story_id) {
+                                let size = tex.size_vec2();
+                                let scale = (96.0 / size.x.max(1.0)).min(96.0 / size.y.max(1.0));
+                                ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
+                            } else {
+                                ui.label(egui::RichText::new("▨ …").weak());
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(format!("#{0}", it.story_id)).strong());
+                                if !it.caption.is_empty() {
+                                    ui.label(crate::utils::truncate(&it.caption, 80));
+                                }
+                                if it.date > 0 {
+                                    ui.label(egui::RichText::new(crate::ui::app::format_msg_time(it.date)).small().weak());
+                                }
+                            });
+                        });
+                    }
+                });
+                if ui.button("Закрыть").clicked() {
+                    app.stories_archive_open = false;
+                }
             });
         }
 

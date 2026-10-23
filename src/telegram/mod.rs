@@ -563,6 +563,22 @@ pub trait TelegramService: Send + Sync {
     async fn update_username(&self, _username: &str) -> anyhow::Result<()> {
         anyhow::bail!("username edit is not implemented for this backend")
     }
+    /// Проверить доступность @username (true — свободен).
+    async fn check_username(&self, _username: &str) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    /// Закрепить/открепить диалог в списке (toggleDialogPin).
+    async fn toggle_dialog_pin(&self, _chat_id: i64, _pinned: bool) -> anyhow::Result<()> {
+        anyhow::bail!("dialog pins are not implemented for this backend")
+    }
+    /// Отправить альбом файлов (2+). Возвращает id сообщений.
+    async fn send_album(&self, _chat_id: i64, _paths: &[std::path::PathBuf], _caption: &str) -> anyhow::Result<Vec<i32>> {
+        anyhow::bail!("albums are not implemented for this backend")
+    }
+    /// Архив своих сторис.
+    async fn archived_stories(&self) -> anyhow::Result<Vec<StoryInfo>> {
+        Ok(vec![])
+    }
     /// Загрузить новое фото профиля (fallback=false).
     async fn upload_avatar(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         anyhow::bail!("avatar upload is not implemented for this backend")

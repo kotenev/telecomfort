@@ -642,6 +642,34 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
+    async fn check_username(&self, username: &str) -> anyhow::Result<bool> {
+        Ok(!username.is_empty() && username != "taken")
+    }
+
+    async fn toggle_dialog_pin(&self, _chat_id: i64, _pinned: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn send_album(
+        &self,
+        _chat_id: i64,
+        paths: &[std::path::PathBuf],
+        _caption: &str,
+    ) -> anyhow::Result<Vec<i32>> {
+        Ok(paths.iter().enumerate().map(|(i, _)| 9400 + i as i32).collect())
+    }
+
+    async fn archived_stories(&self) -> anyhow::Result<Vec<crate::telegram::StoryInfo>> {
+        Ok(vec![crate::telegram::StoryInfo {
+            peer_id: 0,
+            peer_title: "Я".into(),
+            story_id: 99,
+            caption: "архивная".into(),
+            has_url: false,
+            date: 1_600_000_000,
+            preview_path: None,
+        }])}
+
     async fn upload_avatar(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1044,6 +1072,13 @@ mod tests {
         let media = m.search_media(-1001, "photo", 50).await.expect("search media");
         assert!(media.iter().all(|x| x.has_media));
         m.update_username("demo_user").await.expect("username");
+        assert!(m.check_username("free_name").await.expect("check"));
+        assert!(!m.check_username("taken").await.expect("check taken"));
+        m.toggle_dialog_pin(-1001, true).await.expect("pin dialog");
+        let album = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap").await.expect("album");
+        assert_eq!(album.len(), 2);
+        let arch = m.archived_stories().await.expect("archive");
+        assert_eq!(arch.len(), 1);
         m.upload_avatar(std::path::Path::new("ava.jpg")).await.expect("avatar");
         m.delete_contact(2002, 222).await.expect("delete contact");
         let blocked = m.blocked_list().await.expect("blocked");

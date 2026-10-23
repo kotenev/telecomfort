@@ -24,8 +24,20 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.label("@username:");
                     ui.text_edit_singleline(&mut app.profile_username);
+                    if ui.small_button("✓").on_hover_text("Проверить доступность").clicked() {
+                        app.check_username();
+                    }
                     if ui.small_button("💾 Ник").on_hover_text("Изменить @username").clicked() {
                         app.save_username();
+                    }
+                    match app.username_check {
+                        Some(true) => {
+                            ui.label(egui::RichText::new("свободен").small().strong().color(egui::Color32::from_rgb(40, 140, 60)));
+                        }
+                        Some(false) => {
+                            ui.label(egui::RichText::new("занят").small().strong().color(egui::Color32::from_rgb(200, 60, 50)));
+                        }
+                        None => {}
                     }
                 });
                 ui.horizontal(|ui| {
