@@ -158,6 +158,52 @@ pub fn ffmpeg_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Первый кадр только встроенными декодерами (H.264/HEVC/AV1 + covr),
+/// без внешнего ffmpeg: для pHash видео при скачивании и пересчёте дублей.
+/// Синхронный CPU-bound — вызывающий (фон) кладёт в `spawn_blocking`.
+/// Возвращает кадр в исходном разрешении (pHash сам ресайзит до 32x32).
+pub fn first_frame_builtin(video: &Path) -> Option<image::DynamicImage> {
+    if !is_video_path(video) {
+        return None;
+    }
+    // Порядок как в extract_poster, минус ffmpeg (долгий внешний процесс
+    // с таймаутом 20с — для фонового pHash неприемлем).
+    if let Some(frame) = super::h264::extract_frame(video) {
+        return Some(frame);
+    }
+    if let Some(frame) = super::hevc::extract_frame(video) {
+        return Some(frame);
+    }
+    if let Some(frame) = super::av1::extract_frame(video) {
+        return Some(frame);
+    }
+    extract_embedded_cover(video)
+}
+
+/// Сохранить JPEG-постер 270x480 из кадра (для UI-превью видеодублей).
+/// Возвращает `true`, если файл записан и валиден (≥1КБ).
+pub fn save_poster_jpeg(frame: &image::DynamicImage, poster: &Path) -> bool {
+    if let Some(parent) = poster.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    let small = frame.resize(270, 480, image::imageops::FilterType::Triangle);
+    let f = match std::fs::File::create(poster) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(f, 80);
+    let rgb = small.to_rgb8();
+    if enc
+        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .is_err()
+    {
+        return false;
+    }
+    std::fs::metadata(poster).map(|m| m.len() >= 1024).unwrap_or(false)
+}
+
 /// Извлечь первый кадр. Возвращает путь к постеру.
 /// Порядок: встроенные H.264/HEVC/AV1 (чистый Rust) → ffmpeg (таймаут 20с).
 /// Ошибка → вызывающий использует плейсхолдер.
@@ -247,6 +293,34 @@ mod tests {
     fn stale_poster_is_not_fresh() {
         // Несуществующие файлы — не fresh, без паники.
         assert!(!poster_fresh(Path::new("/nope/v.mp4"), Path::new("/nope/p.jpg")));
+    }
+
+    #[test]
+    fn builtin_first_frame_rejects_non_video_and_missing() {
+        assert!(first_frame_builtin(Path::new("/nope/no-video.mp4")).is_none());
+        assert!(first_frame_builtin(Path::new("photo.jpg")).is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("note.txt");
+        std::fs::write(&txt, b"not a video").unwrap();
+        assert!(first_frame_builtin(&txt).is_none());
+    }
+
+    #[test]
+    fn save_poster_jpeg_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            320,
+            240,
+            image::Rgb([40, 120, 200]),
+        ));
+        let poster = dir.path().join("v.poster.jpg");
+        assert!(save_poster_jpeg(&img, &poster));
+        let back = image::open(&poster).expect("poster decodes");
+        // resize() держит пропорции: 320x240 в боксе 270x480 → ширина 270.
+        assert_eq!(back.width(), 270);
+        assert!((198..=206).contains(&back.height()), "h={}", back.height());
+        // Перезапись поверх — тоже ок.
+        assert!(save_poster_jpeg(&img, &poster));
     }
 
     fn boxed(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {

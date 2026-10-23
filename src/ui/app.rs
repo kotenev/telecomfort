@@ -104,6 +104,7 @@ pub struct TelecomfortApp {
     // Загрузки: фильтры + прогресс заливок
     pub dl_query: String,
     pub dl_filter: String,
+    pub dl_cluster_threshold: u32,
     pub uploads: HashMap<String, (u64, u64)>,
     /// Кэш миниатюр для групп похожих (путь → текстура 120px).
     /// Чистится implicitly: ключ — путь файла, stale-превью приемлемы.
@@ -175,6 +176,7 @@ impl TelecomfortApp {
             new_rule_max: "1500".into(),
             dl_query: String::new(),
             dl_filter: "Все".into(),
+            dl_cluster_threshold: cfg.downloader.cluster_max_dist.min(10),
             dl_thumbs: HashMap::new(),
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
@@ -898,6 +900,80 @@ impl TelecomfortApp {
         });
     }
 
+    /// Пересчёт визуальных дублей по сохранённым загрузкам (backfill):
+    /// досчитывает недостающие pHash (картинки — напрямую, видео — первый кадр
+    /// builtin-декодерами + сохранение постера для UI-превью) и проставляет
+    /// `near_duplicate_of` через BK-дерево. Фоновая задача, прогресс в журнале.
+    pub fn backfill_phashes(&mut self) {
+        let db = Arc::clone(&self.db);
+        let tx = self.tx.clone();
+        self.log("пересчёт дублей запущен (фон)…");
+        self.rt.spawn(async move {
+            let rows = db.recent_downloads(5000);
+            // Уже известные хэши — в индекс сразу, чтобы новые искали среди них.
+            let mut tree = crate::ai::bktree::BkTree::<String>::new();
+            for r in &rows {
+                if let Some(h) = r.phash {
+                    tree.insert(h as u64, r.local_path.clone());
+                }
+            }
+            let mut checked = 0usize;
+            let mut updated = 0usize;
+            for r in &rows {
+                if !std::path::Path::new(&r.local_path).exists() {
+                    continue;
+                }
+                let need_hash = r.phash.is_none();
+                let need_near = r.phash.is_some() && r.near_duplicate_of.is_empty();
+                if !need_hash && !need_near {
+                    continue;
+                }
+                // Существующий хэш переиспользуем без декода; недостающий —
+                // тяжёлым путём в blocking-пуле с таймаутом.
+                let ph: Option<u64> = if need_hash {
+                    let lp = r.local_path.clone();
+                    let work = tokio::task::spawn_blocking(move || -> Option<u64> {
+                        if let Ok(img) = image::open(&lp) {
+                            return Some(crate::ai::phash::phash(&img));
+                        }
+                        let path = std::path::Path::new(&lp);
+                        let frame = crate::media::video::first_frame_builtin(path)?;
+                        let poster = crate::media::video::poster_path_for(path);
+                        if !crate::media::video::poster_fresh(path, &poster) {
+                            crate::media::video::save_poster_jpeg(&frame, &poster);
+                        }
+                        Some(crate::ai::phash::phash(&frame))
+                    });
+                    match tokio::time::timeout(std::time::Duration::from_secs(60), work).await
+                    {
+                        Ok(Ok(h)) => h,
+                        _ => continue,
+                    }
+                } else {
+                    r.phash.map(|h| h as u64)
+                };
+                checked += 1;
+                if let Some(h) = ph {
+                    let near = tree
+                        .query_cloned(h, crate::ai::phash::MAX_HAMMING)
+                        .into_iter()
+                        .find(|(other, _)| other != &r.local_path)
+                        .map(|(other, _)| other)
+                        .unwrap_or_default();
+                    db.update_phash(&r.local_path, Some(h as i64), &near);
+                    tree.insert(h, r.local_path.clone());
+                    updated += 1;
+                }
+                if checked % 50 == 0 {
+                    let _ = tx.send(BgEvent::Log(format!("пересчёт дублей: {checked}…")));
+                }
+            }
+            let _ = tx.send(BgEvent::Log(format!(
+                "пересчёт дублей готов: проверено {checked}, обновлено {updated}"
+            )));
+        });
+    }
+
     pub fn sync_form_to_cfg(&mut self) {
         self.cfg.sync.enabled = self.sync_enabled;
         self.cfg.sync.interval_secs = self.sync_interval.parse().unwrap_or(120).max(15);
@@ -936,6 +1012,7 @@ impl TelecomfortApp {
         self.onnx_input = self.cfg.stories.onnx_input_name.clone();
         self.onnx_provider = crate::ai::normalize_provider(&self.cfg.stories.onnx_provider).to_string();
         self.download_dir = self.cfg.downloader.download_dir.to_string_lossy().to_string();
+        self.dl_cluster_threshold = self.cfg.downloader.cluster_max_dist.min(10);
         self.yandex_token = self.cfg.yandex.oauth_token.clone();
         self.yandex_folder = self.cfg.yandex.remote_folder.clone();
         self.yandex_auto = self.cfg.yandex.auto_upload;
@@ -1012,6 +1089,7 @@ impl TelecomfortApp {
         self.cfg.stories.onnx_input_name = self.onnx_input.clone();
         self.cfg.stories.onnx_provider = crate::ai::normalize_provider(&self.onnx_provider).to_string();
         self.cfg.downloader.download_dir = PathBuf::from(&self.download_dir);
+        self.cfg.downloader.cluster_max_dist = self.dl_cluster_threshold.min(10);
         self.cfg.yandex.oauth_token = self.yandex_token.clone();
         self.cfg.yandex.remote_folder = self.yandex_folder.clone();
         self.cfg.yandex.auto_upload = self.yandex_auto;
@@ -1060,17 +1138,29 @@ impl TelecomfortApp {
     }
 
     /// Миниатюра файла для групп похожих (кэш в `dl_thumbs`, 120px по длинной
-    /// стороне). `None` — файл не открывается как картинка (видео/документы
-    /// в группы не попадают, т.к. у них нет pHash — см. `AutoDownloader`).
+    /// стороне). Видео — через сохранённый при скачивании постер
+    /// (`<имя>.poster.jpg`), иначе пометка «🎬 видео» от вызывающего.
+    /// `None` — не картинка и постера нет (в группы такие не попадают).
     /// Загружается лениво: вызывается только для раскрытых групп.
     pub fn ensure_dl_thumb(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
         if let Some(t) = self.dl_thumbs.get(path) {
             return Some(t.clone());
         }
-        // Не плодим текстуры без нужды: кэш ограничен сотнями записей
-        // (группы обычно — единицы файлов; старые записи не чистим —
-        // TextureHandle дешёвый, GPU-память под 120px-миниатюры мизерная).
-        let img = image::open(path).ok()?;
+        // Кэп миниатюр: дешёвые 120px-текстуры, но тысячи их ни к чему —
+        // при переполнении чистим всё (пересоздадутся лениво по мере раскрытия групп).
+        const MAX_THUMBS: usize = 512;
+        if self.dl_thumbs.len() >= MAX_THUMBS {
+            self.dl_thumbs.clear();
+        }
+        let img = image::open(path).ok().or_else(|| {
+            // Видео: постер первого кадра, сохранённый при скачивании/пересчёте.
+            let poster = crate::media::video::poster_path_for(std::path::Path::new(path));
+            if poster.as_os_str() != path {
+                image::open(&poster).ok()
+            } else {
+                None
+            }
+        })?;
         let thumb = img.resize(120, 120, image::imageops::FilterType::Triangle);
         let tex = ctx.load_texture(
             format!("dlthumb::{path}"),
@@ -1210,7 +1300,20 @@ fn to_egui(img: &image::DynamicImage) -> egui::ColorImage {
 impl eframe::App for TelecomfortApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump_events();
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        // Завершённые передачи чистим глобально (а не только на экране Загрузок),
+        // иначе «активность» будет вечно держать быстрый тикер.
+        self.uploads.retain(|_, (d, t)| *d < (*t).max(1));
+        // Адаптивный тикер для ноутбука: быстрый repaint только когда есть
+        // живая анимация (прогресс передач, догружающиеся превью сторис),
+        // в покое — редкий (события фона всё равно разбудят через SyncTick).
+        let busy = !self.uploads.is_empty()
+            || self.stories.iter().any(|c| c.preview_loading);
+        let every = if busy {
+            std::time::Duration::from_millis(400)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        ui.ctx().request_repaint_after(every);
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {

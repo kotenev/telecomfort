@@ -125,17 +125,42 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 .filter_map(|(i, r)| r.phash.map(|h| (i, h as u64)))
                 .collect();
             if hash_rows.len() >= 2 {
+                let radius = app.dl_cluster_threshold.min(10);
                 let hashes: Vec<u64> = hash_rows.iter().map(|(_, h)| *h).collect();
-                let groups = crate::ai::cluster::cluster_indices(
-                    &hashes,
-                    crate::ai::phash::MAX_HAMMING,
-                );
+                let groups = crate::ai::cluster::cluster_indices(&hashes, radius);
                 if !groups.is_empty() {
                     let in_groups: usize = groups.iter().map(|g| g.len()).sum();
                     ui.heading(format!(
                         "Похожие (pHash): групп {}, файлов {in_groups}",
                         groups.len()
                     ));
+                    ui.horizontal(|ui| {
+                        ui.label("Порог похожести:");
+                        // Слайдер с автосохранением в config.toml (применяется сразу).
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut app.dl_cluster_threshold, 0..=10)
+                                    .text("Хэмминг"),
+                            )
+                            .changed()
+                        {
+                            app.cfg.downloader.cluster_max_dist =
+                                app.dl_cluster_threshold.min(10);
+                            if let Err(e) = app.cfg.save() {
+                                app.log(format!("не сохранён порог: {e:#}"));
+                            }
+                        }
+                        if ui
+                            .small_button("🔄 Пересчитать дубли")
+                            .on_hover_text(
+                                "Досчитать pHash (включая видео) и дубли по всем \
+                                 сохранённым файлам. Фоновая задача, прогресс — в журнале.",
+                            )
+                            .clicked()
+                        {
+                            app.backfill_phashes();
+                        }
+                    });
                     ui.label(
                         egui::RichText::new(
                             "Связные группы визуальных дублей: ресайз/рекомпресс Telegram повторы не прячет. Раскройте группу для предпросмотра и быстрых действий.",

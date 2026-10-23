@@ -191,9 +191,40 @@ impl AutoDownloader {
         if !sha.is_empty() {
             self.db.remember_hash(&sha, &path.to_string_lossy());
         }
-        // pHash — только если файл открывается как картинка (фото/обложки;
-        // видео и документы пропускаем, чтобы не жечь CPU на декоде).
-        let phash = image::open(&path).ok().map(|img| crate::ai::phash::phash(&img));
+        // pHash: картинки — напрямую; видео — по первому кадру встроенных
+        // декодеров (H.264/HEVC/AV1/covr, без ffmpeg), чтобы видеомемы тоже
+        // кластеризовались. Декод в spawn_blocking + таймаут 60с, чтобы
+        // тяжёлый файл не вешал фоновую задачу; постер сохраняем рядом
+        // с видео — он же превью для групп дублей в Загрузках.
+        // Документы/аудио пропускаем (нет видеоряда для хэширования).
+        let image_phash =
+            image::open(&path).ok().map(|img| crate::ai::phash::phash(&img));
+        let phash: Option<u64> = match image_phash {
+            Some(h) => Some(h),
+            None if crate::media::video::is_video_path(&path) => {
+                let p = path.clone();
+                let frame = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    tokio::task::spawn_blocking(move || {
+                        crate::media::video::first_frame_builtin(&p)
+                    }),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten();
+                if let Some(ref frame) = frame {
+                    let poster = crate::media::video::poster_path_for(&path);
+                    if !crate::media::video::poster_fresh(&path, &poster) {
+                        crate::media::video::save_poster_jpeg(frame, &poster);
+                    }
+                    Some(crate::ai::phash::phash(frame))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
         let mut near_duplicate_of = String::new();
         if let Some(ph) = phash {
             if let Some((other, dist)) = self
@@ -311,6 +342,7 @@ mod tests {
                 bypass_protected: true,
             }],
             parallel_chunks: 2,
+            cluster_max_dist: 6,
         };
         let dl = AutoDownloader::new(
             settings,

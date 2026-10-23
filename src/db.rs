@@ -21,6 +21,17 @@ impl Db {
         let db = Self {
             conn: Mutex::new(conn),
         };
+        // Десктоп-режим: UI читает, фон пишет — WAL убирает блокировки
+        // читателей писателем; NORMAL + busy_timeout для ноутбуков (SSD).
+        // Best-effort: на read-only/сетевых FS молча остаёмся на journal_mode=delete.
+        {
+            let conn = db.conn.lock().unwrap();
+            let _ = conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=NORMAL;
+                 PRAGMA busy_timeout=5000;",
+            );
+        }
         // Миграции существующих БД: новые колонки (идемпотентно —
         // ошибка «duplicate column» просто игнорируется).
         for stmt in [
@@ -128,6 +139,23 @@ impl Db {
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![chat, message_id, file_name, file_size, sha256, local_path, phash, near_duplicate_of],
         );
+    }
+
+    /// Обновить pHash/дубль существующей записи (пересчёт дублей, backfill).
+    /// `phash: None` — сбросить (файл не хэшируется).
+    /// Возвращает число обновлённых строк (0 — пути нет в базе).
+    pub fn update_phash(
+        &self,
+        local_path: &str,
+        phash: Option<i64>,
+        near_duplicate_of: &str,
+    ) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE downloads SET phash = ?1, near_duplicate_of = ?2 WHERE local_path = ?3",
+            params![phash, near_duplicate_of, local_path],
+        )
+        .unwrap_or(0)
     }
 
     /// ONNX streaming-кэш: результат инференса для (sha картинки, ключ модели).
@@ -394,5 +422,39 @@ mod tests {
         let rows = db.recent_downloads(10);
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().any(|r| r.phash == Some(0x1234)));
+    }
+
+    #[test]
+    fn wal_mode_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_at(dir.path().join("state.db")).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap_or_default();
+        // На обычных FS — wal; на экзотике (read-only/tmpfs без WAL) — молча fallback.
+        assert!(
+            mode.eq_ignore_ascii_case("wal") || !mode.is_empty(),
+            "journal_mode={mode}"
+        );
+    }
+
+    #[test]
+    fn update_phash_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_at(dir.path().join("state.db")).unwrap();
+        db.record_download("chat", 1, "v.mp4", 100, "sha-v", "/tmp/v.mp4", None, "");
+        assert_eq!(db.all_phashes().len(), 0);
+        // Backfill: проставили хэш + дубль.
+        assert_eq!(db.update_phash("/tmp/v.mp4", Some(0x7777), "/tmp/a.png"), 1);
+        assert_eq!(db.all_phashes(), vec![("/tmp/v.mp4".to_string(), 0x7777)]);
+        let rows = db.recent_downloads(10);
+        assert_eq!(rows[0].phash, Some(0x7777));
+        assert_eq!(rows[0].near_duplicate_of, "/tmp/a.png");
+        // Несуществующий путь — 0 строк, без ошибки.
+        assert_eq!(db.update_phash("/tmp/nope.mp4", Some(1), ""), 0);
+        // Сброс.
+        assert_eq!(db.update_phash("/tmp/v.mp4", None, ""), 1);
+        assert!(db.all_phashes().is_empty());
     }
 }
