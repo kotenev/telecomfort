@@ -160,10 +160,18 @@ pub struct DownloaderSettings {
     /// Параллельных чанков MTProto на файл (1..=8). Применяется при следующем входе.
     #[serde(default = "default_parallel_chunks")]
     pub parallel_chunks: usize,
+    /// Порог Хэмминга для группировки похожих в Загрузках (0..=10).
+    /// На пометки `near_duplicate_of` при скачивании не влияет (там фиксированный MAX_HAMMING=6).
+    #[serde(default = "default_cluster_max_dist")]
+    pub cluster_max_dist: u32,
 }
 
 fn default_parallel_chunks() -> usize {
     4
+}
+
+fn default_cluster_max_dist() -> u32 {
+    6
 }
 
 impl Default for DownloaderSettings {
@@ -179,6 +187,7 @@ impl Default for DownloaderSettings {
                 bypass_protected: true,
             }],
             parallel_chunks: default_parallel_chunks(),
+            cluster_max_dist: default_cluster_max_dist(),
         }
     }
 }

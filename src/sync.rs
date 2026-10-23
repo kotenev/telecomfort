@@ -23,6 +23,7 @@ pub fn notify(title: &str, body: &str) {
     match notify_rust::Notification::new()
         .summary(title)
         .body(body)
+        .appname("Telecomfort")
         .icon("telecomfort")
         .show()
     {
