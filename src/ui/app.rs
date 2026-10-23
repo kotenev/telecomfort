@@ -84,6 +84,12 @@ pub enum BgEvent {
     StoryViewsLoaded { story_id: i32, views: i32 },
     /// Стелс-режим включён.
     StealthEnabled,
+    /// Зрители сторис загружены.
+    StoryViewersLoaded { story_id: i32, count: i32, viewers: Vec<String> },
+    /// Медиа-таб истории загружен.
+    MediaTabLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    /// Чёрный список загружен.
+    BlockedLoaded(Vec<crate::telegram::BlockedInfo>),
     Me(AccountInfo),
     Log(String),
     Error(String),
@@ -305,6 +311,18 @@ pub struct TelecomfortApp {
     /// Просмотры своих сторис (story_id → views).
     pub story_views: HashMap<i32, i32>,
 
+    // Шестой parity-пакет: сторис-интерактив, медиапоиск, профиль, контакты
+    /// Зрители сторис (story_id → (count, имена)) + окно.
+    pub story_viewers: HashMap<i32, (i32, Vec<String>)>,
+    pub story_viewers_open: Option<i32>,
+    /// Медиа-табы истории: None = всё, Some("photo"|"video"|"link").
+    pub media_tab: Option<String>,
+    /// Username + загрузка аватара в настройках.
+    pub profile_username: String,
+    /// Чёрный список + флаг загрузки.
+    pub blocked: Vec<crate::telegram::BlockedInfo>,
+    pub blocked_loaded: bool,
+
     // ИИ: CLIP-лайт и ONNX
     pub clip_enabled: bool,
     pub onnx_enabled: bool,
@@ -439,6 +457,12 @@ impl TelecomfortApp {
             story_reply_text: String::new(),
             story_reply_target: None,
             story_views: HashMap::new(),
+            story_viewers: HashMap::new(),
+            story_viewers_open: None,
+            media_tab: None,
+            profile_username: String::new(),
+            blocked: Vec::new(),
+            blocked_loaded: false,
             uploads: HashMap::new(),
             clip_enabled: cfg.stories.clip_enabled,
             onnx_enabled: cfg.stories.onnx_enabled,
@@ -613,6 +637,7 @@ impl TelecomfortApp {
                     self.profile_first = p.first_name;
                     self.profile_last = p.last_name;
                     self.profile_about = p.about;
+                    self.profile_username = p.username.unwrap_or_default();
                     self.profile_loaded = true;
                 }
                 BgEvent::StoryPublished { story_id } => {
@@ -692,6 +717,20 @@ impl TelecomfortApp {
                 }
                 BgEvent::StealthEnabled => {
                     self.log("🥷 стелс-режим сторис включён".to_string());
+                }
+                BgEvent::StoryViewersLoaded { story_id, count, viewers } => {
+                    self.story_views.insert(story_id, count);
+                    self.story_viewers.insert(story_id, (count, viewers));
+                    self.story_viewers_open = Some(story_id);
+                }
+                BgEvent::MediaTabLoaded { chat_id, items } => {
+                    if self.selected_chat == Some(chat_id) {
+                        self.history.insert(chat_id, items);
+                    }
+                }
+                BgEvent::BlockedLoaded(blocked) => {
+                    self.blocked = blocked;
+                    self.blocked_loaded = true;
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
@@ -1118,6 +1157,7 @@ impl TelecomfortApp {
         self.reply_to = None;
         self.editing = None;
         self.chat_search.clear();
+        self.media_tab = None;
         self.topics.clear();
         self.topic_sel = None;
         self.load_history(chat_id);
@@ -1709,6 +1749,26 @@ impl TelecomfortApp {
         None
     }
 
+    /// Загрузить чёрный список.
+    pub fn load_blocked(&mut self) {
+        if self.blocked_loaded {
+            return;
+        }
+        self.blocked_loaded = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.blocked_list().await {
+                Ok(b) => {
+                    let _ = tx.send(BgEvent::BlockedLoaded(b));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("чёрный список: {e:#}")));
+                }
+            }
+        });
+    }
+
     /// Загрузить активные сессии (экран Настройки).
     pub fn load_sessions(&mut self) {
         if self.sessions_loaded {
@@ -2105,6 +2165,153 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("стелс: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Реакция на чужую сторис (повтор — toggle на сервере).
+    pub fn story_react(&mut self, peer_id: i64, story_id: i32, emoji: &str) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let emoji = emoji.to_string();
+        self.rt.spawn(async move {
+            if let Err(e) = tg.story_react(peer_id, story_id, &emoji).await {
+                let _ = tx.send(BgEvent::Error(format!("реакция на сторис: {e:#}")));
+            }
+        });
+    }
+
+    /// Закрепить/открепить свою сторис в профиле.
+    pub fn toggle_story_pin(&mut self, story_id: i32, pinned: bool) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.toggle_story_pin(story_id, !pinned).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if !pinned { "сторис закреплена".into() } else { "сторис откреплена".into() },
+                    ));
+                    let _ = tx.send(BgEvent::StoriesDeleted);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("закреп сторис: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить зрителей своей сторис (первые 20 имён + окно).
+    pub fn load_story_viewers(&mut self, story_id: i32) {
+        if self.story_viewers.contains_key(&story_id) {
+            self.story_viewers_open = Some(story_id);
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.story_views(story_id).await {
+                Ok(views) => {
+                    let _ = tx.send(BgEvent::StoryViewsLoaded { story_id, views });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("просмотры: {e:#}")));
+                }
+            }
+            match tg.story_viewers(story_id, 20).await {
+                Ok((count, viewers)) => {
+                    let names = viewers.into_iter().map(|v| v.name).collect();
+                    let _ = tx.send(BgEvent::StoryViewersLoaded {
+                        story_id,
+                        count,
+                        viewers: names,
+                    });
+                }
+                Err(e) => {
+                    tracing::debug!("story viewers failed: {e}");
+                }
+            }
+        });
+    }
+
+    /// Медиа-табы истории: None — всё (обычная история), иначе фото/видео/ссылки.
+    pub fn select_media_tab(&mut self, chat_id: i64, kind: Option<String>) {
+        self.media_tab = kind.clone();
+        match kind {
+            None => self.load_history(chat_id),
+            Some(k) => {
+                let tg = Arc::clone(&self.tg);
+                let tx = self.tx.clone();
+                self.rt.spawn(async move {
+                    match tg.search_media(chat_id, &k, 100).await {
+                        Ok(items) => {
+                            let _ = tx.send(BgEvent::MediaTabLoaded { chat_id, items });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("медиапоиск: {e:#}")));
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Сохранить @username из настроек.
+    pub fn save_username(&mut self) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let u = self.profile_username.trim().to_string();
+        self.rt.spawn(async move {
+            match tg.update_username(&u).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("username обновлён".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("username: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить новое фото профиля (файловый диалог → upload).
+    pub fn upload_avatar_pick(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Фото", &["jpg", "jpeg", "png", "webp"])
+            .pick_file()
+        else {
+            return;
+        };
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.upload_avatar(&path).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("фото профиля обновлено".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("аватар: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Удалить контакт (с подтверждением вызывающего).
+    pub fn delete_contact(&mut self, user_id: i64, access_hash: i64) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.delete_contact(user_id, access_hash).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("контакт удалён".into()));
+                    match tg.contacts().await {
+                        Ok(c) => {
+                            let _ = tx.send(BgEvent::ContactsLoaded(c));
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("удаление контакта: {e:#}")));
                 }
             }
         });

@@ -300,7 +300,7 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 .small()
                 .weak(),
             );
-            // Поиск по загруженной истории.
+            // Поиск по загруженной истории + медиа-табы (серверный фильтр).
             ui.horizontal(|ui| {
                 ui.label("🔍");
                 ui.add(
@@ -308,6 +308,18 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         .hint_text("поиск по истории…")
                         .desired_width(220.0),
                 );
+                let tab = app.media_tab.clone();
+                let mut chip = |ui: &mut egui::Ui, label: &str, kind: Option<&str>| {
+                    let sel = tab.as_deref() == kind;
+                    if ui.selectable_label(sel, label).clicked() {
+                        app.select_media_tab(chat_id, kind.map(|s| s.to_string()));
+                    }
+                };
+                ui.separator();
+                chip(ui, "Все", None);
+                chip(ui, "📷 Фото", Some("photo"));
+                chip(ui, "🎬 Видео", Some("video"));
+                chip(ui, "🔗 Ссылки", Some("link"));
             });
             ui.separator();
             let q = app.chat_search.to_lowercase();

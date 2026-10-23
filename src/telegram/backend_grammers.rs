@@ -397,6 +397,7 @@ impl TelegramService for GrammersBackend {
                 phone: user.phone.clone().unwrap_or_default(),
                 username: user.username.clone(),
                 user_id: user.id,
+                access_hash: user.access_hash.unwrap_or(0),
             });
         }
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -760,6 +761,7 @@ impl TelegramService for GrammersBackend {
             first_name: me.first_name().unwrap_or("").to_string(),
             last_name: me.last_name().unwrap_or("").to_string(),
             about,
+            username: me.username().map(|s| s.to_string()),
         })
     }
 
@@ -1563,6 +1565,203 @@ impl TelegramService for GrammersBackend {
             .await
             .context("stealth failed")?;
         Ok(())
+    }
+
+    async fn story_react(&self, peer_id: i64, story_id: i32, emoji: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(peer_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::stories::SendReaction {
+                add_to_recent: false,
+                peer: (&pref).into(),
+                story_id,
+                reaction: tl::enums::Reaction::Emoji(tl::types::ReactionEmoji {
+                    emoticon: emoji.to_string(),
+                }),
+            })
+            .await
+            .context("story react failed")?;
+        Ok(())
+    }
+
+    async fn toggle_story_pin(&self, story_id: i32, pinned: bool) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::stories::TogglePinned {
+                peer: tl::enums::InputPeer::PeerSelf,
+                id: vec![story_id],
+                pinned,
+            })
+            .await
+            .context("toggle story pin failed")?;
+        Ok(())
+    }
+
+    async fn story_viewers(&self, story_id: i32, limit: usize) -> Result<(i32, Vec<super::StoryViewer>)> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::stories::GetStoryViewsList {
+                just_contacts: false,
+                reactions_first: false,
+                forwards_first: false,
+                peer: tl::enums::InputPeer::PeerSelf,
+                q: None,
+                id: story_id,
+                offset: String::new(),
+                limit: limit.min(100) as i32,
+            })
+            .await
+            .context("getStoryViewsList failed")?;
+        let list = match res {
+            tl::enums::stories::StoryViewsList::List(l) => l,
+        };
+        let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        for u in &list.users {
+            if let tl::enums::User::User(u) = u {
+                let name = match (&u.first_name, &u.last_name) {
+                    (Some(f), Some(l)) => format!("{f} {l}"),
+                    (Some(f), None) => f.clone(),
+                    (None, Some(l)) => l.clone(),
+                    (None, Some(_)) => unreachable!(),
+                    (None, None) => u.username.clone().unwrap_or_else(|| format!("id{}", u.id)),
+                };
+                names.insert(u.id, name);
+            }
+        }
+        let mut viewers = Vec::new();
+        for v in &list.views {
+            let uid = match v {
+                tl::enums::StoryView::View(v) => Some(v.user_id),
+                _ => None,
+            };
+            if let Some(uid) = uid {
+                if let Some(name) = names.get(&uid).cloned() {
+                    viewers.push(super::StoryViewer { name });
+                }
+            }
+            if viewers.len() >= limit {
+                break;
+            }
+        }
+        Ok((list.views_count, viewers))
+    }
+
+    async fn search_media(
+        &self,
+        chat_id: i64,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<MessageInfo>> {
+        use grammers_client::tl as tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let filter = match kind {
+            "photo" => tl::enums::MessagesFilter::InputMessagesFilterPhotos,
+            "video" => tl::enums::MessagesFilter::InputMessagesFilterVideo,
+            _ => tl::enums::MessagesFilter::InputMessagesFilterUrl,
+        };
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::Search {
+                peer: (&pref).into(),
+                q: String::new(),
+                from_id: None,
+                saved_peer_id: None,
+                saved_reaction: None,
+                top_msg_id: None,
+                filter,
+                min_date: 0,
+                max_date: 0,
+                offset_id: 0,
+                add_offset: 0,
+                limit: limit.min(100) as i32,
+                max_id: 0,
+                min_id: 0,
+                hash: 0,
+            })
+            .await
+            .context("media search failed")?;
+        let (messages, users) = match res {
+            tl::enums::messages::Messages::Messages(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::Slice(m) => (m.messages, vec![]),
+            tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users),
+            _ => (vec![], vec![]),
+        };
+        let names = users_map(&users);
+        Ok(messages
+            .into_iter()
+            .filter_map(|m| raw_to_info(&m, chat_id, None, &names))
+            .collect())
+    }
+
+    async fn update_username(&self, username: &str) -> Result<()> {
+        use grammers_client::tl as tl;
+        let username = username.trim().trim_start_matches('@').to_string();
+        if username.is_empty() {
+            anyhow::bail!("пустой username");
+        }
+        self.client
+            .invoke(&tl::functions::account::UpdateUsername { username })
+            .await
+            .context("updateUsername failed (занят?)")?;
+        Ok(())
+    }
+
+    async fn upload_avatar(&self, path: &Path) -> Result<()> {
+        use grammers_client::tl as tl;
+        let uploaded = self.client.upload_file(path).await.context("upload failed")?;
+        self.client
+            .invoke(&tl::functions::photos::UploadProfilePhoto {
+                fallback: false,
+                bot: None,
+                file: Some(uploaded.raw),
+                video: None,
+                video_start_ts: None,
+                video_emoji_markup: None,
+            })
+            .await
+            .context("uploadProfilePhoto failed")?;
+        Ok(())
+    }
+
+    async fn delete_contact(&self, user_id: i64, access_hash: i64) -> Result<()> {
+        use grammers_client::tl as tl;
+        self.client
+            .invoke(&tl::functions::contacts::DeleteContacts {
+                id: vec![tl::enums::InputUser::User(tl::types::InputUser {
+                    user_id,
+                    access_hash,
+                })],
+            })
+            .await
+            .context("deleteContacts failed")?;
+        Ok(())
+    }
+
+    async fn blocked_list(&self) -> Result<Vec<super::BlockedInfo>> {
+        use grammers_client::tl as tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::contacts::GetBlocked { my_stories_from: false, offset: 0, limit: 100 })
+            .await
+            .context("getBlocked failed")?;
+        let (blocked, users) = match res {
+            tl::enums::contacts::Blocked::Blocked(b) => (b.blocked, b.users),
+            tl::enums::contacts::Blocked::Slice(s) => (s.blocked, s.users),
+        };
+        // Имена из users ответа; чаты показываем по id.
+        let names = users_map(&users);
+        let mut out = Vec::new();
+        for b in blocked {
+            let peer_id = match b {
+                tl::enums::PeerBlocked::Blocked(p) => p.peer_id,
+                _ => continue,
+            };
+            let id = peer_to_bot_id(&peer_id);
+            let name = names.get(&id).cloned().unwrap_or_else(|| format!("id {id}"));
+            out.push(super::BlockedInfo { id, name });
+        }
+        Ok(out)
     }
 
     async fn avatar_path(&self, chat_id: i64) -> Result<Option<PathBuf>> {

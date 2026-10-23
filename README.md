@@ -58,8 +58,15 @@
    Геопозиция (📍: широта/долгота → `InputMediaGeoPoint`).
    Ответы на сторис (💬 на чужих карточках → текст в чат автора, `InputReplyTo::Story`).
    Стелс-режим сторис (🥷: `stories.activateStealthMode` past+future).
-   Просмотры своих сторис (👁 на своих карточках, `getStoryViewsList`).
+   Просмотры своих сторис (👁 на карточках, `getStoryViewsList`).
    Ссылки на сообщения (🔗: `t.me/username/id` или `t.me/c/internal/id`, копирование в буфер).
+   Реакции на чужие сторис (❤️ на карточке, `stories.sendReaction`, toggle).
+   Закреп своих сторис в профиле (📌, `stories.togglePinned`).
+   Зрители сторис (тап по 👁 → окно со списком, `getStoryViewsList` limit 20).
+   Медиа-табы истории (Все/📷/🎬/🔗 — серверный `messages.search` с фильтром).
+   @username (Настройки, `account.updateUsername`) и фото профиля (`photos.uploadProfilePhoto`).
+   Удаление контактов (🗑, `contacts.deleteContacts`) и чёрный список
+   (`contacts.getBlocked` + разблокировка из списка).
    В демо всё работает на моке (синтетические id 9000+).
 
 Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
@@ -77,7 +84,7 @@ cargo run
 # запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
 cargo run --features ort
 
-# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/гео/стелс/мок-контракты) + видео + чанки + multi-DC + бандл
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы-покрытие/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис/топики/поиск/веб/медиапоиск/сторис-интерактив/мок-контракты) + видео + чанки + multi-DC + бандл
 cargo test
 
 # проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
@@ -126,6 +133,7 @@ src/
                         + topics/create_topic/topic_history/send_to_topic/global_search/scheduled/cancel
                         + create_channel/invite/block/clear/leave/add_contact/web_photo
                         + create_poll/send_geo/story_reply/story_views/stealth
+                        + story_react/story_pin/story_viewers/media_search/username/avatar/delete_contact/blocked
    media/mod.rs       — AutoDownloader: matches_rules/should_download/download_many → MTProto (чанки+resume+прогресс) → sha256+pHash → Yandex → Calibre (+прогресс, семафор ×4)
    media/mtproto.rs     — Multi-DC докачка: chunk_ranges/resume_start/.part + DcAffinity + auth-перенос + upload.getFile precise ×N + writer seek + прогресс
     media/h264.rs        — Встроенный H.264-декодер первого кадра (чистый Rust, rusty_h264): avcC+mdat → Annex B → YUV→RGB
@@ -312,7 +320,8 @@ Execution providers: `auto`/`cpu` всегда; `coreml`/`cuda`/`tensorrt`/`open
 - Вне скоупа сознательно: звонки (VoIP), секретные чаты (E2E), боты/inline-кнопки
   (этот TL-слой grammers схлопнул ButtonType без URL/callback — ждём апстрим),
   QR-вход (нет в grammers 0.11), автоудаление по таймеру (нет `toggleDisappearingMode`
-  в этом слое), перевод сообщений (нужен Premium API) —
+  в этом слое), перевод сообщений (нужен Premium API),
+  хайлайтс-подборки сторис (createAlbum есть, но нужен браузер альбомов — отложено) —
   требуют отдельных подсистем; интерфейс (`TelegramService`) под них расширяем.
 
 ### Десктоп (macOS)

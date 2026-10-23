@@ -19,6 +19,9 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         if ui.small_button("＋ Добавить").on_hover_text("Добавить контакт по телефону").clicked() {
             app.contact_add_open = true;
         }
+        if ui.small_button("🚫 Чёрный список").on_hover_text("Показать заблокированных").clicked() {
+            app.load_blocked();
+        }
     });
     if app.contact_add_open {
         egui::Window::new("＋ Новый контакт").collapsible(false).show(ui.ctx(), |ui| {
@@ -73,8 +76,31 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("💬").on_hover_text("Открыть чат").clicked() {
                     open_chat_with(app, &c);
                 }
+                if ui
+                    .small_button("🗑")
+                    .on_hover_text("Удалить контакт")
+                    .clicked()
+                {
+                    app.delete_contact(c.user_id, c.access_hash);
+                }
             });
             ui.separator();
+        }
+        // Чёрный список.
+        if !app.blocked.is_empty() {
+            ui.heading("🚫 Заблокированные");
+            for b in app.blocked.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&b.name).strong());
+                    if ui
+                        .small_button("✅ Разблокировать")
+                        .on_hover_text("Снять блокировку")
+                        .clicked()
+                    {
+                        app.toggle_block(b.id, true);
+                    }
+                });
+            }
         }
     });
 }

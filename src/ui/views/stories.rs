@@ -102,6 +102,24 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     });
                 });
         }
+        // Окно зрителей своей сторис.
+        if let Some(sid) = app.story_viewers_open {
+            let (count, names) =
+                app.story_viewers.get(&sid).cloned().unwrap_or((0, vec![]));
+            egui::Window::new(format!("👁 Просмотры ({count})"))
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    if names.is_empty() {
+                        ui.label("пока никто / загрузка…");
+                    }
+                    for n in names.iter().take(50) {
+                        ui.label(format!("• {n}"));
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.story_viewers_open = None;
+                    }
+                });
+        }
 
         let n = app.stories.len();
         egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -201,14 +219,16 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                             },
                                         );
                                     }
-                                    // Просмотры своей сторис (лениво, один раз).
+                                    // Просмотры своей сторис (лениво, один раз; тап — кто смотрел).
                                     match app.story_views.get(&story_id).copied() {
                                         Some(v) => {
-                                            ui.label(
-                                                egui::RichText::new(format!("👁 {v}"))
-                                                    .small()
-                                                    .weak(),
-                                            );
+                                            if ui
+                                                .small_button(format!("👁 {v}"))
+                                                .on_hover_text("Кто смотрел")
+                                                .clicked()
+                                            {
+                                                app.load_story_viewers(story_id);
+                                            }
                                         }
                                         None => {
                                             if ui
@@ -216,18 +236,34 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                                 .on_hover_text("Показать просмотры")
                                                 .clicked()
                                             {
-                                                app.load_story_views(story_id);
+                                                app.load_story_viewers(story_id);
                                             }
                                         }
                                     }
-                                } else if ui
-                                    .small_button("💬 Ответить")
-                                    .on_hover_text("Ответить на сторис текстом (уйдёт в чат автора)")
-                                    .clicked()
-                                {
-                                    app.story_reply_target = Some((peer_id, story_id));
-                                    app.story_reply_text.clear();
-                                    app.story_reply_open = true;
+                                    if ui
+                                        .small_button("📌")
+                                        .on_hover_text("Закрепить/открепить в профиле")
+                                        .clicked()
+                                    {
+                                        app.toggle_story_pin(story_id, false);
+                                    }
+                                } else {
+                                    if ui
+                                        .small_button("💬 Ответить")
+                                        .on_hover_text("Ответить на сторис текстом (уйдёт в чат автора)")
+                                        .clicked()
+                                    {
+                                        app.story_reply_target = Some((peer_id, story_id));
+                                        app.story_reply_text.clear();
+                                        app.story_reply_open = true;
+                                    }
+                                    if ui
+                                        .small_button("❤️")
+                                        .on_hover_text("Реакция на сторис")
+                                        .clicked()
+                                    {
+                                        app.story_react(peer_id, story_id, "❤️");
+                                    }
                                 }
                             });
                             let show_blurred = is_ad && app.auto_hide_ads && !revealed;
