@@ -39,6 +39,10 @@
    Опросы (карточки + голосование, quiz/закрытые), пересылка в другой чат (➦ + выбор цели),
    контакты (экран 👥 + переход в чат), гео/контакты в пузырях, просмотры/пересылки 👁/➦,
    голосовые и аудио — встроенный плеер (rodio, кэш `~/.cache/telecomfort/audio`).
+   Отложенная отправка (⏰ в композере, сервер доставит через N часов),
+   серверные черновики (синк между устройствами: отправка стирает локально и на сервере).
+   Сессии (Настройки: список + «Завершить другие»), профиль (имя/о себе).
+   Публикация сторис (＋ в Сторис: фото/видео + подпись, видно контактам, 24 часа).
    В демо всё работает на моке (синтетические id 9000+).
 
 Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
@@ -56,7 +60,7 @@ cargo run
 # запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
 cargo run --features ort
 
-# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы/пересылка/контакты/плеер/identicon/мок-контракты) + видео + чанки + multi-DC + бандл
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash(фото+видео)/BK-дерево/кластеры/backfill + сообщения(аватары/реакции/пины/опросы/пересылка/контакты/плеер/identicon/отложка/сессии/профиль/сторис-мок-контракты) + видео + чанки + multi-DC + бандл
 cargo test
 
 # проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
@@ -101,6 +105,7 @@ src/
     mock.rs          — офлайн-демо: 2 закрытые группы, 6 сторис, PNG-превью 270x480
     backend_grammers.rs — live MTProto: dialogs/history/getAllStories/getStoriesByID/download_media
                         + send/edit/delete/react/read/file/avatar/pin/vote/forward/mute/archive/filters/contacts
+                        + scheduled/drafts/sessions/profile/publish_story
    media/mod.rs       — AutoDownloader: matches_rules/should_download/download_many → MTProto (чанки+resume+прогресс) → sha256+pHash → Yandex → Calibre (+прогресс, семафор ×4)
    media/mtproto.rs     — Multi-DC докачка: chunk_ranges/resume_start/.part + DcAffinity + auth-перенос + upload.getFile precise ×N + writer seek + прогресс
     media/h264.rs        — Встроенный H.264-декодер первого кадра (чистый Rust, rusty_h264): avcC+mdat → Annex B → YUV→RGB
@@ -267,9 +272,18 @@ Execution providers: `auto`/`cpu` всегда; `coreml`/`cuda`/`tensorrt`/`open
   (матч по username, иначе по имени).
 - Голосовые/аудио: кнопка ▶/⏹ в пузыре, скачивание в аудиокэш, воспроизведение rodio
   (CoreAudio/ALSA/WASAPI), автостоп в конце; повторный тап — стоп.
-- Стикеры webp и гифки: `image` с фичами `webp`/`gif` (чистый Rust) — открываются везде.
-- Вне скоупа сознательно: звонки (VoIP), секретные чаты (E2E), боты/inline-кнопки —
-  требуют отдельных подсистем; интерфейс (`TelegramService`) под них расширяем.
+- Стикеры webp и гифки: `image` с фичами `webp`/`gif` (чистый Rust) — открываются везде,
+  в пузырях — превью по месту (кэш `~/.cache/telecomfort/stickers`).
+- Отложенная отправка: кнопка ⏰ в композере (часы задержки, сервер доставит сам);
+  черновики синкаются на сервер (`messages.saveDraft`), отправка стирает их везде.
+- Сессии: Настройки → список активных (`account.getAuthorizations`) + «Завершить другие».
+- Профиль: Настройки → имя/фамилия/о себе (`account.updateProfile`).
+- Публикация сторис: ＋ в Сторис → файл (фото/видео) + подпись → `stories.sendStory`
+  (заливка → `messages.uploadMedia` → id, видно контактам, 24 часа).
+- Вне скоупа сознательно: звонки (VoIP), секретные чаты (E2E), боты/inline-кнопки
+  (этот TL-слой grammers схлопнул ButtonType без URL/callback — ждём апстрим),
+  QR-вход (нет в grammers 0.11), форум-топики — требуют отдельных подсистем;
+  интерфейс (`TelegramService`) под них расширяем.
 
 ### Десктоп (macOS)
 - Иконка окна/дока рисуется в коде (`main.rs::app_icon`, 128x128, без assets),

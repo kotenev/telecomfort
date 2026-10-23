@@ -374,6 +374,22 @@ fn bubble_content(
     if !m.text.is_empty() {
         ui.label(crate::utils::truncate(&m.text, 2000));
     }
+    // Стикеры: превью по тапу (качается в кэш, не в Загрузки).
+    if m.media_kind.as_deref() == Some("sticker") {
+        let ctx = ui.ctx().clone();
+        if let Some(tex) = app.ensure_sticker(&ctx, chat_id, m) {
+            let size = tex.size_vec2();
+            let scale =
+                (128.0 / size.x.max(1.0)).min(128.0 / size.y.max(1.0));
+            ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
+        } else {
+            ui.label(
+                egui::RichText::new("🎭 стикер (превью грузится…)")
+                    .small()
+                    .weak(),
+            );
+        }
+    }
     // Гео и контакты — display-only строки.
     if let Some((lat, long)) = m.geo {
         ui.label(
@@ -549,6 +565,13 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         {
             app.attach_file();
         }
+        if ui
+            .button("⏰")
+            .on_hover_text("Отложенная отправка (сервер доставит через N часов)")
+            .clicked()
+        {
+            app.sched_open = true;
+        }
         let send_label = if app.editing.is_some() { "💾 Сохранить" } else { "➤ Отправить" };
         if ui.button(send_label).clicked() || hotkey {
             // Черновик текущего чата уже в composer_current; select_chat сохранит.
@@ -556,6 +579,33 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             app.send_current();
         }
     });
+    // Окно отложенной отправки: часы задержки.
+    if app.sched_open {
+        egui::Window::new("⏰ Отложенная отправка")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.label("Через сколько часов доставить:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.sched_hours)
+                        .hint_text("например, 2.5")
+                        .desired_width(120.0),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Отправить позже").clicked() {
+                        let hours: f64 =
+                            app.sched_hours.replace(',', ".").parse().unwrap_or(0.0);
+                        if hours > 0.0 {
+                            app.send_scheduled(hours);
+                        } else {
+                            app.log("отложка: укажите часы > 0".to_string());
+                        }
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.sched_open = false;
+                    }
+                });
+            });
+    }
     ui.label(
         egui::RichText::new("Ctrl+Enter — отправить · черновик сохраняется при переключении чата")
             .small()
