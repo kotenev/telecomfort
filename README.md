@@ -1,2 +1,338 @@
-# telecomfort
-Комфортный клиент для TG
+# Telecomfort — комфортный десктоп-клиент Telegram на Rust
+
+Нативный десктоп-клиент (eframe/egui, Tokio, MTProto через `grammers`) с ИИ-автоматизацией:
+
+1. **Сторис · ИИ-антиреклама (текст + визуал)** — детектор оценивает подпись (CTA/URL/@/цены/промокод/КАПС)
+   + кадр (палитра, плашки, контраст, QR), замыливает **только рекламные зоны** (низ/верх),
+   остальное фото остаётся чётким. Порог и сила блюра настраиваются. Кнопка «Показать всё равно».
+   Реальные кадры качаются через `stories.getStoriesByID` и кэшируются в `~/.cache/telecomfort/stories`
+   (в демо — детерминированные PNG, в live — JPG/MP4-превью).
+2. **Автозагрузки из закрытых групп с запретом копирования** — файлы, видео, аудио
+   качаются напрямую через MTProto (`upload.getFile`), флаг `noforwards` игнорируется
+   (он лишь прячет кнопки в официальных клиентах; сервер отдаёт контент, если у аккаунта есть доступ).
+   Правила per-chat в UI: чат (`*`/название/id) × типы × макс. размер × вкл/выкл.
+3. **Яндекс Диск** — авто-заливка скачанного через WebDAV (`PUT https://webdav.yandex.ru`),
+   проверка папки (MKCOL), повторная заливка из Загрузок.
+4. **Calibre** — авто-импорт книг (`epub/fb2/pdf/mobi/azw3`) через `calibredb add`
+   с дедупликацией по `sha256` + нормализованному названию. Повторный импорт из Загрузок.
+   Визуальные дубли фото — по перцептивному хэшу (`ai/phash.rs`, DCT pHash):
+   ресайз/рекомпресс Telegram больше не прячет повторы (`≈ похож на …` в журнале и Загрузках).
+   Поиск — через BK-дерево (`ai/bktree.rs`, прунинг по неравенству треугольника вместо
+   полного скана на десятках тысяч строк), в Загрузках — связные pHash-группы
+   (`ai/cluster.rs`, DSU + BK-дерево, транзитивное замыкание) с предпросмотром 120px,
+   быстрыми действиями (Открыть/Папка/Яндекс/Calibre) и уважением к Поиску/Фильтру.
+5. **Фоновая синхронизация** — каждые N сек обновляет диалоги/сторис, докачивает только
+   новые `message_id` (watermark в SQLite `sync_state`), шлёт десктоп-уведомления
+   (`notify-rust`) о файлах/рекламе.
+6. **Мультиаккаунты** — профили (`main`, `work`, …) с отдельными `session_<name>.session`,
+   переключение в один клик, экспорт/импорт сессии в файл, logout.
+
+Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
+Для live-режима нужны `api_id` / `api_hash` с https://my.telegram.org.
+
+## Быстрый старт
+
+```bash
+# тулчейн
+rustc --version  # 1.75+
+
+# запуск (демо без ключей)
+cargo run
+
+# запуск с ONNX Runtime (тяжёлая опция, ~100МБ рантайм)
+cargo run --features ort
+
+# тесты: эвристики + визуал + CLIP-лайт + ONNX/FP16/EP/streaming + H.264/HEVC/AV1 + pHash/BK-дерево/кластеры + видео + чанки + multi-DC + бандл
+cargo test
+
+# проверка тяжёлой сборки (один раз скачает ONNX Runtime ~100МБ)
+cargo check --features ort
+cargo check --features ort,ort-coreml  # macOS: CoreML-провайдер
+```
+
+Первый запуск создаёт `~/.config/telecomfort/config.toml` и `state.db`
+(SQLite: `downloads` / `seen_hashes` / `ad_decisions` / `stories_cache` / `sync_state`).
+
+## Вход в Telegram (live)
+
+1. Откройте `⚙ Настройки → 🔑 Telegram`, выберите/создайте профиль, введите `API ID`, `API HASH`, телефон `+7...`.
+2. `📲 Получить код` → введите код из Telegram → `Войти по коду`.
+3. Если включена 2FA — введите пароль → `Войти с паролем`.
+4. Сессия сохраняется в `~/.config/telecomfort/session_<профиль>.session`, повторно логиниться не нужно.
+5. `💾 Экспорт сессии…` / `📥 Импорт сессии…` — перенос между машинами. `🚪 Выйти` — стереть сессию.
+
+> Регистрация новых аккаунтов через сторонние клиенты запрещена Telegram —
+> аккаунт должен быть заранее создан в официальном клиенте.
+
+## Как это устроено
+
+```
+src/
+  main.rs            — Tokio runtime + eframe
+  config.rs          — TOML-конфиг: stories/downloader/yandex/calibre/sync/profiles
+  db.rs              — SQLite: downloads / seen_hashes / ad_decisions / stories_cache / sync_state
+  sync.rs            — SyncEngine: фон (диалоги → сторис → новые медиа → автозагрузка) + notify
+   ai/
+     mod.rs           — AdScore { score, reasons, spans, regions }, apply_visual_boost/clip_boost, score_story_full()
+     heuristic.rs     — RU/EN эвристики: CTA, URL, @username, цены, промокоды, телефоны, эмодзи-спам, КАПС + QR-буст
+     visual.rs        — CV без ML: promo-палитра, edge-density, плашки, QR → буст 0..0.45
+     clip.rs          — CLIP-лайт: двухбашенный эмбеддинг 32 dim (текст↔кадр) → буст 0..0.25
+      onnx.rs          — ONNX за фичей `ort`: инференс, f32/u8/i8/i32/i64/f16, EP (фичи ort-*), streaming-batch + SQLite-кэш
+      phash.rs         — Перцептивный хэш (DCT pHash, 64 бита) для визуальных дублей
+      bktree.rs        — BK-дерево Хэмминга: суб-линейный поиск дублей (прунинг по неравенству треугольника)
+      cluster.rs       — Кластеризация дублей: связные компоненты (DSU + инкрементальный BK-поиск), синглтоны отброшены
+     blur.rs          — blur_regions() (только реклама) / blur_full(), looks_like_qr()
+  telegram/
+    mod.rs           — ChatInfo/MessageInfo/StoryInfo/AccountInfo, трейт TelegramService (+download_story_media, me)
+    mock.rs          — офлайн-демо: 2 закрытые группы, 6 сторис, PNG-превью 270x480
+    backend_grammers.rs — live MTProto: dialogs/history/getAllStories/getStoriesByID/download_media
+   media/mod.rs       — AutoDownloader: matches_rules/should_download/download_many → MTProto (чанки+resume+прогресс) → sha256+pHash → Yandex → Calibre (+прогресс, семафор ×4)
+   media/mtproto.rs     — Multi-DC докачка: chunk_ranges/resume_start/.part + DcAffinity + auth-перенос + upload.getFile precise ×N + writer seek + прогресс
+    media/h264.rs        — Встроенный H.264-декодер первого кадра (чистый Rust, rusty_h264): avcC+mdat → Annex B → YUV→RGB
+    media/hevc.rs        — Встроенный HEVC-декодер первого кадра (чистый Rust, rusty_h265): hvcC+mdat → Annex B → YUV→RGB
+    media/av1.rs         — Встроенный AV1-декодер первого кадра (чистый Rust, rusty_av1d без asm): av1C+mdat (av01) и WebM/MKV (EBML-парсер: CodecPrivate + SimpleBlock/Block) → OBU → YUV→RGB (4:0:0/4:2:0/4:2:2/4:4:4, 8/10/12 бит, limited/full)
+    media/video.rs       — Видео-превью: poster/H.264/HEVC/AV1/ffmpeg (270x480, таймаут 20с) + встроенный парсер covr-обложек (без ffmpeg)
+  integrations/
+    yandex.rs        — WebDAV MKCOL/PUT: стриминг чанками 1МБ (>8МБ), chunk_plan(), ретраи ×3, прогресс
+    calibre.rs       — calibredb add + list (дедуп по title/author)
+  ui/
+    app.rs           — eframe::App, BgEvent-мост, кэш текстур, фоновый тикер, watermark-синк
+    views/{chats,stories,downloads,settings,login}.rs
+  utils.rs           — human_size, normalize_title, sha256, is_ebook
+```
+
+### Детектор рекламы (текст + визуал)
+
+Текст (порог по умолчанию 0.55):
+
+- CTA-фразы: «подпишись», «переходи по ссылке», «swipe up», «скидка», «розыгрыш»,
+  «казино», «ставки», «заработок», «крипт», «только сегодня», «успей»… (+0.1…0.35)
+- URL / `t.me` / короткие ссылки (+0.35), промокод (+0.30), `@username` (+0.15),
+  цена/скидка/% (+0.25), телефон (+0.15), QR-подсказка (+0.40),
+  эмодзи-спам ≥3 (+0.15), КАПС (+0.12), рекламная вёрстка (+0.08).
+
+Визуал (`ai/visual.rs`, 64x64-анализ, буст до +0.45):
+
+- кричащая палитра (красный/жёлтый, насыщенные) +0.05…0.10,
+- плотный текст/плашки (edge-density) +0.04…0.08,
+- плашка сверху/снизу +0.07, белая подложка-ценник +0.05,
+- QR-кандидат +0.18.
+
+Итог: `score = clamp(text + visual + clip_lite + onnx)`.
+Зоны блюра: низ (ссылка/цена/QR) + верх (промо/username).
+
+CLIP-лайт (`ai/clip.rs`): текст → 16 групп промо-лексики + 4 структурных флага,
+кадр → 6 визуальных dims (резерв 26..32 под ONNX), косинус к прототипу «реклама» →
+буст 0..0.25 с причиной `CLIP-лайт: близко к прототипу (N%)`.
+
+ONNX (`ai/onnx.rs`, фича `ort`): `cargo run --features ort` + путь к `ad_model.onnx`
+в Настройках → тумблер + execution provider. Фича тянет `ort` с `download-binaries`
+(рантайм качается при сборке) — `cargo check/test --features ort` и обычный
+`cargo test` оба зелёные.
+Настоящий инференс: сессия кэшируется (`OnceLock` env + `Mutex` сессия, ключ —
+модель + провайдер), вход автоопределяется (первый float/u8/int8/f16 тензор
+ранга 4 → 3 → любой; имя можно задать вручную — все входы/выходы с dtype
+логгируются при загрузке), shape разбирается в NCHW/NHWC (динамика → 224),
+препроцессинг resize + /255, выход — скаляр/2 класса/вектор → `p(реклама)` →
+буст 0…0.30 с причиной `ONNX <файл> [<вход>]: p=0.83`. Чистые помощники
+(`derive_layout`, `sigmoid`, `output_to_prob`, `f16_bits_to_f32`,
+`dequantize_*`, `model_key_of`, `image_sha`) покрыты тестами; статус виден в UI.
+
+Streaming: обновление ленты сторис считает ONNX пачкой (`try_onnx_boost_many` —
+одна сессия на все кадры) поверх persistent-кэша SQLite (`onnx_cache`:
+sha картинки + ключ модели с mtime/провайдером/входом). Повторный прогон
+по неизменным кадрам — хиты кэша без инференса; уверенный негатив тоже
+кэшируется, транзиентные ошибки — нет.
+
+Квантованные модели: входы uint8/int8/int32/int64/float16 (f16 — через `half`,
+тянется вместе с фичей `ort`), выходы f32/u8/i8/i32/i64/f16 — квантованные
+линейно маппятся в 0..1 (best-effort, помечается в причине `квант.`/`FP16`).
+
+Execution providers: `auto`/`cpu` всегда; `coreml`/`cuda`/`tensorrt`/`openvino`/
+`onednn`/`nnapi`/`directml`/`xnnpack` — только собранные в бинарнике
+(в UI видны лишь доступные). Сборка под ускоритель: `--features ort,ort-coreml`
+(macOS), `ort,ort-cuda` (NVIDIA) и т.д. Недоступный в рантайме EP молча
+откатывается на CPU (`fail_silently`) с варнингом в логе.
+
+### Обход `noforwards`
+
+Официальные клиенты скрывают «Скопировать/Переслать/Сохранить», но
+`messages.getHistory` + `upload.getFile` отдают байты тому, у кого есть доступ к чату.
+`GrammersBackend::download_message_media` так и делает — без форварда, без ботов,
+напрямую в файл. Работает для фото/видео/аудио/документов, включая большие файлы
+(чанки + concurrent download внутри `grammers`).
+
+### Сторис: реальные кадры + видео
+
+- Live: `stories.getAllStories` → карточки → `stories.getStoriesByID(peer, id)` →
+  `Media::from_raw(media)` → `client.download_media()` → JPG/MP4 в кэш.
+- Видео — цепочка без обязательного ffmpeg (первое сработавшее):
+  1. **MTProto-тамб**: серверный первый кадр сюжета (`Document.thumbs()` →
+     самый большой `PhotoSize::Size` → `download_media` → `story_<id>.poster.jpg`).
+  2. **Встроенный H.264-декодер** (`media/h264.rs`, чистый Rust, `rusty_h264-decoder`):
+     первый IDR-кадр из `moov/avcC + mdat` → Annex B → YUV420 → RGB → постер.
+     Работает и для чужих mp4 без тамбов/обложек, без внешнего ffmpeg и нативных
+     библиотек. На битых файлах — `None` без паники (декодер под `catch_unwind`).
+   3. **Встроенный HEVC-декодер** (`media/hevc.rs`, чистый Rust, `rusty_h265`):
+      первый IRAP-кадр (BLA/IDR/CRA) из `moov/hvcC + mdat` → Annex B → YUV → RGB.
+      8/10 бит, 4:2:0; на битых файлах — `None` без паники.
+   4. **Встроенный AV1-декодер** (`media/av1.rs`, чистый Rust, `rusty_av1d`
+      без asm — сборка без nasm/nightly; для одного постера хватает Rust-фолбэка):
+      первый показной кадр из `moov/av1C + mdat` (`av01`: сырые OBU либо
+      с 4-байтными длинами — автоопределение) или из WebM/MKV (свой EBML-парсер
+      без зависимостей: `CodecPrivate` + `Cluster/SimpleBlock|BlockGroup/Block`
+      без лейсинга). 4:0:0/4:2:0/4:2:2/4:4:4, 8/10/12 бит, limited/full →
+      RGB → постер. На битых файлах — `None` без паники (`catch_unwind`).
+   5. **Встроенная обложка**: парсер `moov.udta.meta.ilst.covr.data` на чистом Rust
+      (`media/video.rs::extract_embedded_cover`, первые 16 МБ).
+   6. Внешний `ffmpeg` (`-ss 0.3 -vframes 1 -vf scale=270:480…`, таймаут 20с).
+   7. Плейсхолдер с кинополосами.
+  Постер идёт в скоринг (текст+визуал+CLIP+ONNX) и в текстуру.
+  Бейджи: `▶ видео`, `🎞 кадр ✓/…`.
+- Mock: детерминированные PNG 270x480 (реклама — тёплая палитра + белые плашки/текст,
+  личное — спокойный градиент + виньетка), чтобы скоринг/блюр видно и в офлайне.
+- Кэш: `~/.cache/telecomfort/stories/story_<peer>_<id>.*` + таблица `stories_cache`
+  (превью/скор/is_ad). Кнопка «Очистить кэш превью» в Сторис.
+
+### Яндекс Диск (стриминг + прогресс)
+
+Нужен OAuth-токен. Папка по умолчанию `/Telecomfort`. Проверка — кнопка
+«Проверить папку» (MKCOL). Заливка — `PUT` после каждого скачивания (если включено)
++ кнопка «☁ На Яндекс» в Загрузках для повторной заливки.
+
+Файлы больше 8 МБ стримятся чанками по 1 МБ (`ReaderStream`, `Content-Length`,
+без чтения всего файла в RAM) с прогресс-барами в Загрузках (`UploadProgress`).
+Ретраи ×3 с бэкоффом 2/4с (4xx кроме 429/408 не ретраятся). Параллельно — до 4
+заливок (семафор `upload_semaphore`), план чанков `chunk_plan()` покрыт тестами.
+
+### Calibre
+
+Укажите путь к библиотеке (где `metadata.db`). Требуется `calibredb` в `PATH`.
+Перед `calibredb add` проверяем дубли: `sha256` (таблица `seen_hashes`) и
+`calibredb list --for-machine` по нормализованному названию.
+Опция «Удалять файл после импорта». Кнопка «📚 В Calibre» в Загрузках.
+
+### Фон и правила
+
+- Правила: `Настройки → Автозагрузки` (CRUD: чат/типы/макс МБ/вкл/обход) или
+  `Чаты → + Правило для этого чата`. Матчинг подсвечивается в истории
+  (`✓ под правило` / `× вне правил`). `Any` = все типы; пустые kinds = Any.
+- Фон: `Настройки → Фоновая синхронизация` (вкл/интервал ≥15с/автокачка/уведомления).
+  Watermark `sync_state(chat_id → last_message_id)`: первый синк только запоминает,
+  дальше качает только новое. `Синхронизировать сейчас` — и в Загрузках.
+
+## Конфиг (`~/.config/telecomfort/config.toml`)
+
+### Multi-DC параллельная докачка MTProto (`media/mtproto.rs`)
+
+Штатный `download_media` качает большие файлы в 4 потока, но всегда с нуля и без
+прогресса. Наш загрузчик (`TelegramService::download_message_media_with_progress`):
+- `.part`-файл рядом с назначением — докачка после обрыва (хвост усекается до
+  границы чанка 512 КБ);
+- N воркеров (настройка «Параллельных чанков», 1..=8, применяется при входе)
+  через `upload.getFile` с `precise: true` — как внутри grammers, плюс ретраи;
+- **общий DC на файл (`DcAffinity`)**: первый `FILE_MIGRATE_*` публикует
+  правильный DC — остальные чанки сразу идут туда без лишних roundtrip'ов
+  (защита от зацикливания migrate);
+- **перенос авторизации между DC**: `AUTH_KEY_UNREGISTERED` лечится
+  `auth.exportAuthorization` + `auth.importAuthorization` своими руками
+  (аналог приватного `copy_auth_to_dc` в grammers) с кэшем на файл;
+- writer с `seek` (чанки приходят не по порядку), прогресс после каждого чанка
+  → `BgEvent::MediaProgress` → «Активные передачи» в Загрузках;
+- малые файлы (<4 МБ) и неизвестный размер — штатный путь, готовый файл
+  пропускается без повторной качки.
+- Поверх: `download_many` — до 3 файлов одновременно в фоне (до 4 по кнопке
+  «Скачать всё медиа»), у каждого свой DC — пул соединений grammers качает
+  с нескольких дата-центров параллельно. Фон тоже шлёт прогресс в UI.
+
+```toml
+active_profile = "main"
+
+[[profiles]]
+name = "main"
+api_id = 123456
+api_hash = "abcdef..."
+phone = "+70000000000"
+session_path = "/Users/you/.config/telecomfort/session_main.session"
+
+[stories]
+ad_threshold = 0.55
+blur_only_ad_regions = true
+blur_sigma = 8.0
+auto_hide_ads = true
+clip_enabled = true
+onnx_enabled = false
+onnx_model_path = ""
+onnx_input_name = ""
+onnx_provider = "auto"   # auto/cpu/coreml/cuda/tensorrt/openvino/onednn/nnapi/directml/xnnpack
+
+[downloader]
+download_dir = "/Users/you/Downloads/Telecomfort"
+auto_download_protected = true
+parallel_chunks = 4
+[[downloader.rules]]
+chat = "*"
+kinds = ["Any"]
+max_size_mb = 1500
+enabled = true
+bypass_protected = true
+[[downloader.rules]]
+chat = "Закрытая группа «Книги» 🔒"
+kinds = ["Document", "Video"]
+max_size_mb = 1500
+enabled = true
+bypass_protected = true
+
+[sync]
+enabled = false
+interval_secs = 120
+auto_download_new = true
+notify_on_download = true
+notify_on_ad = false
+
+[yandex]
+oauth_token = ""
+remote_folder = "/Telecomfort"
+auto_upload = false
+
+[calibre]
+library_path = ""
+auto_import_books = false
+delete_after_import = false
+```
+
+### Экспорт/импорт настроек
+
+`Настройки → 📦 Все настройки одним файлом`: `📦 Экспорт настроек…` пишет весь
+`AppConfig` (профили, правила, сторис/CLIP/ONNX, синк, яндекс, calibre) в выбранный
+TOML; `📥 Импорт настроек…` парсит, мягко валидирует (интервал ≥15с, профиль),
+сохраняет в `config.toml` и применяет без перезапуска (рефетч диалогов/сторис,
+рестарт фона). Тесты: `bundle_export_import_roundtrip`, `import_rejects_garbage`.
+
+## Что дальше (опционально)
+
+- [x] Декодирование видео-превью (первый кадр mp4 → текстура через ffmpeg).
+- [x] ONNX/CLIP за фичей `ort` (CLIP-лайт всегда, ONNX — с `--features ort`).
+- [x] Экспорт/импорт всех настроек одним файлом (`Настройки → 📦 Все настройки одним файлом`).
+- [x] Многопоточная заливка на Яндекс (чанки 1МБ, стриминг, прогресс, семафор ×4).
+- [x] Встроенный видеопревью без ffmpeg (MTProto-тамб + парсер covr на чистом Rust).
+- [x] Привязка ONNX к входам (автоопределение NCHW/NHWC + ручной override, f32/u8).
+- [x] Параллельная докачка MTProto чанками с resume (`.part` + прогресс).
+- [x] Встроенный H.264-декодер кадра (`media/h264.rs`, чистый Rust: avcC+mdat → Annex B → первый IDR → постер; без тамбов/ffmpeg).
+- [x] INT8/FP16-квантованные ONNX-модели (входы u8/i8/i32/i64/f16, выходы f32/u8/i8/i32/i64/f16) и выбор execution provider в UI (`auto/cpu/coreml/cuda/…`, фичи `ort-*`).
+- [x] Параллельная докачка с нескольких DC одновременно (`DcAffinity` + auth-перенос + `download_many` ×3 в фоне / ×4 в UI).
+- [x] HEVC/H.265-превью (`media/hevc.rs`, чистый Rust `rusty_h265`: hvcC+mdat → Annex B → первый IRAP → постер; цепочка poster/H.264/HEVC/covr/ffmpeg).
+- [x] Похожесть дублей по перцептивному хэшу (`ai/phash.rs`, DCT pHash 64 бита, Хэмминг ≤ 6): колонки `downloads.phash/near_duplicate_of`, поиск `Db::find_near_phash`, пометки в журнале и Загрузках.
+- [x] Streaming-инференс ONNX (`ai/onnx.rs::try_onnx_boost_many` + таблица `onnx_cache`): пачка кадров за одно удержание сессии + persistent-кэш (sha картинки + ключ модели с mtime); обновление ленты после первого прогона почти бесплатное.
+- [x] AV1-превью (`media/av1.rs`, чистый Rust `rusty_av1d` без asm: av1C+mdat → OBU → первый показной кадр → постер; плюс WebM/MKV через встроенный EBML-парсер `CodecPrivate` + `SimpleBlock`/`Block`; цепочка poster/H.264/HEVC/AV1/covr/ffmpeg).
+- [x] Кластеризация дублей в UI (`ai/cluster.rs`: связные компоненты через DSU + инкрементальный BK-поиск, синглтоны отброшены; Загрузки → «Похожие (pHash)»: группы с предпросмотром 120px, действиями Открыть/Папка/Яндекс/Calibre, уважением к Поиску/Фильтру, капами 50 групп × 24 файла).
+- [x] BK-дерево для pHash-поиска (`ai/bktree.rs`: прунинг по неравенству треугольника Хэмминга, суб-линейный поиск; `Db::all_phashes`/`bk_index`, `Db::find_near_phash` ищет через дерево с той же семантикой; кластеризация 20k хэшей — ~1с).
+- [ ] pHash для видео (постер первого кадра → в `downloads.phash`, чтобы видеомемы тоже кластеризовались).
+- [ ] Порог кластеризации в UI (слайдер Хэмминга 0..10 вместо фиксированных 6).
+
+## Дисклеймер
+
+- Скачивайте только тот контент, на который у вас есть права/доступ.
+- Обход `noforwards` работает в рамках вашего доступа к чату и не снимает
+  серверные ограничения Telegram (например, truly restricted media).
+- Токены храните только локально, не коммитьте `config.toml`.

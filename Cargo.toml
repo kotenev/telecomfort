@@ -1,0 +1,85 @@
+[package]
+name = "telecomfort"
+version = "0.1.0"
+edition = "2021"
+description = "Комфортный десктоп-клиент Telegram на Rust: анти-реклама в Сторис, автозагрузки из закрытых групп, Яндекс Диск, Calibre-дедупликация"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "telecomfort"
+path = "src/main.rs"
+
+[features]
+default = []
+# ONNX-инференс через Microsoft ONNX Runtime (тяжёлая опция).
+# Включает src/ai/onnx.rs. Без модели/фичи используется CLIP-лайт (чистый Rust).
+ort = ["dep:ort", "dep:half"]
+# Execution providers ONNX Runtime (только с фичей `ort`):
+# включайте нужный под свою платформу, иначе EP молча откатится на CPU.
+# Примеры: macOS — ort,ort-coreml; NVIDIA — ort,ort-cuda; Intel CPU — ort,ort-openvino.
+ort-coreml = ["ort/coreml"]
+ort-cuda = ["ort/cuda"]
+ort-tensorrt = ["ort/tensorrt"]
+ort-openvino = ["ort/openvino"]
+ort-onednn = ["ort/onednn"]
+ort-nnapi = ["ort/nnapi"]
+ort-directml = ["ort/directml"]
+ort-xnnpack = ["ort/xnnpack"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+async-stream = "0.3"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.37"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+regex = "1"
+image = { version = "0.25", features = ["png", "jpeg"] }
+sha2 = "0.10"
+hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+url = "2"
+mime_guess = "2"
+rfd = "0.15"
+open = "5"
+base64 = "0.22"
+notify-rust = "4"
+# Опциональный ONNX Runtime (включается фичей `ort`).
+ort = { version = "=2.0.0-rc.14", optional = true, default-features = false, features = ["std", "copy-dylibs", "download-binaries", "tls-rustls", "half"] }
+# FP16-квантованные входы/выходы ONNX (включается вместе с `ort`).
+half = { version = "2", optional = true }
+
+# Telegram MTProto (user-клиент, а не бот: умеет Сторис и скачивание из групп с запретом копирования)
+grammers-client = "0.11"
+grammers-session = "0.11"
+grammers-tl-types = "0.11"
+grammers-mtsender = "0.11"
+rusty_h264-decoder = "0.16"
+rusty_h265 = "0.6"
+# Встроенный AV1-декодер первого кадра (чистый Rust, без asm/C/ffmpeg):
+# форк rav1d (dav1d, портированный на Rust) с pure-Rust build path.
+# default-features = false выключает nasm-сборку asm-кернелов —
+# остаётся только Rust-фолбэк: медленнее dav1d с SIMD, но для одного
+# постера 270x480 достаточно, а сборка не требует nasm/nightly.
+rusty_av1d = { version = "1.2", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
