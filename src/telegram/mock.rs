@@ -96,6 +96,7 @@ impl TelegramService for MockTelegram {
                             chosen: false,
                         },
                     ],
+                    solution: None,
                 }),
                 geo: None,
                 contact: None,
@@ -735,6 +736,14 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
+    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _admin: bool, _title: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn set_slowmode(&self, _chat_id: i64, _seconds: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn pin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
@@ -977,6 +986,32 @@ mod tests {
         m.kick_participant(-1002, 2001).await.expect("kick");
         m.hide_peer_stories(2001, true).await.expect("hide");
         m.edit_story_caption(7, "новый текст").await.expect("edit story");
+        m.set_admin(-1002, 2001, 111, true, "модератор").await.expect("promote");
+        m.set_admin(-1002, 2001, 111, false, "").await.expect("demote");
+        m.set_slowmode(-1002, 30).await.expect("slowmode");
+        m.set_slowmode(-1002, 0).await.expect("slowmode off");
+    }
+
+    /// Контракт девятого parity-пакета: шаринг контактов, опросы-менеджмент,
+    /// закрепы, инвайты, участники, админка, слоумод, сторис-менеджмент.
+    #[tokio::test]
+    async fn mock_management_contract_8() {
+        let m = MockTelegram;
+        assert_eq!(m.share_contact(-1001, "+7", "Иван", "И").await.expect("share"), 9300);
+        m.stop_poll(-1001, 102).await.expect("stop poll");
+        let pins = m.pinned_list(-1001, 5).await.expect("pins");
+        assert_eq!(pins.len(), 1);
+        m.revoke_invite(-1001, "https://t.me/x").await.expect("revoke");
+        let parts = m.participants(-1002, 100).await.expect("participants");
+        assert!(parts.iter().any(|p| p.admin));
+        m.kick_participant(-1002, 2001).await.expect("kick");
+        m.set_admin(-1002, 2001, 111, true, "модератор").await.expect("promote");
+        m.set_admin(-1002, 2001, 111, false, "").await.expect("demote");
+        m.set_slowmode(-1002, 30).await.expect("slowmode");
+        m.hide_peer_stories(2001, true).await.expect("hide");
+        m.edit_story_caption(7, "новый текст").await.expect("edit story");
+        let albums = m.story_albums().await.expect("albums");
+        assert_eq!(albums.len(), 1);
     }
 
     /// Контракт восьмого parity-пакета: подборки сторис, голоса поимённо, CRUD папок.

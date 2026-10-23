@@ -368,6 +368,8 @@ pub struct TelecomfortApp {
     /// Участники чата + окно.
     pub participants: HashMap<i64, Vec<crate::telegram::ParticipantInfo>>,
     pub participants_open: Option<i64>,
+    pub slowmode_open: Option<i64>,
+    pub slowmode_secs: String,
     /// Редактирование подписи своей сторис.
     pub story_edit_open: Option<i32>,
     pub story_edit_text: String,
@@ -528,6 +530,8 @@ impl TelecomfortApp {
             pinned_more_open: None,
             participants: HashMap::new(),
             participants_open: None,
+            slowmode_open: None,
+            slowmode_secs: "0".into(),
             story_edit_open: None,
             story_edit_text: String::new(),
             uploads: HashMap::new(),
@@ -2164,6 +2168,48 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("папка: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Назначить/снять админа (нужны права владельца).
+    pub fn toggle_admin(&mut self, chat_id: i64, p: &crate::telegram::ParticipantInfo) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let (uid, hash, admin) = (p.id, p.access_hash, p.admin);
+        self.rt.spawn(async move {
+            match tg.set_admin(chat_id, uid, hash, !admin, "").await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if !admin { "админ назначен".to_string() } else { "админ снят".to_string() },
+                    ));
+                    match tg.participants(chat_id, 100).await {
+                        Ok(items) => {
+                            let _ = tx.send(BgEvent::ParticipantsLoaded { chat_id, items });
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("админка: {e:#}")));
+                }
+            }
+        });
+    }
+    /// Установить слоумод (0 — выкл).
+    pub fn set_slowmode(&mut self, chat_id: i64, seconds: i32) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.set_slowmode(chat_id, seconds).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(
+                        if seconds <= 0 { "слоумод выключен".to_string() } else { format!("слоумод: {seconds}с") },
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("слоумод: {e:#}")));
                 }
             }
         });
