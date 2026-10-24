@@ -47,6 +47,9 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
     var showViewers by remember { mutableStateOf(false) }
     var yandexToken by remember { mutableStateOf(store?.yandexToken ?: "") }
     var showPublish by remember { mutableStateOf(false) }
+    var viewerPath by remember { mutableStateOf<String?>(null) }
+    var viewerVideo by remember { mutableStateOf(false) }
+    var viewerCaption by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         scope.launch {
@@ -83,19 +86,30 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
         musicPath = dst.absolutePath
         status = "🎵 Музыка: ${dst.name}"
     }
+    fun publishStory(dst: File) {
+        scope.launch {
+            runCatching {
+                // Эвристика: если в картинке найден QR — предупреждаем в статусе.
+                val qr = runCatching {
+                    Core.call("qr_hint", mapOf("path" to dst.absolutePath)).optBoolean("has_qr", false)
+                }.getOrDefault(false)
+                val params = mutableMapOf<String, Any>("path" to dst.absolutePath, "caption" to caption)
+                musicPath?.let { params["music"] = it }
+                val r = Core.call("story_publish", params)
+                status = "Сторис опубликована (id ${r.optInt("id")})" + if (qr) " · ⚠ найден QR" else ""
+                caption = ""
+                musicPath = null
+                showPublish = false
+                reload()
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
     fun handleNewMedia(uri: android.net.Uri) {
         scope.launch {
             runCatching {
                 val dst = File(ctx.cacheDir, "story_${System.currentTimeMillis()}")
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                val params = mutableMapOf<String, Any>("path" to dst.absolutePath, "caption" to caption)
-                musicPath?.let { params["music"] = it }
-                val r = Core.call("story_publish", params)
-                status = "Сторис опубликована (id ${r.optInt("id")})"
-                caption = ""
-                musicPath = null
-                showPublish = false
-                reload()
+                publishStory(dst)
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
@@ -117,14 +131,7 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
             runCatching {
                 val dst = File(ctx.cacheDir, "story_${System.currentTimeMillis()}")
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                val params = mutableMapOf<String, Any>("path" to dst.absolutePath, "caption" to caption)
-                musicPath?.let { params["music"] = it }
-                val r = Core.call("story_publish", params)
-                status = "Сторис опубликована (id ${r.optInt("id")})"
-                caption = ""
-                musicPath = null
-                showPublish = false
-                reload()
+                publishStory(dst)
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
@@ -168,8 +175,21 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
                 val score = sc?.optDouble("score", 0.0) ?: 0.0
                 Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                     Column(Modifier.padding(8.dp)) {
-                        Row {
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Text(s.optString("caption", "(без подписи)").take(120), modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        val dl = Core.call("download_story_media", mapOf(
+                                            "peer" to s.optLong("peer_id"), "story" to s.optInt("id")))
+                                        val p = dl.optString("path")
+                                        viewerVideo = p.endsWith(".mp4", true) || p.endsWith(".mkv", true) ||
+                                            p.endsWith(".webm", true)
+                                        viewerCaption = s.optString("caption", "")
+                                        viewerPath = p
+                                    }.onFailure { status = "Медиа недоступно: ${it.message}" }
+                                }
+                            }) { Text("👁") }
                             if (score > 0.5) {
                                 AssistChip(onClick = {}, label = { Text("реклама ${"%.0f".format(score * 100)}%") })
                             }
@@ -385,7 +405,7 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
         AlertDialog(onDismissRequest = { showPublish = false }, title = { Text("Новая сторис") }, text = {
             Column {
                 OutlinedTextField(caption, { caption = it }, label = { Text("Подпись") })
-                Text("Файл выберете на следующем шаге; музыка — из файла .mp3/.m4a (TODO: второй picker).",
+                Text("Файл и музыку (.mp3/.m4a) выберите кнопками ниже.",
                     style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = {
@@ -396,5 +416,44 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
                 TextButton(onClick = { launchCamera(true) }) { Text("🎬") }
             }
         }, dismissButton = { TextButton(onClick = { showPublish = false }) { Text("Отмена") } })
+    }
+    viewerPath?.let { path ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { viewerPath = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(color = androidx.compose.ui.graphics.Color.Black, modifier = Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().padding(8.dp)) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(viewerCaption.take(60), color = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { viewerPath = null }) { Text("✕", color = androidx.compose.ui.graphics.Color.White) }
+                    }
+                    if (viewerVideo) {
+                        androidx.compose.ui.viewinterop.AndroidView(
+                            factory = { c ->
+                                android.widget.VideoView(c).apply {
+                                    setVideoPath(path)
+                                    setMediaController(android.widget.MediaController(c).also { it.setAnchorView(this) })
+                                    setOnPreparedListener { it.isLooping = true; start() }
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        val bmp = remember(path) { android.graphics.BitmapFactory.decodeFile(path) }
+                        if (bmp != null) {
+                            androidx.compose.foundation.Image(
+                                bmp.asImageBitmap(), contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                            )
+                        } else {
+                            Text("Не удалось открыть сторис", color = androidx.compose.ui.graphics.Color.White)
+                        }
+                    }
+                }
+            }
+        }
     }
 }

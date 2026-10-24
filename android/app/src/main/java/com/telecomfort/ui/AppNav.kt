@@ -47,7 +47,7 @@ fun AppNav(onToggleTheme: () -> Unit = {}, onThemeMode: (String) -> Unit = {}, c
             }
         }
     ) {
-        AppNavHost(onToggleTheme, store, onLock = { locked = true })
+        AppNavHost(onToggleTheme, store, onLock = { locked = true }, onThemeMode = onThemeMode, currentTheme = currentTheme)
     }
 }
 
@@ -84,6 +84,10 @@ private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: ()
         composable("stars") { StarsScreen(nav) }
         composable("contacts") { ContactsScreen(nav) }
         composable("downloads") { DownloadsScreen(nav) }
-        composable("settings") { SettingsScreen(nav, onToggleTheme, store, onLockNow = onLock) }
+        composable("settings") {
+                SettingsScreen(nav, onToggleTheme, store,
+                    onLockNow = onLock, onThemeMode = onThemeMode, currentTheme = currentTheme,
+                    onLogout = { nav.navigate("login") { popUpTo(0) } })
+            }
     }
 }

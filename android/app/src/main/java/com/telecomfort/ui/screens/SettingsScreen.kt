@@ -18,10 +18,11 @@ import org.json.JSONObject
 
 /** Настройки: профиль, прокси+тест, PIN, 2FA, сессии, Yandex-токен. */
 @Composable
-fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.telecomfort.core.SecureStore? = null, onLockNow: () -> Unit = {}, onThemeMode: (String) -> Unit = {}, currentTheme: String = "system") {
+fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.telecomfort.core.SecureStore? = null, onLockNow: () -> Unit = {}, onThemeMode: (String) -> Unit = {}, currentTheme: String = "system", onLogout: () -> Unit = {}) {
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("") }
+    var showLogout by remember { mutableStateOf(false) }
     var proxy by remember { mutableStateOf(store?.proxy ?: "") }
     var pin by remember { mutableStateOf("") }
     var cur by remember { mutableStateOf("") }
@@ -158,7 +159,7 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     scope.launch {
                         runCatching {
                             Core.call("set_emoji_status", mapOf("doc" to JSONObject.NULL))
-                            status = "Эмодзи-статус снят (установка паком — TODO)"
+                            status = "Эмодзи-статус снят"
                         }.onFailure { status = "Ошибка: ${it.message}" }
                     }
                 }) { Text("😀 Статус: снять") }
@@ -332,7 +333,7 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                             Text("custom_emoji:${emojiList[i]}", modifier = Modifier.weight(1f))
                             TextButton(onClick = {
                                 scope.launch {
-                                    runCatching {
+                                    kotlin.runCatching {
                                         Core.call("set_emoji_status", mapOf("doc" to emojiList[i]))
                                         showEmoji = false
                                         status = "Статус установлен"
@@ -345,6 +346,27 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             }, confirmButton = { TextButton(onClick = { showEmoji = false }) { Text("Закрыть") } })
         }
         }
+        item {
+            TextButton(onClick = { showLogout = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("🚪 Выйти из аккаунта", color = MaterialTheme.colorScheme.error)
+            }
+        }
         item { if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall) }
+    }
+    if (showLogout) {
+        AlertDialog(onDismissRequest = { showLogout = false }, title = { Text("🚪 Выйти?") }, text = {
+            Text("Сессия на устройстве будет удалена. Переписка на сервере сохранится.")
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("logout", emptyMap())
+                        showLogout = false
+                        com.telecomfort.core.LockManager.locked = false
+                        onLogout()
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Выйти", color = MaterialTheme.colorScheme.error) }
+        }, dismissButton = { TextButton(onClick = { showLogout = false }) { Text("Отмена") } })
     }
 }
