@@ -6,6 +6,8 @@ pub mod hevc;
 pub mod mtproto;
 pub mod video;
 pub mod voice_rec;
+pub mod voip_audio;
+pub mod voip_native;
 
 use crate::config::{DownloaderSettings, MediaKind};
 use crate::db::Db;

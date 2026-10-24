@@ -47,11 +47,13 @@ jobs:
             echo "release signing: secrets missing (unsigned APK)"
           fi
 
-      - name: Build Rust .so
+      - name: Build libtgvoip + Rust .so
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: ./android/build-rust.sh release
+        run: |
+          ./android/build-tgvoip.sh
+          ./android/build-rust.sh release
 
       - name: Assemble release APK
         env:

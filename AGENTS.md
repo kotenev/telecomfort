@@ -12,7 +12,8 @@ cargo clippy --offline        # must be 0 errors (lib + bin + android target)
 cargo fmt                     # before every commit
 ```
 
-Android: `cargo check --lib --target aarch64-linux-android` needs rustup
+Android: `./android/build-tgvoip.sh` (libtgvoip, one-time clone) then
+`./android/build-rust.sh [debug|release]`; aarch64 check needs rustup
 toolchain (`RUSTC=~/.rustup/.../bin/rustc`, NDK clang via `CC_<target>` env —
 brew cargo can't see rustup targets). UI deps are
 `cfg(not(target_os = "android"))`-gated; `BgEvent` lives in `src/events.rs`

@@ -78,9 +78,26 @@ private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: ()
         }
     }
     if (authed == null) return
+    // Входящий/идущий звонок: поднимаем экран звонка из любого места.
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (store.apiId.isNotEmpty()) {
+                runCatching {
+                    val c = Core.call("call_state").optJSONObject("call")
+                    val st = c?.optString("state") ?: ""
+                    if (st in setOf("ringing", "waiting", "active")) {
+                        val route = nav.currentBackStackEntry?.destination?.route
+                        if (route != "call") nav.navigate("call")
+                    }
+                }
+            }
+            kotlinx.coroutines.delay(1500)
+        }
+    }
     NavHost(navController = nav, startDestination = startDestination) {
         composable("login") { LoginScreen(onDone = { nav.navigate("chats") }, store = store) }
         composable("chats") { ChatsScreen(nav) }
+        composable("call") { CallScreen(nav) }
         composable("chat/{id}") { back ->
             ChatScreen(chatId = back.arguments?.getString("id")?.toLongOrNull() ?: 0L, nav)
         }

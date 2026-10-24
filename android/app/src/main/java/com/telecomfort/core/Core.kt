@@ -12,6 +12,8 @@ import org.json.JSONObject
  */
 object Core {
     init {
+        // libtgvoip.so — нативный VoIP-стек (см. android/build-tgvoip.sh).
+        System.loadLibrary("tgvoip")
         System.loadLibrary("telecomfort")
     }
 
