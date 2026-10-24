@@ -80,7 +80,7 @@ private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: ()
         composable("chat/{id}") { back ->
             ChatScreen(chatId = back.arguments?.getString("id")?.toLongOrNull() ?: 0L, nav)
         }
-        composable("stories") { StoriesScreen(nav) }
+        composable("stories") { StoriesScreen(nav, store) }
         composable("stars") { StarsScreen(nav) }
         composable("contacts") { ContactsScreen(nav) }
         composable("downloads") { DownloadsScreen(nav) }

@@ -692,18 +692,18 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                 status = "Ссылка скопирована"
                             }) { Text("📋") }
                         }
-                    }
-                    invite?.takeIf { it.isNotEmpty() }?.let {
-                        TextButton(onClick = {
-                            scope.launch {
-                                runCatching {
-                                    Core.call("revoke_invite", mapOf("chat" to chatId, "link" to it))
-                                    val r = Core.call("invite_link", mapOf("chat" to chatId))
-                                    infoJson = infoJson?.put("invite", r.optString("link"))
-                                    status = "Ссылка обновлена"
-                                }.onFailure { status = "Ошибка: ${it.message}" }
-                            }
-                        }) { Text("🔄 Обновить ссылку") }
+                        if (link.isNotEmpty()) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("revoke_invite", mapOf("chat" to chatId, "link" to link))
+                                        val r = Core.call("invite_link", mapOf("chat" to chatId))
+                                        invite = r.optString("link").ifEmpty { null }
+                                        status = "Ссылка обновлена"
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("🔄 Обновить ссылку") }
+                        }
                     }
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         OutlinedTextField(slowmode, { slowmode = it }, label = { Text("Слоумод, сек") }, modifier = Modifier.weight(1f))

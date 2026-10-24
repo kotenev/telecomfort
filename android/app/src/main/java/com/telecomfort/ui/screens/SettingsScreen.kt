@@ -22,7 +22,7 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("") }
-    var proxy by remember { mutableStateOf("") }
+    var proxy by remember { mutableStateOf(store?.proxy ?: "") }
     var pin by remember { mutableStateOf("") }
     var cur by remember { mutableStateOf("") }
     var newPw by remember { mutableStateOf("") }
@@ -175,6 +175,10 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             Text("SOCKS5-прокси", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(proxy, { proxy = it }, label = { Text("socks5://…") }, modifier = Modifier.fillMaxWidth())
             Row {
+                TextButton(onClick = {
+                    store?.proxy = proxy
+                    status = "Прокси сохранён"
+                }) { Text("💾") }
                 TextButton(onClick = {
                     scope.launch {
                         runCatching {

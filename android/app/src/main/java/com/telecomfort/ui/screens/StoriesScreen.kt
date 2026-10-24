@@ -28,7 +28,7 @@ import java.io.File
  * публикация с музыкой, архив.
  */
 @Composable
-fun StoriesScreen(nav: NavController) {
+fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? = null) {
     var items by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var scores by remember { mutableStateOf<Map<Int, JSONObject>>(emptyMap()) }
     var caption by remember { mutableStateOf("") }
@@ -45,7 +45,7 @@ fun StoriesScreen(nav: NavController) {
     var musicPath by remember { mutableStateOf<String?>(null) }
     var viewersJson by remember { mutableStateOf<JSONObject?>(null) }
     var showViewers by remember { mutableStateOf(false) }
-    var yandexToken by remember { mutableStateOf("") }
+    var yandexToken by remember { mutableStateOf(store?.yandexToken ?: "") }
     var showPublish by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
