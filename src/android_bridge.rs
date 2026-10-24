@@ -1082,6 +1082,15 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
             let _ = std::fs::remove_file(&probe);
             Ok(json!({"ok_proxy": true, "authorized": authed}))
         }
+        "is_authorized" => {
+            let tg = core().tg()?;
+            // is_authorized — inherent-метод бэкенда: пробуем через downcast.
+            // Универсально: me() удался => авторизован.
+            match tg.me().await {
+                Ok(_) => Ok(json!({"authorized": true})),
+                Err(_) => Ok(json!({"authorized": false})),
+            }
+        }
         _ => anyhow::bail!("unknown op: {op}"),
     }
 }
