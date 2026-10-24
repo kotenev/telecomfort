@@ -1,0 +1,92 @@
+package com.telecomfort.ui.screens
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import com.telecomfort.core.Chat
+import com.telecomfort.core.Core
+import com.telecomfort.core.parseChat
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+/** Диалоги: поиск, закреп/мьют/архив, 📍 рядом, переход в чат/сторис/настройки. */
+@Composable
+fun ChatsScreen(nav: NavController) {
+    var chats by remember { mutableStateOf<List<Chat>>(emptyList()) }
+    var query by remember { mutableStateOf("") }
+    var lat by remember { mutableStateOf("55.75") }
+    var long by remember { mutableStateOf("37.61") }
+    var nearby by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var showNearby by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            runCatching {
+                chats = Core.call("dialogs").getJSONArray("result").let { a ->
+                    (0 until a.length()).map { parseChat(a.getJSONObject(it)) }
+                }
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
+    LaunchedEffect(Unit) { reload() }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = { nav.navigate("stories") }) { Icon(Icons.Default.Star, "Сторис") }
+            IconButton(onClick = { nav.navigate("stars") }) { Text("⭐") }
+            IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Default.Settings, "Настройки") }
+            IconButton(onClick = { showNearby = !showNearby }) { Text("📍") }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
+        }
+        OutlinedTextField(query, { query = it }, label = { Text("Поиск") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+        if (showNearby) {
+            Card(Modifier.fillMaxWidth().padding(8.dp)) {
+                Column(Modifier.padding(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(lat, { lat = it }, label = { Text("lat") }, modifier = Modifier.weight(1f))
+                        OutlinedTextField(long, { long = it }, label = { Text("long") }, modifier = Modifier.weight(1f))
+                        Button(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    val r = Core.call("nearby", mapOf("lat" to (lat.toDoubleOrNull() ?: 0.0), "long" to (long.toDoubleOrNull() ?: 0.0)))
+                                    nearby = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("↻") }
+                    }
+                    nearby.forEach { p ->
+                        Text("${if (p.optBoolean("is_user")) "👤" else "👥"} ${p.optString("title")}")
+                    }
+                }
+            }
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            items(chats.filter { query.isEmpty() || it.title.contains(query, true) }, key = { it.id }) { c ->
+                ListItem(
+                    headlineContent = { Text(c.title) },
+                    supportingContent = { Text("unread=${c.unread}${if (c.muted) " · muted" else ""}") },
+                    modifier = Modifier.clickable { nav.navigate("chat/${c.id}") },
+                    trailingContent = {
+                        Row {
+                            IconButton(onClick = { scope.launch { runCatching { Core.call("pin_dialog", mapOf("chat" to c.id, "pinned" to true)); reload() } } }) { Text("📌") }
+                            IconButton(onClick = { scope.launch { runCatching { Core.call("mute", mapOf("chat" to c.id, "muted" to !c.muted)); reload() } } }) { Text(if (c.muted) "🔔" else "🔕") }
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
+        }
+        if (status.isNotEmpty()) Text(status, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+    }
+}

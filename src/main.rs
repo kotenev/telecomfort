@@ -1,14 +1,6 @@
-mod ai;
-mod config;
-mod db;
-mod integrations;
-mod media;
-mod sync;
-mod telegram;
-mod ui;
-mod utils;
-
 use std::sync::Arc;
+
+use telecomfort::{config, db, ui};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()

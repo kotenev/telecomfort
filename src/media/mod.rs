@@ -9,9 +9,9 @@ pub mod voice_rec;
 
 use crate::config::{DownloaderSettings, MediaKind};
 use crate::db::Db;
+use crate::events::BgEvent;
 use crate::integrations::{calibre, yandex};
 use crate::telegram::TelegramService;
-use crate::ui::app::BgEvent;
 use crate::utils;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};

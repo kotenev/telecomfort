@@ -13,6 +13,7 @@ use super::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
@@ -27,6 +28,9 @@ pub struct GrammersBackend {
     api_hash: String,
     /// Параллельных чанков MTProto (настраивается из Settings).
     parallel_workers: std::sync::Mutex<usize>,
+    /// Ожидающие входы: opaque ключ → LoginToken (для моста/API без владения токеном).
+    pending_logins: std::sync::Mutex<std::collections::HashMap<String, LoginToken>>,
+    pending_pw: std::sync::Mutex<std::collections::HashMap<String, PasswordToken>>,
 }
 
 // Grammers Client клонируемый и потокобезопасный (внутри Arc).
@@ -75,6 +79,8 @@ impl GrammersBackend {
             api_id,
             api_hash: api_hash.to_string(),
             parallel_workers: std::sync::Mutex::new(crate::media::mtproto::DEFAULT_WORKERS),
+            pending_logins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pending_pw: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -3571,7 +3577,28 @@ impl GrammersBackend {
     ) -> Result<i32> {
         use grammers_client::tl;
         let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
-        let uploaded = self.client.upload_file(path).await?;
+        // WAV с микрофона (запись voice_rec) — упаковываем в Ogg/Opus на лету.
+        let mut temp_ogg: Option<std::path::PathBuf> = None;
+        let mut src_path = path.to_path_buf();
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("wav"))
+            .unwrap_or(false)
+        {
+            let tmp = std::env::temp_dir().join("telecomfort").join(format!(
+                "voice_{}.ogg",
+                chrono::Local::now().timestamp_millis()
+            ));
+            crate::media::voice_rec::wav_file_to_ogg_voice(path, &tmp)?;
+            temp_ogg = Some(tmp.clone());
+            src_path = tmp;
+        }
+        let uploaded = self.client.upload_file(&src_path).await?;
+        // Временный ogg больше не нужен — сервер его уже забрал.
+        if let Some(tmp) = temp_ogg {
+            let _ = std::fs::remove_file(tmp);
+        }
         let (duration, waveform) = Self::voice_probe(path);
         let mime = match path
             .extension()
@@ -3585,10 +3612,11 @@ impl GrammersBackend {
             _ => "audio/ogg",
         }
         .to_string();
-        let fname = path
+        let fname = src_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "voice.ogg".into());
+
         let _ = fname;
         let file = uploaded.raw;
         let random_id = std::time::SystemTime::now()
@@ -4299,6 +4327,62 @@ impl GrammersBackend {
     }
 }
 
+impl GrammersBackend {
+    /// Opaque-ключ для ожидающего входа (мост/API).
+    fn new_login_key() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{n:x}")
+    }
+
+    /// Запросить код: токен прячем в карту, наружу — opaque ключ.
+    pub async fn bridge_request_code(&self, phone: &str) -> Result<String> {
+        let token = self.request_code(phone).await?;
+        let key = Self::new_login_key();
+        self.pending_logins
+            .lock()
+            .unwrap()
+            .insert(key.clone(), token);
+        Ok(key)
+    }
+
+    /// Войти по коду; при PasswordRequired токен перекладываем в pending_pw под тем же ключом.
+    pub async fn bridge_sign_in_code(&self, key: &str, code: &str) -> Result<()> {
+        let token = self
+            .pending_logins
+            .lock()
+            .unwrap()
+            .remove(key)
+            .context("сессия входа истекла — запросите код заново")?;
+        match self.sign_in_code(&token, code).await {
+            Ok(()) => Ok(()),
+            Err(SignInError::PasswordRequired(pw_token)) => {
+                self.pending_pw
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), pw_token);
+                anyhow::bail!("PASSWORD_REQUIRED")
+            }
+            Err(e) => anyhow::bail!("вход: {e:?}"),
+        }
+    }
+
+    /// Войти по паролю 2FA (ключ из bridge_sign_in_code после PASSWORD_REQUIRED).
+    pub async fn bridge_sign_in_password(&self, key: &str, password: &str) -> Result<()> {
+        let token = self
+            .pending_pw
+            .lock()
+            .unwrap()
+            .remove(key)
+            .context("сессия входа истекла — начните заново")?;
+        self.sign_in_password(token, password).await?;
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -4856,6 +4940,15 @@ impl crate::telegram::TelegramService for GrammersBackend {
     }
     async fn password_hint(&self) -> anyhow::Result<Option<String>> {
         GrammersBackend::password_hint(self).await
+    }
+    async fn request_code(&self, phone: &str) -> anyhow::Result<String> {
+        GrammersBackend::bridge_request_code(self, phone).await
+    }
+    async fn sign_in_code(&self, key: &str, code: &str) -> anyhow::Result<()> {
+        GrammersBackend::bridge_sign_in_code(self, key, code).await
+    }
+    async fn sign_in_password(&self, key: &str, password: &str) -> anyhow::Result<()> {
+        GrammersBackend::bridge_sign_in_password(self, key, password).await
     }
     fn is_connected(&self) -> bool {
         GrammersBackend::is_connected(self)

@@ -6,11 +6,18 @@ Docs: `docs/ARCHITECTURE.md`, `docs/DEVELOPER_GUIDE.md` (canonical 6-step featur
 ## Commands (always these exact forms)
 
 ```bash
-cargo check --bin telecomfort --offline
-cargo test --bin telecomfort --offline    # ~124 tests, ~5s (PH2 tests do 100k PBKDF2 rounds)
-cargo clippy --bin telecomfort --offline  # must be 0 errors
-cargo fmt                                 # before every commit
+cargo check --offline
+cargo test --lib --offline    # ~130 tests (юниты + контракты + мост), ~5s
+cargo clippy --offline        # must be 0 errors (lib + bin + android target)
+cargo fmt                     # before every commit
 ```
+
+Android: `cargo check --lib --target aarch64-linux-android` needs rustup
+toolchain (`RUSTC=~/.rustup/.../bin/rustc`, NDK clang via `CC_<target>` env —
+brew cargo can't see rustup targets). UI deps are
+`cfg(not(target_os = "android"))`-gated; `BgEvent` lives in `src/events.rs`
+so background code never touches `ui::`. New JNI op = arm in
+`android_bridge::dispatch` + Kotlin call in `Core`/screen + host test.
 
 ## Offline cargo — hard constraint
 
