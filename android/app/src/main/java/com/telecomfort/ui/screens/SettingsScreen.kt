@@ -33,9 +33,38 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
     var yandex by remember { mutableStateOf(store?.yandexToken ?: "") }
     var autoLock by remember { mutableStateOf(store?.autoLockSecs?.toString() ?: "0") }
     var sessions by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var status by remember { mutableStateOf("") }
+    var uname by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    var emojiList by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var showEmoji by remember { mutableStateOf(false) }
+    var unameMsg by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    // SAF-диалоги экспорта/импорта session-файла (мульти-девайс).
+    val exportSession = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                val src = java.io.File(ctx.filesDir, "session_android.session")
+                ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out) }
+                }
+                status = "Сессия экспортирована"
+            }.onFailure { status = "Ошибка экспорта: ${it.message}" }
+        }
+    }
+    val importSession = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                val dst = java.io.File(ctx.filesDir, "session_android.session")
+                ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+                status = "Сессия импортирована — перезапустите приложение"
+            }.onFailure { status = "Ошибка импорта: ${it.message}" }
+        }
+    }
     var avatarPath by remember { mutableStateOf<String?>(null) }
     val pickAvatar = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -55,7 +84,18 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
-    LaunchedEffect(Unit) { reloadSessions() }
+    LaunchedEffect(Unit) {
+        reloadSessions()
+        scope.launch {
+            runCatching {
+                val p = Core.call("get_profile", emptyMap())
+                first = p.optString("first_name", "")
+                last = p.optString("last_name", "")
+                about = p.optString("about", "")
+                uname = p.optString("username", "")
+            }
+        }
+    }
 
     LazyColumn(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -78,8 +118,6 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     }.onFailure { status = "Ошибка: ${it.message}" }
                 }
             }) { Text("Сохранить профиль") }
-            var uname by remember { mutableStateOf("") }
-            var unameMsg by remember { mutableStateOf("") }
             OutlinedTextField(uname, { uname = it }, label = { Text("username (без @)") }, modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -123,6 +161,12 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             Text("Аватар: выберите файл ниже (jpg/png).", style = MaterialTheme.typography.bodySmall)
         }
         item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { exportSession.launch("session_android.session") }) { Text("⤴ Экспорт сессии") }
+                TextButton(onClick = { importSession.launch(arrayOf("*/*")) }) { Text("⤵ Импорт сессии") }
+            }
+        }
+        item {
             Text("SOCKS5-прокси", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(proxy, { proxy = it }, label = { Text("socks5://…") }, modifier = Modifier.fillMaxWidth())
             Row {
@@ -153,6 +197,10 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     com.telecomfort.core.LockManager.touch()
                     onLockNow()
                 }) { Text("🔒 Сейчас") }
+                Button(onClick = {
+                    store?.pinSha256 = ""
+                    status = "PIN убран"
+                }) { Text("Убрать PIN") }
             }
             OutlinedTextField(autoLock, { autoLock = it }, label = { Text("Автоблок, сек (0 — выкл)") }, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
@@ -189,7 +237,20 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             Text("☁️ Яндекс.Диск", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(yandex, { yandex = it; store?.yandexToken = it }, label = { Text("OAuth-токен") }, modifier = Modifier.fillMaxWidth())
         }
-        item { Text("📱 Сессии", style = MaterialTheme.typography.titleSmall) }
+        item {
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("📱 Сессии", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching {
+                            Core.call("terminate_others", emptyMap())
+                            status = "Другие сессии завершены"
+                            reloadSessions()
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Завершить другие") }
+            }
+        }
         itemsIndexed(sessions, key = { i, s -> "sess-$i-${s.optLong("hash")}" }) { _, s ->
             Row {
                 Text("${s.optString("device", "?")} ${s.optString("app", "")}${if (s.optBoolean("current")) " · текущая" else ""}",
@@ -229,6 +290,51 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     Text("Нативный Telegram-клиент: общий Rust-core (MTProto, медиа, AI-детект) + Kotlin/Compose UI.\nВерсия 0.1.0 (debug).\n\nКопирование из защищённых чатов работает: флаг noforwards — клиентский, сервер отдаёт данные.")
                 }, confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Закрыть") } })
             }
+        }
+        item {
+            Text("😀 Эмодзи-статус", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    scope.launch {
+                        runCatching {
+                            val r = Core.call("default_emoji_statuses", emptyMap())
+                            val arr = r.getJSONArray("result")
+                            emojiList = (0 until arr.length()).map { arr.optLong(it) }
+                            showEmoji = true
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Выбрать") }
+                Button(onClick = {
+                    scope.launch {
+                        runCatching {
+                            Core.call("set_emoji_status", mapOf("doc" to JSONObject.NULL))
+                            status = "Эмодзи-статус снят"
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Снять") }
+            }
+        }
+        item {
+        if (showEmoji) {
+            AlertDialog(onDismissRequest = { showEmoji = false }, title = { Text("😀 Статус") }, text = {
+                LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                    items(emojiList.size) { i ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text("custom_emoji:${emojiList[i]}", modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("set_emoji_status", mapOf("doc" to emojiList[i]))
+                                        showEmoji = false
+                                        status = "Статус установлен"
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("OK") }
+                        }
+                    }
+                }
+            }, confirmButton = { TextButton(onClick = { showEmoji = false }) { Text("Закрыть") } })
+        }
         }
         item { if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall) }
     }

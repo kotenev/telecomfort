@@ -47,6 +47,9 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var showParticipants by remember { mutableStateOf(false) }
     var participants by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var showScheduled by remember { mutableStateOf(false) }
+    var showTopics by remember { mutableStateOf(false) }
+    var topics by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var topicId by remember { mutableStateOf<Int?>(null) }
     var scheduled by remember { mutableStateOf<List<Message>>(emptyList()) }
     var showPinned by remember { mutableStateOf(false) }
     var pinned by remember { mutableStateOf<List<Message>>(emptyList()) }
@@ -220,6 +223,15 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                     }.onFailure { status = "Ошибка: ${it.message}" }
                 }
             }) { Text("⏰") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("forum_topics", mapOf("chat" to chatId))
+                        topics = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                        showTopics = true
+                    }.onFailure { status = "Форум не найден (не супергруппа?)" }
+                }
+            }) { Text("🗂") }
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
@@ -615,7 +627,61 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         Text("• ${pm.optString("name", "?")}${if (pm.optBoolean("admin")) " 🛡" else ""}",
                             modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                         if (!pm.optBoolean("admin")) {
-                            TextButton(onClick = {
+                            var showAdmin by remember { mutableStateOf(false) }
+                        var aTitle by remember { mutableStateOf("") }
+                        var aChangeInfo by remember { mutableStateOf(true) }
+                        var aPost by remember { mutableStateOf(false) }
+                        var aDelete by remember { mutableStateOf(false) }
+                        var aBan by remember { mutableStateOf(false) }
+                        var aInvite by remember { mutableStateOf(true) }
+                        var aPin by remember { mutableStateOf(false) }
+                        TextButton(onClick = { showAdmin = true }) { Text("🛡") }
+                        if (showAdmin) {
+                            AlertDialog(onDismissRequest = { showAdmin = false }, title = { Text("Права: ${pm.optString("name")}") }, text = {
+                                Column {
+                                    OutlinedTextField(aTitle, { aTitle = it }, label = { Text("Титул") })
+                                    listOf("Изменять инфо" to aChangeInfo, "Постить" to aPost, "Удалять" to aDelete,
+                                        "Банить" to aBan, "Приглашать" to aInvite, "Закреплять" to aPin).forEachIndexed { bi, (label, cur) ->
+                                        var checked by remember { mutableStateOf(cur) }
+                                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                            Checkbox(checked, {
+                                                checked = it
+                                                when (bi) {
+                                                    0 -> aChangeInfo = it
+                                                    1 -> aPost = it
+                                                    2 -> aDelete = it
+                                                    3 -> aBan = it
+                                                    4 -> aInvite = it
+                                                    else -> aPin = it
+                                                }
+                                            })
+                                            Text(label, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                }
+                            }, confirmButton = {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        runCatching {
+                                            Core.call("set_admin", mapOf(
+                                                "chat" to chatId, "user" to pm.optLong("id"),
+                                                "hash" to pm.optLong("access_hash"), "title" to aTitle,
+                                                "rights" to mapOf(
+                                                    "change_info" to aChangeInfo, "post_messages" to aPost,
+                                                    "edit_messages" to aPost, "delete_messages" to aDelete,
+                                                    "ban_users" to aBan, "invite_users" to aInvite,
+                                                    "pin_messages" to aPin, "manage_call" to false,
+                                                    "manage_topics" to false, "post_stories" to false,
+                                                    "edit_stories" to false, "delete_stories" to false,
+                                                    "manage_direct_messages" to false)))
+                                            showAdmin = false
+                                            status = "Админ назначен"
+                                        }.onFailure { status = "Ошибка: ${it.message}" }
+                                    }
+                                }) { Text("Назначить") }
+                            }, dismissButton = { TextButton(onClick = { showAdmin = false }) { Text("Отмена") } })
+                        }
+                        TextButton(onClick = {
                                 scope.launch {
                                     runCatching {
                                         Core.call("kick_participant", mapOf("chat" to chatId, "user" to pm.optLong("id")))
@@ -748,6 +814,34 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("Запланировать") }
         }, dismissButton = { TextButton(onClick = { showSchedule = false }) { Text("Отмена") } })
+    }
+    if (showTopics) {
+        AlertDialog(onDismissRequest = { showTopics = false }, title = { Text("🗂 Топики") }, text = {
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                item {
+                    TextButton(onClick = {
+                        topicId = null
+                        showTopics = false
+                        reload()
+                    }) { Text("← Вся история") }
+                }
+                items(topics.size) { i ->
+                    val t = topics[i]
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                val r = Core.call("topic_history", mapOf("chat" to chatId, "topic" to t.optInt("id"), "limit" to 100))
+                                topicId = t.optInt("id")
+                                rawItems = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                items = rawItems.map { parseMessage(it) }
+                                showTopics = false
+                                status = "Топик: ${t.optString("title", "?")}"
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("• ${t.optString("title", "?")}") }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showTopics = false }) { Text("Закрыть") } })
     }
     if (showTtl) {
         var secs by remember { mutableStateOf("86400") }

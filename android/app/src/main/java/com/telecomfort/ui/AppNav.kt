@@ -53,17 +53,28 @@ fun AppNav(onToggleTheme: () -> Unit) {
 
 @Composable
 private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: () -> Unit) {
+    val ctx = LocalContext.current
     val nav = rememberNavController()
     var authed by remember { mutableStateOf<Boolean?>(null) }
     val scope = rememberCoroutineScope()
+    var startDestination by remember { mutableStateOf("login") }
     LaunchedEffect(Unit) {
         scope.launch {
-            runCatching { Core.call("use_mock") }
+            // Автологин: сохранённые ключи + живая сессия — сразу в чаты.
+            val ok = runCatching {
+                val aid = store.apiId.toLongOrNull() ?: 0L
+                if (aid == 0L || store.apiHash.isBlank()) return@runCatching false
+                val filesDir = ctx.filesDir.absolutePath
+                Core.call("init", mapOf("dir" to filesDir, "api_id" to aid,
+                    "api_hash" to store.apiHash, "proxy" to store.proxy))
+                Core.call("is_authorized", emptyMap()).optBoolean("authorized", false)
+            }.getOrDefault(false)
+            if (ok) startDestination = "chats" else runCatching { Core.call("use_mock") }
             authed = true
         }
     }
     if (authed == null) return
-    NavHost(navController = nav, startDestination = "login") {
+    NavHost(navController = nav, startDestination = startDestination) {
         composable("login") { LoginScreen(onDone = { nav.navigate("chats") }, store = store) }
         composable("chats") { ChatsScreen(nav) }
         composable("chat/{id}") { back ->
