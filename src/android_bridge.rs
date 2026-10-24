@@ -1370,6 +1370,9 @@ mod tests {
             json!({"op": "poll_voters", "chat": -1001, "id": 1}),
             json!({"op": "qr_bitmap", "payload": "test"}),
             json!({"op": "archived_stories"}),
+            json!({"op": "avatar_path", "chat": -1001}),
+            json!({"op": "pinned_one", "chat": -1001}),
+            json!({"op": "is_authorized"}),
         ] {
             let r = call(op);
             assert_eq!(r["ok"], true, "{r}");
