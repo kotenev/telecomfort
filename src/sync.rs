@@ -117,7 +117,8 @@ impl SyncEngine {
                 if !m.has_media {
                     continue;
                 }
-                let kind = AutoDownloader::classify(m.file_name.as_deref(), m.media_kind.as_deref());
+                let kind =
+                    AutoDownloader::classify(m.file_name.as_deref(), m.media_kind.as_deref());
                 let size = m.file_size.unwrap_or(0).max(0) as u64;
                 if !downloader.should_download(&chat.title, chat.id, &kind, size) {
                     continue;
@@ -135,7 +136,8 @@ impl SyncEngine {
         if jobs.is_empty() {
             return (new_stories, 0);
         }
-        for (job, res) in crate::media::download_many(&downloader, Arc::clone(&self.tg), jobs, 3).await
+        for (job, res) in
+            crate::media::download_many(&downloader, Arc::clone(&self.tg), jobs, 3).await
         {
             match res {
                 Ok(rep) => {
@@ -150,11 +152,11 @@ impl SyncEngine {
                         rep.local_path.display()
                     );
                     if !rep.near_duplicate_of.is_empty() {
-                            s.push_str(&format!(" (≈ {})", rep.near_duplicate_of));
-                        }
-                        if rep.calibre_imported {
-                            s.push_str(" → Calibre ✓");
-                        }
+                        s.push_str(&format!(" (≈ {})", rep.near_duplicate_of));
+                    }
+                    if rep.calibre_imported {
+                        s.push_str(" → Calibre ✓");
+                    }
                     let _ = self.tx.send(BgEvent::Log(s.clone()));
                     if self.cfg_snapshot.sync.notify_on_download {
                         notify(

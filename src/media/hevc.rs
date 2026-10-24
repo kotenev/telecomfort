@@ -85,7 +85,12 @@ pub fn parse_hvcc(data: &[u8]) -> Option<HevcConfig> {
     if vps.is_empty() || sps.is_empty() || pps.is_empty() {
         return None;
     }
-    Some(HevcConfig { length_size, vps, sps, pps })
+    Some(HevcConfig {
+        length_size,
+        vps,
+        sps,
+        pps,
+    })
 }
 
 /// Найти `hvcC` по пути moov→trak→mdia→minf→stbl→stsd→hev1/hvc1→hvcC.
@@ -233,7 +238,12 @@ pub fn hevc_frame_to_rgb(frame: &rusty_h265::Frame) -> Option<image::RgbImage> {
         _ => return None,
     };
     // Плоскости u16, stride == ширине плоскости (Plane::new(w,h) плотный).
-    let narrow = |plane: &rusty_h265::Plane, x0: usize, y0: usize, pw: usize, ph: usize| -> Option<Vec<u8>> {
+    let narrow = |plane: &rusty_h265::Plane,
+                  x0: usize,
+                  y0: usize,
+                  pw: usize,
+                  ph: usize|
+     -> Option<Vec<u8>> {
         let mut v = Vec::with_capacity(pw * ph);
         for y in y0..y0 + ph {
             let row = plane.row(y);
@@ -290,8 +300,7 @@ pub fn extract_frame(path: &Path) -> Option<image::DynamicImage> {
     if mdat.is_empty() {
         return None;
     }
-    let annexb =
-        length_prefixed_to_annexb(&mdat, cfg.length_size, &cfg.vps, &cfg.sps, &cfg.pps)?;
+    let annexb = length_prefixed_to_annexb(&mdat, cfg.length_size, &cfg.vps, &cfg.sps, &cfg.pps)?;
     decode_annexb_first_frame(&annexb)
 }
 
@@ -325,8 +334,13 @@ pub fn poster_from_video(video: &Path, poster: &Path) -> Option<PathBuf> {
     let f = std::fs::File::create(poster).ok()?;
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(f, 80);
     let rgb = small.to_rgb8();
-    enc.encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-        .ok()?;
+    enc.encode(
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .ok()?;
     let meta = std::fs::metadata(poster).ok()?;
     if meta.len() < 1024 {
         return None;
@@ -373,12 +387,13 @@ mod tests {
             h.extend_from_slice(&(nal.len() as u16).to_be_bytes());
             h.extend_from_slice(nal);
         }
-        assert_eq!(&h[..23], &[
-            0x01, 0x01, 0x60, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x78, 0xF0, 0x00, 0xFC, 0xFD, 0xF8, 0xF8,
-            0x00, 0x00, 0xFF, 0x03,
-        ][..]); // lengthSizeMinusOne = 3 → 4 байта, numOfArrays = 3
+        assert_eq!(
+            &h[..23],
+            &[
+                0x01, 0x01, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0xF0,
+                0x00, 0xFC, 0xFD, 0xF8, 0xF8, 0x00, 0x00, 0xFF, 0x03,
+            ][..]
+        ); // lengthSizeMinusOne = 3 → 4 байта, numOfArrays = 3
         (h, vps, sps, pps)
     }
 
@@ -471,7 +486,10 @@ mod tests {
         assert!(annexb.windows(idr.len()).any(|w| w == idr.as_slice()));
         assert!(!annexb.windows(idr2.len()).any(|w| w == idr2.as_slice()));
         // TRAIL до IRAP пропущен, после — взят.
-        let trail_hits = annexb.windows(trail.len()).filter(|w| *w == trail.as_slice()).count();
+        let trail_hits = annexb
+            .windows(trail.len())
+            .filter(|w| *w == trail.as_slice())
+            .count();
         assert_eq!(trail_hits, 1);
     }
 
@@ -480,7 +498,14 @@ mod tests {
         let mut mdat = Vec::new();
         mdat.extend_from_slice(&length_nal(&[0x02, 0x01, 0x02, 0x03]));
         let payloads = vec![mdat.as_slice()];
-        assert!(length_prefixed_to_annexb(&payloads, 4, &[vec![0x40]], &[vec![0x42]], &[vec![0x44]]).is_none());
+        assert!(length_prefixed_to_annexb(
+            &payloads,
+            4,
+            &[vec![0x40]],
+            &[vec![0x42]],
+            &[vec![0x44]]
+        )
+        .is_none());
     }
 
     #[test]

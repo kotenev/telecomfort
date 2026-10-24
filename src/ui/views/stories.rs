@@ -94,6 +94,38 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                             ui.text_edit_singleline(&mut sp.caption);
                         }
                     });
+                    // Музыка: аудиофайл прикрепится к сторис (InputDocument в uploadMedia).
+                    ui.horizontal(|ui| {
+                        ui.label("🎵 Музыка:");
+                        let music_name = app
+                            .story_publish
+                            .as_ref()
+                            .and_then(|sp| sp.music.as_ref())
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string());
+                        match music_name {
+                            Some(name) => {
+                                ui.label(egui::RichText::new(name).small().monospace());
+                                if ui.small_button("✕").on_hover_text("Убрать музыку").clicked() {
+                                    if let Some(sp) = app.story_publish.as_mut() {
+                                        sp.music = None;
+                                    }
+                                }
+                            }
+                            None => {
+                                if ui.small_button("Выбрать аудиофайл…").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("audio", &["mp3", "m4a", "ogg", "opus", "wav", "flac"])
+                                        .pick_file()
+                                    {
+                                        if let Some(sp) = app.story_publish.as_mut() {
+                                            sp.music = Some(path);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
                     ui.horizontal(|ui| {
                         if ui.button("Опубликовать").clicked() {
                             app.do_publish_story();

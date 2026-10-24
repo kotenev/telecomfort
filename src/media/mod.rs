@@ -94,8 +94,7 @@ impl AutoDownloader {
                 continue;
             }
             let kinds_empty = r.kinds.is_empty();
-            let kind_ok =
-                kinds_empty || r.kinds.iter().any(|k| *k == MediaKind::Any || k == kind);
+            let kind_ok = kinds_empty || r.kinds.iter().any(|k| *k == MediaKind::Any || k == kind);
             if !kind_ok {
                 continue;
             }
@@ -114,8 +113,7 @@ impl AutoDownloader {
         kind: &MediaKind,
         size: u64,
     ) -> bool {
-        self.rule_for(chat_label, kind, size)
-            || self.rule_for(&chat_id.to_string(), kind, size)
+        self.rule_for(chat_label, kind, size) || self.rule_for(&chat_id.to_string(), kind, size)
     }
 
     pub fn classify(file_name: Option<&str>, media_kind: Option<&str>) -> MediaKind {
@@ -128,8 +126,8 @@ impl AutoDownloader {
             || matches!(ext, "mp4" | "mkv" | "avi" | "mov" | "webm");
         let is_audio = matches!(media_kind, Some("audio"))
             || matches!(ext, "mp3" | "ogg" | "oga" | "opus" | "m4a" | "flac" | "wav");
-        let is_photo = matches!(media_kind, Some("photo"))
-            || matches!(ext, "jpg" | "jpeg" | "png" | "webp");
+        let is_photo =
+            matches!(media_kind, Some("photo")) || matches!(ext, "jpg" | "jpeg" | "png" | "webp");
         if is_video {
             MediaKind::Video
         } else if is_audio {
@@ -197,8 +195,9 @@ impl AutoDownloader {
         // тяжёлый файл не вешал фоновую задачу; постер сохраняем рядом
         // с видео — он же превью для групп дублей в Загрузках.
         // Документы/аудио пропускаем (нет видеоряда для хэширования).
-        let image_phash =
-            image::open(&path).ok().map(|img| crate::ai::phash::phash(&img));
+        let image_phash = image::open(&path)
+            .ok()
+            .map(|img| crate::ai::phash::phash(&img));
         let phash: Option<u64> = match image_phash {
             Some(h) => Some(h),
             None if crate::media::video::is_video_path(&path) => {
@@ -243,7 +242,10 @@ impl AutoDownloader {
         self.db.record_download(
             chat_label,
             message_id,
-            &path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            &path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
             size as i64,
             &sha,
             &path.to_string_lossy(),
@@ -256,7 +258,9 @@ impl AutoDownloader {
             let remote = format!(
                 "{}/{}",
                 self.yandex_folder.trim_end_matches('/'),
-                path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+                path.file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
             );
             // Семафор: не больше 4 параллельных заливок.
             let _permit = upload_semaphore().acquire().await;
@@ -378,7 +382,9 @@ mod tests {
         results.sort_by_key(|(j, _)| j.message_id);
         assert_eq!(results.len(), 3);
         for (job, res) in &results {
-            let rep = res.as_ref().unwrap_or_else(|e| panic!("job {}: {e:#}", job.message_id));
+            let rep = res
+                .as_ref()
+                .unwrap_or_else(|e| panic!("job {}: {e:#}", job.message_id));
             assert!(rep.local_path.exists(), "{}", rep.local_path.display());
             assert!(!rep.sha256.is_empty());
         }
@@ -420,7 +426,9 @@ pub async fn download_many(
     max_concurrent_files: usize,
 ) -> Vec<(DownloadJob, anyhow::Result<DownloadReport>)> {
     use std::sync::Arc;
-    let sem = Arc::new(tokio::sync::Semaphore::new(max_concurrent_files.clamp(1, 16)));
+    let sem = Arc::new(tokio::sync::Semaphore::new(
+        max_concurrent_files.clamp(1, 16),
+    ));
     let mut set = tokio::task::JoinSet::new();
     for job in jobs {
         let dl = downloader.clone();

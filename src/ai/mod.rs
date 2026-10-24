@@ -1,7 +1,7 @@
 //! ИИ-автоматизация для Сторис: обнаружение рекламы и замыливание только рекламных зон.
 
-pub mod blur;
 pub mod bktree;
+pub mod blur;
 pub mod clip;
 pub mod cluster;
 pub mod heuristic;
@@ -88,7 +88,7 @@ pub use onnx::{
     is_quantized_dtype_name, model_key_of, normalize_provider, ort_compiled, ort_status,
     try_onnx_boost, try_onnx_boost_many, PROVIDER_CHOICES,
 };
-pub use visual::{VisualSignals, analyze_image, visual_ad_boost};
+pub use visual::{analyze_image, visual_ad_boost, VisualSignals};
 
 /// Быстрый скоринг без ONNX: текст + визуал + CLIP-лайт.
 /// Фаза 1 batch-пути сторис; ONNX применяется пачкой отдельно.

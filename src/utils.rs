@@ -25,13 +25,7 @@ pub fn human_size(bytes: u64) -> String {
 pub fn normalize_title(s: &str) -> String {
     s.to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else {
-                ' '
-            }
-        })
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -60,6 +54,12 @@ pub fn is_ebook(path: &std::path::Path) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .as_deref(),
-        Some("epub") | Some("fb2") | Some("fb2.zip") | Some("pdf") | Some("mobi") | Some("azw3") | Some("djvu")
+        Some("epub")
+            | Some("fb2")
+            | Some("fb2.zip")
+            | Some("pdf")
+            | Some("mobi")
+            | Some("azw3")
+            | Some("djvu")
     )
 }

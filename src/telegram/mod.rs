@@ -373,7 +373,8 @@ pub trait TelegramService: Send + Sync {
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
     ) -> anyhow::Result<std::path::PathBuf> {
         let _ = (workers, on_progress);
-        self.download_message_media(chat_id, message_id, dest_dir).await
+        self.download_message_media(chat_id, message_id, dest_dir)
+            .await
     }
     /// Информация о текущем аккаунте (для мультиаккаунтов).
     async fn me(&self) -> anyhow::Result<AccountInfo> {
@@ -476,7 +477,12 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("scheduled send is not implemented for this backend")
     }
     /// Сохранить черновик на сервере (синк между устройствами).
-    async fn save_draft(&self, _chat_id: i64, _text: &str, _reply_to: Option<i32>) -> anyhow::Result<()> {
+    async fn save_draft(
+        &self,
+        _chat_id: i64,
+        _text: &str,
+        _reply_to: Option<i32>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     /// Активные сессии текущего аккаунта.
@@ -500,12 +506,13 @@ pub trait TelegramService: Send + Sync {
     ) -> anyhow::Result<()> {
         anyhow::bail!("profile edit is not implemented for this backend")
     }
-    /// Опубликовать сторис (фото/видео + подпись, видно контактам).
+    /// Опубликовать сторис (фото/видео + подпись + опциональная музыка, видно контактам).
     /// Возвращает id сторис.
     async fn publish_story(
         &self,
         _path: &std::path::Path,
         _caption: &str,
+        _music: Option<std::path::PathBuf>,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("story publishing is not implemented for this backend")
     }
@@ -531,7 +538,13 @@ pub trait TelegramService: Send + Sync {
         Ok(vec![])
     }
     /// Отправить текст в топик (top_msg_id).
-    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, _text: &str, _silent: bool) -> anyhow::Result<i32> {
+    async fn send_to_topic(
+        &self,
+        _chat_id: i64,
+        _topic_id: i32,
+        _text: &str,
+        _silent: bool,
+    ) -> anyhow::Result<i32> {
         anyhow::bail!("forum topics are not implemented for this backend")
     }
     /// Глобальный поиск по всем чатам. Возвращает (chat_id, сообщение).
@@ -551,7 +564,12 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("scheduled messages are not implemented for this backend")
     }
     /// Создать группу (megagroup) или канал (broadcast). Возвращает chat_id.
-    async fn create_channel(&self, _title: &str, _about: &str, _broadcast: bool) -> anyhow::Result<i64> {
+    async fn create_channel(
+        &self,
+        _title: &str,
+        _about: &str,
+        _broadcast: bool,
+    ) -> anyhow::Result<i64> {
         anyhow::bail!("channel creation is not implemented for this backend")
     }
     /// Пригласительная ссылка чата.
@@ -605,12 +623,7 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("geo send is not implemented for this backend")
     }
     /// Ответить на сторис текстом (ответ уходит в чат владельца).
-    async fn story_reply(
-        &self,
-        _peer_id: i64,
-        _story_id: i32,
-        _text: &str,
-    ) -> anyhow::Result<i32> {
+    async fn story_reply(&self, _peer_id: i64, _story_id: i32, _text: &str) -> anyhow::Result<i32> {
         anyhow::bail!("story replies are not implemented for this backend")
     }
     /// Просмотры своей сторис (count).
@@ -659,7 +672,13 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("dialog pins are not implemented for this backend")
     }
     /// Отправить альбом файлов (2+). Возвращает id сообщений.
-    async fn send_album(&self, _chat_id: i64, _paths: &[std::path::PathBuf], _caption: &str, _schedule_at: Option<std::time::SystemTime>) -> anyhow::Result<Vec<i32>> {
+    async fn send_album(
+        &self,
+        _chat_id: i64,
+        _paths: &[std::path::PathBuf],
+        _caption: &str,
+        _schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<Vec<i32>> {
         anyhow::bail!("albums are not implemented for this backend")
     }
     /// Архив своих сторис.
@@ -701,7 +720,11 @@ pub trait TelegramService: Send + Sync {
         anyhow::bail!("invite revoke is not implemented for this backend")
     }
     /// Участники канала/супергруппы (первые N).
-    async fn participants(&self, _chat_id: i64, _limit: usize) -> anyhow::Result<Vec<ParticipantInfo>> {
+    async fn participants(
+        &self,
+        _chat_id: i64,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<ParticipantInfo>> {
         Ok(vec![])
     }
     /// Исключить/забанить участника (нужны права админа).
@@ -718,7 +741,14 @@ pub trait TelegramService: Send + Sync {
     }
     /// Назначить/снять админа с тонкими правами (нужны права владельца).
     /// Пустой набор прав = разжаловать.
-    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _rights: AdminRights, _title: &str) -> anyhow::Result<()> {
+    async fn set_admin(
+        &self,
+        _chat_id: i64,
+        _user_id: i64,
+        _access_hash: i64,
+        _rights: AdminRights,
+        _title: &str,
+    ) -> anyhow::Result<()> {
         anyhow::bail!("admin management is not implemented for this backend")
     }
     /// Слоумод чата (0 — выкл, иначе секунды задержки).
@@ -755,7 +785,12 @@ pub trait TelegramService: Send + Sync {
         Ok((0, vec![]))
     }
     /// Создать папку диалогов (id = max+1). Возвращает id.
-    async fn create_folder(&self, _title: &str, _peer_ids: &[i64], _emoticon: Option<String>) -> anyhow::Result<i32> {
+    async fn create_folder(
+        &self,
+        _title: &str,
+        _peer_ids: &[i64],
+        _emoticon: Option<String>,
+    ) -> anyhow::Result<i32> {
         anyhow::bail!("folder management is not implemented for this backend")
     }
     /// Переименовать папку (состав и настройки сохраняются).
@@ -768,12 +803,22 @@ pub trait TelegramService: Send + Sync {
     }
     /// Перевести текст сообщения (Premium API сервера; без Premium — ошибка).
     /// Возвращает переведённый текст.
-    async fn translate_message(&self, _chat_id: i64, _message_id: i32, _to_lang: &str) -> anyhow::Result<String> {
+    async fn translate_message(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+        _to_lang: &str,
+    ) -> anyhow::Result<String> {
         anyhow::bail!("translation is not implemented for this backend")
     }
     /// Репост чужой сторис к себе (скачивание → заливка → sendStory с fwd_from).
     /// Возвращает id новой сторис.
-    async fn forward_story(&self, _peer_id: i64, _story_id: i32, _caption: &str) -> anyhow::Result<i32> {
+    async fn forward_story(
+        &self,
+        _peer_id: i64,
+        _story_id: i32,
+        _caption: &str,
+    ) -> anyhow::Result<i32> {
         anyhow::bail!("story repost is not implemented for this backend")
     }
     /// Эмодзи-статус аккаунта (document_id кастомного эмодзи; None — снять).
@@ -783,6 +828,30 @@ pub trait TelegramService: Send + Sync {
     /// Дефолтные эмодзи-статусы (document_id).
     async fn default_emoji_statuses(&self) -> anyhow::Result<Vec<i64>> {
         Ok(vec![])
+    }
+    /// QR-вход, шаг 1: запросить токен. Возвращает (token_bytes, expires_unix).
+    /// Токен кодируется как tg://login?token=<base64url(token)> и показывается QR.
+    async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
+        anyhow::bail!("QR login is not implemented for this backend")
+    }
+    /// QR-вход, шаг 2: опросить статус токена. Ok(Some(user_id)) — вход выполнен.
+    /// Ok(None) — ещё ждём сканирования; ошибка — токен истёк/отклонён, начать заново.
+    async fn qr_login_poll(&self, _token: &[u8]) -> anyhow::Result<Option<i64>> {
+        anyhow::bail!("QR login is not implemented for this backend")
+    }
+    /// Баланс звёзд Telegram Stars (только чтение, без трат).
+    /// Возвращает (целые звёзды, нано-дробь).
+    async fn stars_balance(&self) -> anyhow::Result<(i64, i32)> {
+        Ok((0, 0))
+    }
+    /// Статистика канала: временной ряд просмотров/подписчиков для графиков.
+    /// Возвращает (подписи оси X, значения) — пусто, если сервер отдал async/ошибку.
+    async fn channel_graph(
+        &self,
+        _chat_id: i64,
+        _kind: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<f64>)> {
+        Ok((vec![], vec![]))
     }
     fn is_connected(&self) -> bool;
 }

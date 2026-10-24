@@ -35,8 +35,7 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         .desired_width(160.0),
                 );
                 let go = ui.small_button("🔍").clicked()
-                    || (resp.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if go {
                     app.do_global_search();
                 }
@@ -48,25 +47,27 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         .small()
                         .weak(),
                 );
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    for (cid, m) in app.gsearch_results.clone() {
-                        let title = app
-                            .dialogs
-                            .iter()
-                            .find(|d| d.id == cid)
-                            .map(|d| d.title.clone())
-                            .unwrap_or_else(|| format!("chat {cid}"));
-                        if ui
-                            .selectable_label(
-                                false,
-                                format!("{}: {}", title, crate::utils::truncate(&m.text, 60)),
-                            )
-                            .clicked()
-                        {
-                            app.select_chat(cid);
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for (cid, m) in app.gsearch_results.clone() {
+                            let title = app
+                                .dialogs
+                                .iter()
+                                .find(|d| d.id == cid)
+                                .map(|d| d.title.clone())
+                                .unwrap_or_else(|| format!("chat {cid}"));
+                            if ui
+                                .selectable_label(
+                                    false,
+                                    format!("{}: {}", title, crate::utils::truncate(&m.text, 60)),
+                                )
+                                .clicked()
+                            {
+                                app.select_chat(cid);
+                            }
                         }
-                    }
-                });
+                    });
                 ui.separator();
             }
             // Папки сервера + Архив (как вкладки в официальном клиенте).
@@ -88,96 +89,114 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             });
             // Управление папками: создать/переименовать/удалить.
             ui.horizontal(|ui| {
-                if ui.small_button("＋ Папка").on_hover_text("Создать папку диалогов").clicked() {
+                if ui
+                    .small_button("＋ Папка")
+                    .on_hover_text("Создать папку диалогов")
+                    .clicked()
+                {
                     app.folder_create_open = true;
                     app.folder_create_title.clear();
                     app.folder_create_peers.clear();
                 }
-                if ui.small_button("⚙ Папки").on_hover_text("Переименовать/удалить папки сервера").clicked() {
+                if ui
+                    .small_button("⚙ Папки")
+                    .on_hover_text("Переименовать/удалить папки сервера")
+                    .clicked()
+                {
                     app.folder_rename = Some((-1, String::new()));
                 }
             });
             if app.folder_create_open {
-                egui::Window::new("＋ Новая папка").collapsible(false).show(ui.ctx(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Название:");
-                        ui.text_edit_singleline(&mut app.folder_create_title);
-                        ui.label("Эмодзи:");
-                        ui.text_edit_singleline(&mut app.folder_create_emoji);
-                    });
-                    ui.label("Диалоги в папке:");
-                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                        for d in app.dialogs.clone() {
-                            if d.archived {
-                                continue;
-                            }
-                            let mut sel = app.folder_create_peers.contains(&d.id);
-                            if ui.checkbox(&mut sel, &d.title).changed() {
-                                if sel {
-                                    app.folder_create_peers.insert(d.id);
-                                } else {
-                                    app.folder_create_peers.remove(&d.id);
+                egui::Window::new("＋ Новая папка")
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Название:");
+                            ui.text_edit_singleline(&mut app.folder_create_title);
+                            ui.label("Эмодзи:");
+                            ui.text_edit_singleline(&mut app.folder_create_emoji);
+                        });
+                        ui.label("Диалоги в папке:");
+                        egui::ScrollArea::vertical()
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                for d in app.dialogs.clone() {
+                                    if d.archived {
+                                        continue;
+                                    }
+                                    let mut sel = app.folder_create_peers.contains(&d.id);
+                                    if ui.checkbox(&mut sel, &d.title).changed() {
+                                        if sel {
+                                            app.folder_create_peers.insert(d.id);
+                                        } else {
+                                            app.folder_create_peers.remove(&d.id);
+                                        }
+                                    }
                                 }
+                            });
+                        ui.horizontal(|ui| {
+                            if ui.button("Создать").clicked() {
+                                app.do_create_folder();
                             }
-                        }
+                            if ui.button("Отмена").clicked() {
+                                app.folder_create_open = false;
+                            }
+                        });
                     });
-                    ui.horizontal(|ui| {
-                        if ui.button("Создать").clicked() {
-                            app.do_create_folder();
-                        }
-                        if ui.button("Отмена").clicked() {
-                            app.folder_create_open = false;
-                        }
-                    });
-                });
             }
             if app.folder_rename.is_some() {
                 let folders = app.folders.clone();
-                egui::Window::new("⚙ Папки сервера").collapsible(false).show(ui.ctx(), |ui| {
-                    for f in folders {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("[{}] {}", f.id, f.title));
-                            if ui.small_button("✏️").clicked() {
-                                app.folder_rename = Some((f.id, f.title.clone()));
-                            }
-                            if ui.small_button("🗑").clicked() {
-                                app.do_delete_folder(f.id);
-                            }
-                        });
-                    }
-                    if let Some((fid, _)) = app.folder_rename.clone() {
-                        if fid >= 0 {
+                egui::Window::new("⚙ Папки сервера")
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        for f in folders {
                             ui.horizontal(|ui| {
-                                ui.label("Новое название:");
-                                if let Some((_, name)) = app.folder_rename.as_mut() {
-                                    ui.text_edit_singleline(name);
+                                ui.label(format!("[{}] {}", f.id, f.title));
+                                if ui.small_button("✏️").clicked() {
+                                    app.folder_rename = Some((f.id, f.title.clone()));
                                 }
-                                if ui.button("OK").clicked() {
-                                    let name = app.folder_rename.as_ref().map(|(_, n)| n.clone()).unwrap_or_default();
-                                    app.do_rename_folder(fid, name);
+                                if ui.small_button("🗑").clicked() {
+                                    app.do_delete_folder(f.id);
                                 }
                             });
                         }
-                    }
-                    if ui.button("Закрыть").clicked() {
-                        app.folder_rename = None;
-                    }
-                });
+                        if let Some((fid, _)) = app.folder_rename.clone() {
+                            if fid >= 0 {
+                                ui.horizontal(|ui| {
+                                    ui.label("Новое название:");
+                                    if let Some((_, name)) = app.folder_rename.as_mut() {
+                                        ui.text_edit_singleline(name);
+                                    }
+                                    if ui.button("OK").clicked() {
+                                        let name = app
+                                            .folder_rename
+                                            .as_ref()
+                                            .map(|(_, n)| n.clone())
+                                            .unwrap_or_default();
+                                        app.do_rename_folder(fid, name);
+                                    }
+                                });
+                            }
+                        }
+                        if ui.button("Закрыть").clicked() {
+                            app.folder_rename = None;
+                        }
+                    });
             }
             ui.separator();
             let ctx = ui.ctx().clone();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let folder_sel = app.folder_sel;
-                let peer_set: Option<std::collections::HashSet<i64>> = folder_sel
-                    .and_then(|fid| {
-                        if fid == -1 {
-                            None
-                        } else {
-                            app.folders.iter().find(|f| f.id == fid).map(|f| {
-                                f.peer_ids.iter().copied().collect()
-                            })
-                        }
-                    });
+                let peer_set: Option<std::collections::HashSet<i64>> = folder_sel.and_then(|fid| {
+                    if fid == -1 {
+                        None
+                    } else {
+                        app.folders
+                            .iter()
+                            .find(|f| f.id == fid)
+                            .map(|f| f.peer_ids.iter().copied().collect())
+                    }
+                });
                 let mut shown = 0;
                 for d in app.dialogs.clone() {
                     // Фильтр вида: Все — без архива; Архив — только архив; папка — её пиры.
@@ -205,7 +224,15 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 let is_pinned = app.dialog_pinned.contains(&d.id);
-                                if ui.small_button(if is_pinned { "📌" } else { "📍" }).on_hover_text(if is_pinned { "Открепить диалог" } else { "Закрепить диалог" }).clicked() {
+                                if ui
+                                    .small_button(if is_pinned { "📌" } else { "📍" })
+                                    .on_hover_text(if is_pinned {
+                                        "Открепить диалог"
+                                    } else {
+                                        "Закрепить диалог"
+                                    })
+                                    .clicked()
+                                {
                                     app.toggle_dialog_pin(d.id);
                                 }
                                 if ui.selectable_label(sel, &d.title).clicked() {
@@ -220,20 +247,14 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                                     );
                                 }
                                 if d.muted {
-                                    ui.label(
-                                        egui::RichText::new("🔇").small().weak(),
-                                    );
+                                    ui.label(egui::RichText::new("🔇").small().weak());
                                 }
                                 if d.archived {
-                                    ui.label(
-                                        egui::RichText::new("📦").small().weak(),
-                                    );
+                                    ui.label(egui::RichText::new("📦").small().weak());
                                 }
                             });
                             if let Some(u) = &d.username {
-                                ui.label(
-                                    egui::RichText::new(format!("@{u}")).small().weak(),
-                                );
+                                ui.label(egui::RichText::new(format!("@{u}")).small().weak());
                             }
                         });
                     });
@@ -649,13 +670,40 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             if let Some(cid) = app.channel_stats_open {
                 if let Some(st) = app.channel_stats.get(&cid).cloned() {
                     egui::Window::new("📊 Статистика канала").collapsible(false).show(ui.ctx(), |ui| {
-                        ui.label(format!("Подписчики: {} (было {})", st.followers, st.followers_prev));
-                        ui.label(format!("Просмотры на пост: {:.0}", st.views_per_post));
-                        ui.label(format!("Репосты на пост: {:.1}", st.shares_per_post));
-                        ui.label(format!("Реакции на пост: {:.1}", st.reactions_per_post));
-                        ui.label(format!("Просмотры сторис: {:.0}", st.views_per_story));
-                        ui.label(format!("С уведомлениями: {:.0}%", st.notifications_pct));
-                        ui.label(egui::RichText::new("без графиков — только сводные числа").small().weak());
+                        ui.set_min_width(360.0);
+                        ui.horizontal(|ui| {
+                            for (id, label) in [
+                                ("summary", "Сводка"),
+                                ("growth", "📈 Рост"),
+                                ("interactions", "💬 Вовлечённость"),
+                            ] {
+                                let sel = app.stats_tab == id;
+                                if ui.selectable_label(sel, label).clicked() {
+                                    app.stats_tab = id.into();
+                                }
+                            }
+                        });
+                        ui.separator();
+                        match app.stats_tab.as_str() {
+                            "growth" | "interactions" => {
+                                let kind = app.stats_tab.clone();
+                                app.load_graph(cid, &kind);
+                                match app.graphs.get(&(cid, kind.clone())).cloned() {
+                                    Some((labels, values)) => draw_series(ui, &labels, &values),
+                                    None => {
+                                        ui.label("загружаю график…");
+                                    }
+                                }
+                            }
+                            _ => {
+                                ui.label(format!("Подписчики: {} (было {})", st.followers, st.followers_prev));
+                                ui.label(format!("Просмотры на пост: {:.0}", st.views_per_post));
+                                ui.label(format!("Репосты на пост: {:.1}", st.shares_per_post));
+                                ui.label(format!("Реакции на пост: {:.1}", st.reactions_per_post));
+                                ui.label(format!("Просмотры сторис: {:.0}", st.views_per_story));
+                                ui.label(format!("С уведомлениями: {:.0}%", st.notifications_pct));
+                            }
+                        }
                         if ui.button("Закрыть").clicked() {
                             app.channel_stats_open = None;
                         }
@@ -745,10 +793,8 @@ fn message_bubble(
     rules: &crate::config::DownloaderSettings,
     m: &crate::telegram::MessageInfo,
 ) {
-    let kind = crate::media::AutoDownloader::classify(
-        m.file_name.as_deref(),
-        m.media_kind.as_deref(),
-    );
+    let kind =
+        crate::media::AutoDownloader::classify(m.file_name.as_deref(), m.media_kind.as_deref());
     let size = m.file_size.unwrap_or(0).max(0) as u64;
     let matched = crate::media::AutoDownloader::matches_rules(rules, title, &kind, size)
         || crate::media::AutoDownloader::matches_rules(rules, &chat_id.to_string(), &kind, size);
@@ -824,11 +870,7 @@ fn bubble_content(
                             .color(egui::Color32::from_rgb(40, 140, 60)),
                     );
                 } else {
-                    ui.label(
-                        egui::RichText::new("× вне правил")
-                            .small()
-                            .weak(),
-                    );
+                    ui.label(egui::RichText::new("× вне правил").small().weak());
                 }
             }
         });
@@ -839,15 +881,18 @@ fn bubble_content(
     // Показываем перевод под текстом, если запрошен.
     if let Some(tr) = app.translations.get(&(chat_id, m.id)) {
         ui.separator();
-        ui.label(egui::RichText::new(crate::utils::truncate(tr, 2000)).italics().weak());
+        ui.label(
+            egui::RichText::new(crate::utils::truncate(tr, 2000))
+                .italics()
+                .weak(),
+        );
     }
     // Стикеры: превью по месту (качается в кэш, не в Загрузки).
     if m.media_kind.as_deref() == Some("sticker") {
         let ctx = ui.ctx().clone();
         if let Some(tex) = app.ensure_sticker(&ctx, chat_id, m) {
             let size = tex.size_vec2();
-            let scale =
-                (128.0 / size.x.max(1.0)).min(128.0 / size.y.max(1.0));
+            let scale = (128.0 / size.x.max(1.0)).min(128.0 / size.y.max(1.0));
             ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
         } else {
             ui.label(
@@ -862,8 +907,7 @@ fn bubble_content(
         let ctx = ui.ctx().clone();
         if let Some(tex) = app.ensure_video_thumb(&ctx, m) {
             let size = tex.size_vec2();
-            let scale =
-                (160.0 / size.x.max(1.0)).min(160.0 / size.y.max(1.0));
+            let scale = (160.0 / size.x.max(1.0)).min(160.0 / size.y.max(1.0));
             ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
         } else {
             ui.label(
@@ -881,8 +925,7 @@ fn bubble_content(
                     let ctx = ui.ctx().clone();
                     if let Some(tex) = app.ensure_web_thumb(&ctx, photo) {
                         let size = tex.size_vec2();
-                        let scale =
-                            (80.0 / size.x.max(1.0)).min(80.0 / size.y.max(1.0));
+                        let scale = (80.0 / size.x.max(1.0)).min(80.0 / size.y.max(1.0));
                         ui.image((tex.id(), egui::Vec2::new(size.x * scale, size.y * scale)));
                     }
                 }
@@ -904,7 +947,11 @@ fn bubble_content(
                                     .small()
                                     .weak(),
                             );
-                            if ui.small_button("↗").on_hover_text("Открыть ссылку").clicked() {
+                            if ui
+                                .small_button("↗")
+                                .on_hover_text("Открыть ссылку")
+                                .clicked()
+                            {
                                 let _ = open::that(web.url.clone());
                             }
                         });
@@ -945,7 +992,11 @@ fn bubble_content(
                 let label = if playing { "⏹" } else { "▶" };
                 if ui
                     .small_button(label)
-                    .on_hover_text(if playing { "Остановить" } else { "Слушать" })
+                    .on_hover_text(if playing {
+                        "Остановить"
+                    } else {
+                        "Слушать"
+                    })
                     .clicked()
                 {
                     app.play_audio(chat_id, m);
@@ -968,30 +1019,58 @@ fn bubble_content(
             app.start_reply(chat_id, m);
         }
         for emoji in QUICK_REACTIONS {
-            if ui.small_button(emoji).on_hover_text("Реакция (повтор — убрать)").clicked() {
+            if ui
+                .small_button(emoji)
+                .on_hover_text("Реакция (повтор — убрать)")
+                .clicked()
+            {
                 app.react_to(chat_id, m.id, emoji);
             }
         }
         if m.outgoing {
-            if ui.small_button("✏️").on_hover_text("Редактировать").clicked() {
+            if ui
+                .small_button("✏️")
+                .on_hover_text("Редактировать")
+                .clicked()
+            {
                 app.start_edit(chat_id, m);
             }
-            if ui.small_button("🗑").on_hover_text("Удалить у всех").clicked() {
+            if ui
+                .small_button("🗑")
+                .on_hover_text("Удалить у всех")
+                .clicked()
+            {
                 app.delete_msg(chat_id, m.id);
             }
         }
-        if ui.small_button("📌").on_hover_text("Закрепить в чате").clicked() {
+        if ui
+            .small_button("📌")
+            .on_hover_text("Закрепить в чате")
+            .clicked()
+        {
             app.toggle_pin(chat_id, m.id, false);
         }
-        if ui.small_button("➦").on_hover_text("Переслать в другой чат").clicked() {
+        if ui
+            .small_button("➦")
+            .on_hover_text("Переслать в другой чат")
+            .clicked()
+        {
             app.start_forward(chat_id, m.id);
         }
         // 🌐 Перевод: повторный тап скрывает.
         let has_tr = app.translations.contains_key(&(chat_id, m.id));
-        if ui.small_button(if has_tr { "🌐✓" } else { "🌐" }).on_hover_text("Перевести сообщение (авто: кириллица→en, иначе→ru)").clicked() {
+        if ui
+            .small_button(if has_tr { "🌐✓" } else { "🌐" })
+            .on_hover_text("Перевести сообщение (авто: кириллица→en, иначе→ru)")
+            .clicked()
+        {
             app.translate_message(chat_id, m);
         }
-        if ui.small_button("🔗").on_hover_text("Скопировать ссылку на сообщение").clicked() {
+        if ui
+            .small_button("🔗")
+            .on_hover_text("Скопировать ссылку на сообщение")
+            .clicked()
+        {
             let link = message_link(app, chat_id, m.id);
             ui.ctx().copy_text(link.clone());
             app.log(format!("ссылка скопирована: {link}"));
@@ -1050,14 +1129,22 @@ fn poll_card(
                 );
             }
             if !poll.closed {
-                if ui.small_button("■ Остановить").on_hover_text("Закрыть голосование").clicked() {
+                if ui
+                    .small_button("■ Остановить")
+                    .on_hover_text("Закрыть голосование")
+                    .clicked()
+                {
                     app.stop_poll(chat_id, message_id);
                 }
                 let vlabel = match app.poll_voters.get(&message_id) {
                     Some((total, _)) => format!("👥 {total}"),
                     None => "👥".to_string(),
                 };
-                if ui.small_button(vlabel).on_hover_text("Кто голосовал").clicked() {
+                if ui
+                    .small_button(vlabel)
+                    .on_hover_text("Кто голосовал")
+                    .clicked()
+                {
                     app.load_poll_voters(chat_id, message_id, None);
                 }
                 for a in &poll.answers {
@@ -1110,11 +1197,50 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
                     .small()
                     .strong(),
             );
-            if ui.small_button("✕").on_hover_text("Отменить правку").clicked() {
+            if ui
+                .small_button("✕")
+                .on_hover_text("Отменить правку")
+                .clicked()
+            {
                 app.editing = None;
                 app.composer_current.clear();
             }
         });
+    }
+    // Очередь вложений: файлы уйдут вместе с текстом (подпись) по Ctrl+Enter.
+    if let Some(chat_id) = app.selected_chat {
+        if let Some(queued) = app.pending_attach.get(&chat_id).cloned() {
+            if !queued.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("📎 {}:", queued.len()))
+                            .small()
+                            .weak(),
+                    );
+                    for (i, path) in queued.iter().enumerate() {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "?".into());
+                        let size_txt = std::fs::metadata(path)
+                            .map(|m| crate::utils::human_size(m.len()))
+                            .unwrap_or_default();
+                        ui.label(
+                            egui::RichText::new(format!("{name} {size_txt}"))
+                                .small()
+                                .monospace(),
+                        );
+                        if ui
+                            .small_button("✕")
+                            .on_hover_text("Убрать из очереди")
+                            .clicked()
+                        {
+                            app.drop_pending_attach(chat_id, i);
+                        }
+                    }
+                });
+            }
+        }
     }
     ui.horizontal(|ui| {
         let resp = ui.add(
@@ -1127,7 +1253,7 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl) && resp.has_focus();
         if ui
             .button("📎")
-            .on_hover_text("Прикрепить файлы (один — как обычно, несколько — альбомом)")
+            .on_hover_text("Прикрепить файлы в очередь (отправятся с сообщением)")
             .clicked()
         {
             if let Some(chat_id) = app.selected_chat {
@@ -1170,8 +1296,13 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         {
             app.geo_open = true;
         }
-        ui.checkbox(&mut app.silent_send, "🔕").on_hover_text("Тихая отправка (без звука у получателя)");
-        let send_label = if app.editing.is_some() { "💾 Сохранить" } else { "➤ Отправить" };
+        ui.checkbox(&mut app.silent_send, "🔕")
+            .on_hover_text("Тихая отправка (без звука у получателя)");
+        let send_label = if app.editing.is_some() {
+            "💾 Сохранить"
+        } else {
+            "➤ Отправить"
+        };
         if ui.button(send_label).clicked() || hotkey {
             // В топике — отправка в топик, иначе обычная.
             if app.topic_sel.is_some() {
@@ -1197,8 +1328,7 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
                 );
                 ui.horizontal(|ui| {
                     if ui.button("Отправить позже").clicked() {
-                        let hours: f64 =
-                            app.sched_hours.replace(',', ".").parse().unwrap_or(0.0);
+                        let hours: f64 = app.sched_hours.replace(',', ".").parse().unwrap_or(0.0);
                         if hours > 0.0 {
                             app.send_scheduled(hours);
                         } else {
@@ -1213,58 +1343,62 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
     }
     // Конструктор опроса/викторины.
     if app.poll_open {
-        egui::Window::new("📊 Новый опрос").collapsible(false).show(ui.ctx(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Вопрос:");
-                ui.text_edit_singleline(&mut app.poll_question);
-            });
-            ui.label("Варианты (по одному на строку, 2–10):");
-            ui.add(
-                egui::TextEdit::multiline(&mut app.poll_options)
-                    .hint_text("Вариант 1\nВариант 2\n…")
-                    .desired_rows(3),
-            );
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut app.poll_quiz, "Викторина");
-                ui.checkbox(&mut app.poll_anonymous, "Анонимный");
-                ui.checkbox(&mut app.poll_multiple, "Несколько ответов");
-            });
-            if app.poll_quiz {
+        egui::Window::new("📊 Новый опрос")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Правильный № (с 0):");
-                    ui.text_edit_singleline(&mut app.poll_correct);
+                    ui.label("Вопрос:");
+                    ui.text_edit_singleline(&mut app.poll_question);
                 });
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Опубликовать").clicked() {
-                    app.do_create_poll(chat_id);
+                ui.label("Варианты (по одному на строку, 2–10):");
+                ui.add(
+                    egui::TextEdit::multiline(&mut app.poll_options)
+                        .hint_text("Вариант 1\nВариант 2\n…")
+                        .desired_rows(3),
+                );
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut app.poll_quiz, "Викторина");
+                    ui.checkbox(&mut app.poll_anonymous, "Анонимный");
+                    ui.checkbox(&mut app.poll_multiple, "Несколько ответов");
+                });
+                if app.poll_quiz {
+                    ui.horizontal(|ui| {
+                        ui.label("Правильный № (с 0):");
+                        ui.text_edit_singleline(&mut app.poll_correct);
+                    });
                 }
-                if ui.button("Отмена").clicked() {
-                    app.poll_open = false;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Опубликовать").clicked() {
+                        app.do_create_poll(chat_id);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.poll_open = false;
+                    }
+                });
             });
-        });
     }
     // Отправка геопозиции.
     if app.geo_open {
-        egui::Window::new("📍 Геопозиция").collapsible(false).show(ui.ctx(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Широта:");
-                ui.text_edit_singleline(&mut app.geo_lat);
+        egui::Window::new("📍 Геопозиция")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Широта:");
+                    ui.text_edit_singleline(&mut app.geo_lat);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Долгота:");
+                    ui.text_edit_singleline(&mut app.geo_long);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Отправить точку").clicked() {
+                        app.do_send_geo(chat_id);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.geo_open = false;
+                    }
+                });
             });
-            ui.horizontal(|ui| {
-                ui.label("Долгота:");
-                ui.text_edit_singleline(&mut app.geo_long);
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Отправить точку").clicked() {
-                    app.do_send_geo(chat_id);
-                }
-                if ui.button("Отмена").clicked() {
-                    app.geo_open = false;
-                }
-            });
-        });
     }
     ui.label(
         egui::RichText::new("Ctrl+Enter — отправить · черновик сохраняется при переключении чата · поддерживается **жирный** *курсив* `код`")
@@ -1275,7 +1409,12 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
 
 fn ensure_rule_for_chat(app: &mut TelecomfortApp, title: &str, chat_id: i64) {
     let chat_id_s = chat_id.to_string();
-    let exists = app.cfg.downloader.rules.iter().any(|r| r.chat == title || r.chat == chat_id_s);
+    let exists = app
+        .cfg
+        .downloader
+        .rules
+        .iter()
+        .any(|r| r.chat == title || r.chat == chat_id_s);
     if exists {
         app.log(format!("правило для «{title}» уже есть (см. Настройки)"));
         return;
@@ -1291,5 +1430,67 @@ fn ensure_rule_for_chat(app: &mut TelecomfortApp, title: &str, chat_id: i64) {
         app.log(format!("не удалось сохранить правило: {e:#}"));
     } else {
         app.log(format!("добавлено правило для «{title}» (Any, 1500 МБ)"));
+    }
+}
+
+/// Мини-график временного ряда: сетка + ломаная + подписи мин/макс и крайних дат.
+fn draw_series(ui: &mut egui::Ui, labels: &[String], values: &[f64]) {
+    if values.len() < 2 {
+        ui.label("мало точек для графика");
+        return;
+    }
+    let w = ui.available_width().max(200.0);
+    let h = 140.0;
+    let (resp, painter) = ui.allocate_painter(egui::Vec2::new(w, h), egui::Sense::hover());
+    let rect = resp.rect;
+    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let span = (max - min).max(1e-9);
+    let pad = egui::Vec2::new(8.0, 10.0);
+    let plot = egui::Rect::from_min_max(rect.min + pad, rect.max - pad);
+    // Горизонтальная сетка (3 линии).
+    for i in 0..=2 {
+        let y = plot.min.y + plot.height() * (i as f32) / 2.0;
+        painter.line_segment(
+            [
+                egui::Pos2::new(plot.min.x, y),
+                egui::Pos2::new(plot.max.x, y),
+            ],
+            egui::Stroke::new(1.0, ui.visuals().faint_bg_color),
+        );
+    }
+    let n = values.len();
+    let pts: Vec<egui::Pos2> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let x = plot.min.x + plot.width() * (i as f32) / ((n - 1) as f32);
+            let y = plot.max.y - plot.height() * ((v - min) as f32) / (span as f32);
+            egui::Pos2::new(x, y)
+        })
+        .collect();
+    let last_pt = pts.last().copied();
+    painter.add(egui::Shape::line(
+        pts,
+        egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+    ));
+    // Последняя точка.
+    if let Some(last) = last_pt {
+        painter.circle_filled(last, 3.0, ui.visuals().selection.bg_fill);
+    }
+    drop(painter);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("{:.0}", min)).small().weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            ui.label(egui::RichText::new(format!("{:.0}", max)).small().weak());
+        });
+    });
+    if let (Some(first), Some(last)) = (labels.first(), labels.last()) {
+        ui.label(
+            egui::RichText::new(format!("{first} → {last}"))
+                .small()
+                .weak(),
+        );
     }
 }

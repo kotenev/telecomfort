@@ -7,35 +7,75 @@ use crate::ai::{score_story_full, AdScore, HeuristicAdDetector};
 use crate::config::{AppConfig, TelegramSettings};
 use crate::db::Db;
 use crate::media::AutoDownloader;
-use crate::telegram::{AccountInfo, ChatInfo, MessageInfo, MockTelegram, StoryInfo, TelegramService};
+use crate::telegram::{
+    AccountInfo, ChatInfo, MessageInfo, MockTelegram, StoryInfo, TelegramService,
+};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, mpsc};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub enum BgEvent {
     Dialogs(Vec<ChatInfo>),
-    History { chat_id: i64, items: Vec<MessageInfo> },
+    History {
+        chat_id: i64,
+        items: Vec<MessageInfo>,
+    },
     Stories(Vec<StoryInfo>),
-    StoryPreview { peer_id: i64, story_id: i32, path: PathBuf },
+    StoryPreview {
+        peer_id: i64,
+        story_id: i32,
+        path: PathBuf,
+    },
     /// Готовый постер первого кадра видеосторис.
-    StoryPoster { peer_id: i64, story_id: i32, poster: PathBuf },
+    StoryPoster {
+        peer_id: i64,
+        story_id: i32,
+        poster: PathBuf,
+    },
     /// Прогресс заливки на Яндекс Диск (стриминг чанками).
-    UploadProgress { local_path: String, done: u64, total: u64 },
+    UploadProgress {
+        local_path: String,
+        done: u64,
+        total: u64,
+    },
     /// Прогресс скачивания из MTProto (параллельные чанки + resume).
-    MediaProgress { label: String, done: u64, total: u64 },
+    MediaProgress {
+        label: String,
+        done: u64,
+        total: u64,
+    },
     /// Своё отправленное сообщение (серверный id) — добавить в историю.
-    SentMessage { chat_id: i64, item: crate::telegram::MessageInfo },
+    SentMessage {
+        chat_id: i64,
+        item: crate::telegram::MessageInfo,
+    },
     /// Своя правка применена — обновить текст локально.
-    EditedMessage { chat_id: i64, message_id: i32, text: String },
+    EditedMessage {
+        chat_id: i64,
+        message_id: i32,
+        text: String,
+    },
     /// Удаление применено — выкинуть локально.
-    DeletedMessages { chat_id: i64, message_ids: Vec<i32> },
+    DeletedMessages {
+        chat_id: i64,
+        message_ids: Vec<i32>,
+    },
     /// Перезагрузить историю чата (после реакций/чужих действий).
-    ReloadHistory { chat_id: i64 },
+    ReloadHistory {
+        chat_id: i64,
+    },
     /// Аватар скачался — запомнить файл, сбросить текстуру-идентикон.
-    AvatarReady { chat_id: i64, path: PathBuf },
+    AvatarReady {
+        chat_id: i64,
+        path: PathBuf,
+    },
     /// Закреплённое сообщение чата (None — нет закрепа).
-    PinnedLoaded { chat_id: i64, item: Option<crate::telegram::MessageInfo> },
+    PinnedLoaded {
+        chat_id: i64,
+        item: Option<crate::telegram::MessageInfo>,
+    },
     /// Папки диалогов сервера.
     FoldersLoaded(Vec<crate::telegram::DialogFilterInfo>),
     /// Контакты телефонной книги.
@@ -43,107 +83,223 @@ pub enum BgEvent {
     /// Перезагрузить список диалогов (после мьют/архив).
     ReloadDialogs,
     /// Аудио скачалось в кэш — начать воспроизведение.
-    AudioReady { chat_id: i64, message_id: i32, path: PathBuf },
+    AudioReady {
+        chat_id: i64,
+        message_id: i32,
+        path: PathBuf,
+    },
     /// Пересылка выполнена.
-    Forwarded { from_chat: i64, to_chat: i64, count: usize },
+    Forwarded {
+        from_chat: i64,
+        to_chat: i64,
+        count: usize,
+    },
     /// Стикер скачался в кэш — показать превью в пузыре.
-    StickerReady { message_id: i32, path: PathBuf },
+    StickerReady {
+        message_id: i32,
+        path: PathBuf,
+    },
     /// Активные сессии загружены.
     SessionsLoaded(Vec<crate::telegram::SessionInfo>),
     /// Профиль загружен.
     ProfileLoaded(crate::telegram::ProfileInfo),
     /// Сторис опубликована.
-    StoryPublished { story_id: i32 },
+    StoryPublished {
+        story_id: i32,
+    },
     /// Топики форума чата.
-    TopicsLoaded { chat_id: i64, topics: Vec<crate::telegram::TopicInfo> },
+    TopicsLoaded {
+        chat_id: i64,
+        topics: Vec<crate::telegram::TopicInfo>,
+    },
     /// История топика (заменяет общую историю в UI).
-    TopicHistoryLoaded { chat_id: i64, topic_id: i32, items: Vec<crate::telegram::MessageInfo> },
+    TopicHistoryLoaded {
+        chat_id: i64,
+        topic_id: i32,
+        items: Vec<crate::telegram::MessageInfo>,
+    },
     /// Создан новый топик.
-    TopicCreated { chat_id: i64, topic_id: i32 },
+    TopicCreated {
+        chat_id: i64,
+        topic_id: i32,
+    },
     /// Результаты глобального поиска.
     GlobalSearchResults(Vec<(i64, crate::telegram::MessageInfo)>),
     /// Запланированные сообщения чата.
-    ScheduledLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    ScheduledLoaded {
+        chat_id: i64,
+        items: Vec<crate::telegram::MessageInfo>,
+    },
     /// Инвайт-ссылка готова.
     InviteLinkReady(String),
     /// Видео-превью скачалось в кэш.
-    VideoThumbReady { message_id: i32, path: PathBuf },
+    VideoThumbReady {
+        message_id: i32,
+        path: PathBuf,
+    },
     /// Фото веб-превью скачалось в кэш.
-    WebThumbReady { photo_id: i64, path: PathBuf },
+    WebThumbReady {
+        photo_id: i64,
+        path: PathBuf,
+    },
     /// Канал/группа созданы.
-    ChannelCreated { chat_id: i64 },
+    ChannelCreated {
+        chat_id: i64,
+    },
     /// Сторис удалены — перезагрузить ленту.
     StoriesDeleted,
     /// Опрос создан.
-    PollCreated { chat_id: i64, message_id: i32 },
+    PollCreated {
+        chat_id: i64,
+        message_id: i32,
+    },
     /// Геопозиция отправлена.
-    GeoSent { chat_id: i64, message_id: i32 },
+    GeoSent {
+        chat_id: i64,
+        message_id: i32,
+    },
     /// Ответ на сторис отправлен.
-    StoryReplySent { story_id: i32, message_id: i32 },
+    StoryReplySent {
+        story_id: i32,
+        message_id: i32,
+    },
     /// Просмотры сторис загружены.
-    StoryViewsLoaded { story_id: i32, views: i32 },
+    StoryViewsLoaded {
+        story_id: i32,
+        views: i32,
+    },
     /// Стелс-режим включён.
     StealthEnabled,
     /// Зрители сторис загружены.
-    StoryViewersLoaded { story_id: i32, count: i32, viewers: Vec<String> },
+    StoryViewersLoaded {
+        story_id: i32,
+        count: i32,
+        viewers: Vec<String>,
+    },
     /// Медиа-таб истории загружен.
-    MediaTabLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    MediaTabLoaded {
+        chat_id: i64,
+        items: Vec<crate::telegram::MessageInfo>,
+    },
     /// Чёрный список загружен.
     BlockedLoaded(Vec<crate::telegram::BlockedInfo>),
     /// Результат проверки username.
     UsernameChecked(bool),
     /// Закреп диалога переключён.
-    DialogPinToggled { chat_id: i64, pinned: bool },
+    DialogPinToggled {
+        chat_id: i64,
+        pinned: bool,
+    },
     /// Перевод сообщения готов.
-    TranslatedMessage { chat_id: i64, message_id: i32, text: String },
+    TranslatedMessage {
+        chat_id: i64,
+        message_id: i32,
+        text: String,
+    },
     /// Репост сторис выполнен.
-    StoryForwarded { story_id: i32 },
+    StoryForwarded {
+        story_id: i32,
+    },
     /// Права администратора применены.
-    AdminSaved { chat_id: i64 },
+    AdminSaved {
+        chat_id: i64,
+    },
     /// Эмодзи-статусы загружены.
     EmojiStatusesLoaded(Vec<i64>),
     /// Свой эмодзи-статус изменён.
     OwnEmojiStatus(Option<i64>),
     /// Альбом файлов отправлен.
-    AlbumSent { chat_id: i64, count: usize },
+    AlbumSent {
+        chat_id: i64,
+        count: usize,
+    },
     /// Архив сторис загружен.
     ArchiveLoaded(Vec<crate::telegram::StoryInfo>),
     /// Подборки загружены.
     AlbumsLoaded(Vec<crate::telegram::StoryAlbumInfo>),
     /// Содержимое подборки загружено.
-    AlbumStoriesLoaded { album_id: i32, items: Vec<crate::telegram::StoryInfo> },
+    AlbumStoriesLoaded {
+        album_id: i32,
+        items: Vec<crate::telegram::StoryInfo>,
+    },
     /// Аналитика канала загружена.
-    ChannelStatsLoaded { chat_id: i64, stats: crate::telegram::ChannelStats },
+    ChannelStatsLoaded {
+        chat_id: i64,
+        stats: crate::telegram::ChannelStats,
+    },
     /// Архивное превью готово.
-    ArchiveThumbReady { story_id: i32, path: PathBuf },
+    ArchiveThumbReady {
+        story_id: i32,
+        path: PathBuf,
+    },
     /// Подборка создана/удалена.
     AlbumChanged,
     /// Голоса загружены.
-    PollVotersLoaded { message_id: i32, count: i32, voters: Vec<String> },
+    PollVotersLoaded {
+        message_id: i32,
+        count: i32,
+        voters: Vec<String>,
+    },
     /// Папки перезагрузить.
     FoldersChanged,
     /// Контакт расшарен.
-    ShareContactSent { chat_id: i64, message_id: i32 },
+    ShareContactSent {
+        chat_id: i64,
+        message_id: i32,
+    },
     /// Опрос остановлен.
-    PollStopped { chat_id: i64 },
+    PollStopped {
+        chat_id: i64,
+    },
     /// Все закрепы загружены.
-    PinnedListLoaded { chat_id: i64, items: Vec<crate::telegram::MessageInfo> },
+    PinnedListLoaded {
+        chat_id: i64,
+        items: Vec<crate::telegram::MessageInfo>,
+    },
     /// Инвайт отозван.
     InviteRevoked,
     /// Участники загружены.
-    ParticipantsLoaded { chat_id: i64, items: Vec<crate::telegram::ParticipantInfo> },
+    ParticipantsLoaded {
+        chat_id: i64,
+        items: Vec<crate::telegram::ParticipantInfo>,
+    },
     /// Подпись сторис обновлена.
-    StoryCaptionSaved { story_id: i32 },
+    StoryCaptionSaved {
+        story_id: i32,
+    },
     /// Перезагрузить ленту сторис.
     ReloadStories,
+    /// QR-токен получен — показать код.
+    QrToken {
+        token: Vec<u8>,
+        expires: i64,
+    },
+    /// QR подтверждён на телефоне — войти.
+    QrAccepted,
+    /// QR протух или отменён.
+    QrExpired(String),
+    /// Баланс звёзд загружен.
+    StarsLoaded((i64, i32)),
+    /// Временной ряд графика готов.
+    GraphLoaded {
+        chat_id: i64,
+        kind: String,
+        labels: Vec<String>,
+        values: Vec<f64>,
+    },
     Me(AccountInfo),
     Log(String),
     Error(String),
-    Connected { backend_desc: String },
+    Connected {
+        backend_desc: String,
+    },
     CodeSent,
     SignedIn,
     SyncTick,
-    SyncDone { stories: usize, downloads: usize },
+    SyncDone {
+        stories: usize,
+        downloads: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +337,7 @@ pub struct AudioPlayback {
 pub struct StoryPublish {
     pub path: PathBuf,
     pub caption: String,
+    pub music: Option<PathBuf>,
 }
 
 /// Редактор прав администратора (открывается из списка участников).
@@ -276,6 +433,21 @@ pub struct TelecomfortApp {
     pub attach_scheduled: bool,
     /// Редактор прав администратора.
     pub admin_edit: Option<AdminEditState>,
+    /// QR-вход: ожидающий токен (байты, unix-истечение).
+    pub qr_token: Option<(Vec<u8>, i64)>,
+    /// QR-текстура для показа.
+    pub qr_tex: Option<egui::TextureHandle>,
+    /// Идёт ли опрос QR-статуса.
+    pub qr_polling: bool,
+    pub qr_cancel: Option<Arc<AtomicBool>>,
+    /// Баланс звёзд (целые, нано-дробь).
+    pub stars: Option<(i64, i32)>,
+    /// Кэш графиков: (chat_id, kind) -> (подписи, значения).
+    pub graphs: std::collections::HashMap<(i64, String), (Vec<String>, Vec<f64>)>,
+    /// Выбранный вид графика в окне статистики.
+    pub graph_kind: String,
+    /// Черновики вложений: chat_id -> пути файлов (ещё не отправлены).
+    pub pending_attach: std::collections::HashMap<i64, Vec<std::path::PathBuf>>,
     /// Эмодзи новой папки (опционально).
     pub folder_create_emoji: String,
     /// Текущий текст ввода (синкается с composer при select_chat).
@@ -414,6 +586,7 @@ pub struct TelecomfortApp {
     /// Аналитика канала (chat_id → stats) + открытое окно.
     pub channel_stats: HashMap<i64, crate::telegram::ChannelStats>,
     pub channel_stats_open: Option<i64>,
+    pub stats_tab: String,
     /// Архивные превью (story_id → текстура).
     pub archive_thumbs: HashMap<i32, egui::TextureHandle>,
     pub archive_thumb_files: HashMap<i32, PathBuf>,
@@ -518,7 +691,15 @@ impl TelecomfortApp {
             emoji_statuses: Vec::new(),
             attach_scheduled: false,
             admin_edit: None,
-        folder_create_emoji: String::new(),
+            qr_token: None,
+            qr_tex: None,
+            qr_polling: false,
+            qr_cancel: None,
+            stars: None,
+            graphs: std::collections::HashMap::new(),
+            graph_kind: "followers".into(),
+            pending_attach: std::collections::HashMap::new(),
+            folder_create_emoji: String::new(),
             chat_search: String::new(),
             reply_to: None,
             editing: None,
@@ -603,6 +784,7 @@ impl TelecomfortApp {
             album_stories: HashMap::new(),
             channel_stats: HashMap::new(),
             channel_stats_open: None,
+            stats_tab: "summary".into(),
             archive_thumbs: HashMap::new(),
             archive_thumb_files: HashMap::new(),
             archive_thumb_requested: HashSet::new(),
@@ -695,7 +877,12 @@ impl TelecomfortApp {
             self.log("переключено на live-бэкенд grammers");
         }
         // Окончание воспроизведения — чистим состояние плеера.
-        if self.playback.as_ref().map(|p| p.player.empty()).unwrap_or(false) {
+        if self
+            .playback
+            .as_ref()
+            .map(|p| p.player.empty())
+            .unwrap_or(false)
+        {
             self.playback = None;
         }
         let events: Vec<BgEvent> = {
@@ -729,7 +916,11 @@ impl TelecomfortApp {
                     self.log(format!("отправлено (msg {})", item.id));
                     self.history.entry(chat_id).or_default().push(item);
                 }
-                BgEvent::EditedMessage { chat_id, message_id, text } => {
+                BgEvent::EditedMessage {
+                    chat_id,
+                    message_id,
+                    text,
+                } => {
                     if let Some(items) = self.history.get_mut(&chat_id) {
                         if let Some(m) = items.iter_mut().find(|m| m.id == message_id) {
                             m.text = text;
@@ -738,7 +929,10 @@ impl TelecomfortApp {
                     }
                     self.log(format!("правка применена (msg {message_id})"));
                 }
-                BgEvent::DeletedMessages { chat_id, message_ids } => {
+                BgEvent::DeletedMessages {
+                    chat_id,
+                    message_ids,
+                } => {
                     if let Some(items) = self.history.get_mut(&chat_id) {
                         items.retain(|m| !message_ids.contains(&m.id));
                     }
@@ -752,16 +946,14 @@ impl TelecomfortApp {
                     // Сбрасываем идентикон — следующий кадр подхватит фото.
                     self.avatars.remove(&chat_id);
                 }
-                BgEvent::PinnedLoaded { chat_id, item } => {
-                    match item {
-                        Some(m) => {
-                            self.pinned.insert(chat_id, m);
-                        }
-                        None => {
-                            self.pinned.remove(&chat_id);
-                        }
+                BgEvent::PinnedLoaded { chat_id, item } => match item {
+                    Some(m) => {
+                        self.pinned.insert(chat_id, m);
                     }
-                }
+                    None => {
+                        self.pinned.remove(&chat_id);
+                    }
+                },
                 BgEvent::FoldersLoaded(folders) => {
                     self.folders = folders;
                     self.log(format!("папок диалогов: {}", self.folders.len()));
@@ -774,12 +966,22 @@ impl TelecomfortApp {
                 BgEvent::ReloadDialogs => {
                     self.refresh_dialogs();
                 }
-                BgEvent::AudioReady { chat_id, message_id, path } => {
+                BgEvent::AudioReady {
+                    chat_id,
+                    message_id,
+                    path,
+                } => {
                     self.start_playback(chat_id, message_id, path);
                 }
-                BgEvent::Forwarded { from_chat, to_chat, count } => {
+                BgEvent::Forwarded {
+                    from_chat,
+                    to_chat,
+                    count,
+                } => {
                     self.forward_pick = None;
-                    self.log(format!("переслано сообщений: {count} (чат {from_chat} → {to_chat}"));
+                    self.log(format!(
+                        "переслано сообщений: {count} (чат {from_chat} → {to_chat}"
+                    ));
                 }
                 BgEvent::StickerReady { message_id, path } => {
                     self.sticker_files.insert(message_id, path);
@@ -808,7 +1010,11 @@ impl TelecomfortApp {
                         self.topics = topics;
                     }
                 }
-                BgEvent::TopicHistoryLoaded { chat_id, topic_id, items } => {
+                BgEvent::TopicHistoryLoaded {
+                    chat_id,
+                    topic_id,
+                    items,
+                } => {
                     if self.selected_chat == Some(chat_id) {
                         self.topic_sel = Some(topic_id);
                         self.history.insert(chat_id, items);
@@ -851,7 +1057,10 @@ impl TelecomfortApp {
                 BgEvent::StoriesDeleted => {
                     self.refresh_stories();
                 }
-                BgEvent::PollCreated { chat_id, message_id } => {
+                BgEvent::PollCreated {
+                    chat_id,
+                    message_id,
+                } => {
                     self.poll_open = false;
                     self.poll_question.clear();
                     self.poll_options.clear();
@@ -859,16 +1068,24 @@ impl TelecomfortApp {
                     self.log(format!("опрос создан (msg {message_id})"));
                     self.load_history(chat_id);
                 }
-                BgEvent::GeoSent { chat_id, message_id } => {
+                BgEvent::GeoSent {
+                    chat_id,
+                    message_id,
+                } => {
                     self.geo_open = false;
                     self.log(format!("геопозиция отправлена (msg {message_id})"));
                     self.load_history(chat_id);
                 }
-                BgEvent::StoryReplySent { story_id, message_id } => {
+                BgEvent::StoryReplySent {
+                    story_id,
+                    message_id,
+                } => {
                     self.story_reply_open = false;
                     self.story_reply_text.clear();
                     self.story_reply_target = None;
-                    self.log(format!("ответ на сторис {story_id} отправлен (msg {message_id})"));
+                    self.log(format!(
+                        "ответ на сторис {story_id} отправлен (msg {message_id})"
+                    ));
                 }
                 BgEvent::StoryViewsLoaded { story_id, views } => {
                     self.story_views.insert(story_id, views);
@@ -876,7 +1093,11 @@ impl TelecomfortApp {
                 BgEvent::StealthEnabled => {
                     self.log("🥷 стелс-режим сторис включён".to_string());
                 }
-                BgEvent::StoryViewersLoaded { story_id, count, viewers } => {
+                BgEvent::StoryViewersLoaded {
+                    story_id,
+                    count,
+                    viewers,
+                } => {
                     self.story_views.insert(story_id, count);
                     self.story_viewers.insert(story_id, (count, viewers));
                     self.story_viewers_open = Some(story_id);
@@ -890,7 +1111,11 @@ impl TelecomfortApp {
                     self.blocked = blocked;
                     self.blocked_loaded = true;
                 }
-                BgEvent::TranslatedMessage { chat_id, message_id, text } => {
+                BgEvent::TranslatedMessage {
+                    chat_id,
+                    message_id,
+                    text,
+                } => {
                     self.translations.insert((chat_id, message_id), text);
                 }
                 BgEvent::StoryForwarded { story_id } => {
@@ -920,7 +1145,11 @@ impl TelecomfortApp {
                 }
                 BgEvent::UsernameChecked(free) => {
                     self.username_check = Some(free);
-                    self.log(if free { "username свободен".to_string() } else { "username занят".to_string() });
+                    self.log(if free {
+                        "username свободен".to_string()
+                    } else {
+                        "username занят".to_string()
+                    });
                 }
                 BgEvent::AlbumSent { chat_id, count } => {
                     self.log(format!("альбом отправлен ({count} файлов)"));
@@ -952,7 +1181,11 @@ impl TelecomfortApp {
                     self.album_pick.clear();
                     self.load_albums();
                 }
-                BgEvent::PollVotersLoaded { message_id, count, voters } => {
+                BgEvent::PollVotersLoaded {
+                    message_id,
+                    count,
+                    voters,
+                } => {
                     self.poll_voters.insert(message_id, (count, voters));
                     self.poll_voters_open = Some(message_id);
                 }
@@ -964,7 +1197,10 @@ impl TelecomfortApp {
                     self.load_folders();
                     self.refresh_dialogs();
                 }
-                BgEvent::ShareContactSent { chat_id, message_id } => {
+                BgEvent::ShareContactSent {
+                    chat_id,
+                    message_id,
+                } => {
                     self.contact_share_pick = None;
                     self.log(format!("контакт отправлен (msg {message_id})"));
                     self.load_history(chat_id);
@@ -996,7 +1232,9 @@ impl TelecomfortApp {
                 }
                 BgEvent::Stories(stories) => {
                     self.preview_requested.retain(|(pid, sid)| {
-                        !stories.iter().any(|s| s.peer_id == *pid && s.story_id == *sid)
+                        !stories
+                            .iter()
+                            .any(|s| s.peer_id == *pid && s.story_id == *sid)
                     });
                     // Фаза 1: превью + базовый скоринг (текст + визуал + CLIP-лайт).
                     struct Pending {
@@ -1029,7 +1267,12 @@ impl TelecomfortApp {
                             img.as_ref(),
                             self.clip_enabled,
                         );
-                        pending.push(Pending { info, local, img, score });
+                        pending.push(Pending {
+                            info,
+                            local,
+                            img,
+                            score,
+                        });
                     }
                     // Фаза 2: streaming ONNX — одна сессия на все кадры пачки
                     // + persistent-кэш SQLite (повторы не пересчитываются).
@@ -1093,7 +1336,11 @@ impl TelecomfortApp {
                         }
                     }
                 }
-                BgEvent::StoryPreview { peer_id, story_id, path } => {
+                BgEvent::StoryPreview {
+                    peer_id,
+                    story_id,
+                    path,
+                } => {
                     // Если это видео — сразу запускаем извлечение постера.
                     let is_video = crate::media::video::is_video_path(&path);
                     if is_video {
@@ -1158,20 +1405,23 @@ impl TelecomfortApp {
                         }
                     }
                 }
-                BgEvent::StoryPoster { peer_id, story_id, poster } => {
+                BgEvent::StoryPoster {
+                    peer_id,
+                    story_id,
+                    poster,
+                } => {
                     // Считаем скор без удержания &mut на stories (иначе E0499 с self.log).
                     let img_opt = image::open(&poster).ok();
                     if let Some(img) = img_opt {
                         let new_score = {
                             // Временный immutable borrow для caption/has_url.
-                            let card_ref = match self
-                                .stories
-                                .iter()
-                                .find(|c| c.info.peer_id == peer_id && c.info.story_id == story_id)
-                            {
-                                Some(c) => (c.info.caption.clone(), c.info.has_url),
-                                None => (String::new(), false),
-                            };
+                            let card_ref =
+                                match self.stories.iter().find(|c| {
+                                    c.info.peer_id == peer_id && c.info.story_id == story_id
+                                }) {
+                                    Some(c) => (c.info.caption.clone(), c.info.has_url),
+                                    None => (String::new(), false),
+                                };
                             score_story_full(
                                 &self.detector,
                                 &card_ref.0,
@@ -1215,7 +1465,11 @@ impl TelecomfortApp {
                         card.visual_done = true;
                     }
                 }
-                BgEvent::UploadProgress { local_path, done, total } => {
+                BgEvent::UploadProgress {
+                    local_path,
+                    done,
+                    total,
+                } => {
                     self.uploads.insert(local_path, (done, total));
                 }
                 BgEvent::MediaProgress { label, done, total } => {
@@ -1228,7 +1482,7 @@ impl TelecomfortApp {
                         info.name.clone()
                     };
                     self.me_id = Some(info.id);
-                                  self.me_phone = info.phone;
+                    self.me_phone = info.phone;
                 }
                 BgEvent::Log(s) => self.log(s),
                 BgEvent::Error(s) => {
@@ -1250,10 +1504,44 @@ impl TelecomfortApp {
                 BgEvent::SignedIn => {
                     self.login_stage = "done".into();
                     self.status = "вход выполнен".into();
+                    self.qr_token = None;
+                    self.qr_tex = None;
+                    self.qr_polling = false;
+                    self.qr_cancel = None;
                     self.preview_requested.clear();
                     self.refresh_dialogs();
                     self.refresh_stories();
                     self.refresh_me();
+                    self.load_stars();
+                }
+                BgEvent::QrToken { token, expires } => {
+                    self.qr_token = Some((token, expires));
+                    self.qr_tex = None;
+                    self.qr_polling = true;
+                    self.status = "отсканируйте QR в Telegram на телефоне".into();
+                }
+                BgEvent::QrAccepted => {
+                    self.qr_token = None;
+                    self.qr_tex = None;
+                    self.qr_polling = false;
+                    self.status = "QR принят — входим…".into();
+                }
+                BgEvent::QrExpired(msg) => {
+                    self.qr_token = None;
+                    self.qr_tex = None;
+                    self.qr_polling = false;
+                    self.status = msg;
+                }
+                BgEvent::StarsLoaded(balance) => {
+                    self.stars = Some(balance);
+                }
+                BgEvent::GraphLoaded {
+                    chat_id,
+                    kind,
+                    labels,
+                    values,
+                } => {
+                    self.graphs.insert((chat_id, kind), (labels, values));
                 }
                 BgEvent::SyncTick => {
                     self.last_sync = chrono::Local::now().format("%H:%M:%S").to_string();
@@ -1291,13 +1579,29 @@ impl TelecomfortApp {
                         if crate::media::video::is_video_path(&path) {
                             let poster = crate::media::video::poster_path_for(&path);
                             if crate::media::video::poster_fresh(&path, &poster) {
-                                let _ = tx.send(BgEvent::StoryPreview { peer_id, story_id, path: path.clone() });
-                                let _ = tx.send(BgEvent::StoryPoster { peer_id, story_id, poster });
+                                let _ = tx.send(BgEvent::StoryPreview {
+                                    peer_id,
+                                    story_id,
+                                    path: path.clone(),
+                                });
+                                let _ = tx.send(BgEvent::StoryPoster {
+                                    peer_id,
+                                    story_id,
+                                    poster,
+                                });
                             } else {
-                                let _ = tx.send(BgEvent::StoryPreview { peer_id, story_id, path: path.clone() });
+                                let _ = tx.send(BgEvent::StoryPreview {
+                                    peer_id,
+                                    story_id,
+                                    path: path.clone(),
+                                });
                                 match crate::media::video::extract_poster(&path, &poster).await {
                                     Ok(p) => {
-                                        let _ = tx.send(BgEvent::StoryPoster { peer_id, story_id, poster: p });
+                                        let _ = tx.send(BgEvent::StoryPoster {
+                                            peer_id,
+                                            story_id,
+                                            poster: p,
+                                        });
                                     }
                                     Err(e) => {
                                         tracing::debug!("poster {peer_id}:{story_id}: {e:#}");
@@ -1305,7 +1609,11 @@ impl TelecomfortApp {
                                 }
                             }
                         } else {
-                            let _ = tx.send(BgEvent::StoryPreview { peer_id, story_id, path });
+                            let _ = tx.send(BgEvent::StoryPreview {
+                                peer_id,
+                                story_id,
+                                path,
+                            });
                         }
                     }
                     Err(e) => {
@@ -1326,7 +1634,11 @@ impl TelecomfortApp {
         if crate::media::video::poster_fresh(&video, &poster) {
             let tx = self.tx.clone();
             self.rt.spawn(async move {
-                let _ = tx.send(BgEvent::StoryPoster { peer_id, story_id, poster });
+                let _ = tx.send(BgEvent::StoryPoster {
+                    peer_id,
+                    story_id,
+                    poster,
+                });
             });
             return;
         }
@@ -1334,7 +1646,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match crate::media::video::extract_poster(&video, &poster).await {
                 Ok(p) => {
-                    let _ = tx.send(BgEvent::StoryPoster { peer_id, story_id, poster: p });
+                    let _ = tx.send(BgEvent::StoryPoster {
+                        peer_id,
+                        story_id,
+                        poster: p,
+                    });
                 }
                 Err(e) => {
                     tracing::debug!("poster {peer_id}:{story_id}: {e:#}");
@@ -1385,6 +1701,154 @@ impl TelecomfortApp {
         });
     }
 
+    /// Начать QR-вход: получить токен, показать код, запустить опрос статуса.
+    pub fn start_qr_login(&mut self) {
+        let api_id: i32 = match self.api_id.trim().parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.status = "API ID должен быть числом".into();
+                return;
+            }
+        };
+        if self.api_hash.trim().is_empty() {
+            self.status = "заполните API HASH (телефон не нужен)".into();
+            return;
+        }
+        let api_hash = self.api_hash.trim().to_string();
+        let session_path = crate::config::session_path_for(&self.active_profile);
+        let tx = self.tx.clone();
+        let rt = self.rt.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.qr_cancel = Some(cancel.clone());
+        self.qr_token = None;
+        self.qr_tex = None;
+        self.status = "подключаюсь для QR…".into();
+        rt.spawn(async move {
+            let backend = match crate::telegram::backend_grammers::GrammersBackend::connect(
+                &session_path,
+                api_id,
+                &api_hash,
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("connect: {e:#}")));
+                    let _ = tx.send(BgEvent::QrExpired("не удалось подключиться".into()));
+                    return;
+                }
+            };
+            let (token, expires) = match backend.qr_login_start().await {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("QR-токен: {e:#}")));
+                    let _ = tx.send(BgEvent::QrExpired("не удалось получить QR".into()));
+                    return;
+                }
+            };
+            let _ = tx.send(BgEvent::QrToken {
+                token: token.clone(),
+                expires,
+            });
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let now = chrono::Local::now().timestamp();
+                if now >= expires - 3 {
+                    let _ = tx.send(BgEvent::QrExpired("QR-код истёк — запросите новый".into()));
+                    break;
+                }
+                match backend.qr_login_poll(&token).await {
+                    Ok(Some(_uid)) => {
+                        super::views::login::swap_backend(&tx, backend).await;
+                        let _ = tx.send(BgEvent::SignedIn);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        if msg.contains("истёк") || msg.contains("AUTH_TOKEN") {
+                            let _ = tx.send(BgEvent::QrExpired(msg));
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            }
+        });
+    }
+
+    /// Отменить QR-вход (останавливает фоновый опрос).
+    pub fn cancel_qr_login(&mut self) {
+        if let Some(c) = self.qr_cancel.take() {
+            c.store(true, Ordering::Relaxed);
+        }
+        self.qr_token = None;
+        self.qr_tex = None;
+        self.qr_polling = false;
+        self.status = "QR-вход отменён".into();
+    }
+
+    /// Построить/закэшировать текстуру QR-кода для tg://login-ссылки.
+    pub fn qr_texture(
+        &mut self,
+        ctx: &egui::Context,
+        payload: &str,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = &self.qr_tex {
+            return Some(t.clone());
+        }
+        let img: egui::ColorImage = qr_image_232(payload)?;
+        let tex = ctx.load_texture("qr-login", img, egui::TextureOptions::NEAREST);
+        self.qr_tex = Some(tex.clone());
+        Some(tex)
+    }
+
+    /// Загрузить баланс звёзд (один раз за сессию + по кнопке).
+    pub fn load_stars(&mut self) {
+        if self.stars.is_some() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.stars_balance().await {
+                Ok(b) => {
+                    let _ = tx.send(BgEvent::StarsLoaded(b));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("звёзды: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить временной ряд для графика статистики канала.
+    pub fn load_graph(&mut self, chat_id: i64, kind: &str) {
+        let kind = kind.to_string();
+        if self.graphs.contains_key(&(chat_id, kind.clone())) {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.channel_graph(chat_id, &kind).await {
+                Ok((labels, values)) => {
+                    let _ = tx.send(BgEvent::GraphLoaded {
+                        chat_id,
+                        kind,
+                        labels,
+                        values,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("график: {e:#}")));
+                }
+            }
+        });
+    }
+
     pub fn load_history(&mut self, chat_id: i64) {
         self.selected_chat = Some(chat_id);
         let tg = Arc::clone(&self.tg);
@@ -1410,7 +1874,11 @@ impl TelecomfortApp {
                 self.composer.insert(old, draft.clone());
                 // Черновик и на сервер (синк между устройствами), best-effort.
                 // Reply-контекст тоже сохраняем, если черновик не пуст.
-                let reply = self.reply_to.clone().filter(|(c, _, _)| *c == old).map(|(_, m, _)| m);
+                let reply = self
+                    .reply_to
+                    .clone()
+                    .filter(|(c, _, _)| *c == old)
+                    .map(|(_, m, _)| m);
                 let tg = Arc::clone(&self.tg);
                 self.rt.spawn(async move {
                     let _ = tg.save_draft(old, &draft, reply).await;
@@ -1441,12 +1909,18 @@ impl TelecomfortApp {
             return;
         };
         let text = self.composer_current.trim().to_string();
-        if text.is_empty() {
+        let queued: Vec<std::path::PathBuf> =
+            self.pending_attach.remove(&chat_id).unwrap_or_default();
+        if text.is_empty() && queued.is_empty() {
             return;
         }
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         if let Some((ec, em)) = self.editing {
+            // Режим правки: очередь не трогаем, возвращаем обратно.
+            if !queued.is_empty() {
+                self.pending_attach.insert(chat_id, queued);
+            }
             // Режим правки: текст уже в композере.
             self.editing = None;
             self.composer_current.clear();
@@ -1467,12 +1941,46 @@ impl TelecomfortApp {
             });
             return;
         }
-        let reply = self.reply_to.clone().filter(|(c, _, _)| *c == chat_id).map(|(_, m, _)| m);
+        let reply = self
+            .reply_to
+            .clone()
+            .filter(|(c, _, _)| *c == chat_id)
+            .map(|(_, m, _)| m);
         self.reply_to = None;
         self.composer_current.clear();
         self.composer.insert(chat_id, String::new());
         let silent = self.silent_send;
+        let schedule_at = self.attach_scheduled_at();
         self.rt.spawn(async move {
+            if queued.len() == 1 {
+                // Один файл — с подписью из композера.
+                let p = &queued[0];
+                match tg.send_file(chat_id, p, &text, silent, schedule_at).await {
+                    Ok(id) => {
+                        let _ = tx.send(BgEvent::Log(format!("файл отправлен (msg {id})")));
+                        let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BgEvent::Error(format!("файл: {e:#}")));
+                    }
+                }
+                return;
+            }
+            if queued.len() > 1 {
+                // Альбом — подпись из композера.
+                match tg.send_album(chat_id, &queued, &text, schedule_at).await {
+                    Ok(ids) => {
+                        let _ = tx.send(BgEvent::AlbumSent {
+                            chat_id,
+                            count: ids.len(),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BgEvent::Error(format!("альбом: {e:#}")));
+                    }
+                }
+                return;
+            }
             match tg.send_text(chat_id, &text, reply, silent).await {
                 Ok(sent_id) => {
                     let item = crate::telegram::MessageInfo {
@@ -1508,7 +2016,9 @@ impl TelecomfortApp {
     /// Начать ответ на сообщение (подставляет баннер над композером).
     pub fn start_reply(&mut self, chat_id: i64, msg: &crate::telegram::MessageInfo) {
         let snippet = if msg.text.is_empty() {
-            msg.file_name.clone().unwrap_or_else(|| format!("медиа #{}", msg.id))
+            msg.file_name
+                .clone()
+                .unwrap_or_else(|| format!("медиа #{}", msg.id))
         } else {
             crate::utils::truncate(&msg.text, 80)
         };
@@ -1560,7 +2070,6 @@ impl TelecomfortApp {
             }
         });
     }
-
 
     /// Аватар чата 64px: кэш → файл → запрос скачивания → идентикон.
     /// Идентикон возвращается сразу (и как fallback без фото).
@@ -1633,9 +2142,11 @@ impl TelecomfortApp {
             };
             match res {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if unpin { "откреплено".into() } else { "закреплено".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if unpin {
+                        "откреплено".into()
+                    } else {
+                        "закреплено".into()
+                    }));
                     let _ = tx.send(BgEvent::ReloadHistory { chat_id });
                     match tg.pinned_message(chat_id).await {
                         Ok(item) => {
@@ -1653,15 +2164,22 @@ impl TelecomfortApp {
 
     /// Заглушить/разглушить чат. Список обновляем через ReloadDialogs.
     pub fn toggle_mute(&mut self, chat_id: i64) {
-        let muted = self.dialogs.iter().find(|d| d.id == chat_id).map(|d| d.muted).unwrap_or(false);
+        let muted = self
+            .dialogs
+            .iter()
+            .find(|d| d.id == chat_id)
+            .map(|d| d.muted)
+            .unwrap_or(false);
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             match tg.mute(chat_id, !muted).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if !muted { "чат заглушён".into() } else { "мут снят".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if !muted {
+                        "чат заглушён".into()
+                    } else {
+                        "мут снят".into()
+                    }));
                     let _ = tx.send(BgEvent::ReloadDialogs);
                 }
                 Err(e) => {
@@ -1673,16 +2191,22 @@ impl TelecomfortApp {
 
     /// В архив/из архива. Список обновляем через ReloadDialogs.
     pub fn toggle_archive(&mut self, chat_id: i64) {
-        let archived =
-            self.dialogs.iter().find(|d| d.id == chat_id).map(|d| d.archived).unwrap_or(false);
+        let archived = self
+            .dialogs
+            .iter()
+            .find(|d| d.id == chat_id)
+            .map(|d| d.archived)
+            .unwrap_or(false);
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             match tg.archive(chat_id, !archived).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if !archived { "чат в архиве".into() } else { "чат из архива".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if !archived {
+                        "чат в архиве".into()
+                    } else {
+                        "чат из архива".into()
+                    }));
                     let _ = tx.send(BgEvent::ReloadDialogs);
                 }
                 Err(e) => {
@@ -1731,7 +2255,9 @@ impl TelecomfortApp {
     /// Начать пересылку: запомнить источник, UI покажет выбор цели.
     pub fn start_forward(&mut self, chat_id: i64, message_id: i32) {
         self.forward_pick = Some((chat_id, vec![message_id]));
-        self.log(format!("пересылка msg {message_id}: выберите целевой чат слева"));
+        self.log(format!(
+            "пересылка msg {message_id}: выберите целевой чат слева"
+        ));
     }
 
     /// Выполнить пересылку в целевой чат.
@@ -1749,7 +2275,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.forward(from_chat, &ids, to_chat).await {
                 Ok(count) => {
-                    let _ = tx.send(BgEvent::Forwarded { from_chat, to_chat, count });
+                    let _ = tx.send(BgEvent::Forwarded {
+                        from_chat,
+                        to_chat,
+                        count,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("пересылка: {e:#}")));
@@ -1786,20 +2316,26 @@ impl TelecomfortApp {
         self.playback = None;
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
-        let fname = msg.file_name.clone().unwrap_or_else(|| format!("audio_{}.ogg", msg.id));
+        let fname = msg
+            .file_name
+            .clone()
+            .unwrap_or_else(|| format!("audio_{}.ogg", msg.id));
         let ext = std::path::Path::new(&fname)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("ogg");
-        let dest = crate::telegram::audio_cache_dir()
-            .join(format!("{chat_id}_{}.{ext}", msg.id));
+        let dest = crate::telegram::audio_cache_dir().join(format!("{chat_id}_{}.{ext}", msg.id));
         let mid = msg.id;
         self.log(format!("голосовое msg {mid}: загрузка…"));
         self.rt.spawn(async move {
             std::fs::create_dir_all(dest.parent().unwrap()).ok();
-            let fresh = std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false);
+            let fresh = std::fs::metadata(&dest)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
             if !fresh {
-                if let Err(e) = tg.download_message_media(chat_id, mid, dest.parent().unwrap()).await
+                if let Err(e) = tg
+                    .download_message_media(chat_id, mid, dest.parent().unwrap())
+                    .await
                 {
                     let _ = tx.send(BgEvent::Error(format!("аудио: {e:#}")));
                     return;
@@ -1829,7 +2365,11 @@ impl TelecomfortApp {
                 }
             }
             if dest.exists() {
-                let _ = tx.send(BgEvent::AudioReady { chat_id, message_id: mid, path: dest });
+                let _ = tx.send(BgEvent::AudioReady {
+                    chat_id,
+                    message_id: mid,
+                    path: dest,
+                });
             } else {
                 let _ = tx.send(BgEvent::Error("аудио: файл не скачался".into()));
             }
@@ -1856,8 +2396,13 @@ impl TelecomfortApp {
         sink.log_on_drop(false);
         match rodio::play(sink.mixer(), f) {
             Ok(player) => {
-                self.playback =
-                    Some(AudioPlayback { chat_id, message_id, path, _sink: sink, player });
+                self.playback = Some(AudioPlayback {
+                    chat_id,
+                    message_id,
+                    path,
+                    _sink: sink,
+                    player,
+                });
                 self.log(format!("▶ воспроизведение msg {message_id}"));
             }
             Err(e) => {
@@ -1875,9 +2420,13 @@ impl TelecomfortApp {
         if text.is_empty() || !(hours > 0.0) {
             return;
         }
-        let at = std::time::SystemTime::now()
-            + std::time::Duration::from_secs((hours * 3600.0) as u64);
-        let reply = self.reply_to.clone().filter(|(c, _, _)| *c == chat_id).map(|(_, m, _)| m);
+        let at =
+            std::time::SystemTime::now() + std::time::Duration::from_secs((hours * 3600.0) as u64);
+        let reply = self
+            .reply_to
+            .clone()
+            .filter(|(c, _, _)| *c == chat_id)
+            .map(|(_, m, _)| m);
         self.reply_to = None;
         self.sched_open = false;
         self.composer_current.clear();
@@ -1888,7 +2437,9 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.send_scheduled(chat_id, &text, reply, at, silent).await {
                 Ok(id) => {
-                    let _ = tx.send(BgEvent::Log(format!("отложено (msg {id}, через {hours} ч)")));
+                    let _ = tx.send(BgEvent::Log(format!(
+                        "отложено (msg {id}, через {hours} ч)"
+                    )));
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("отложка: {e:#}")));
@@ -1938,7 +2489,8 @@ impl TelecomfortApp {
                     // download_message_media кладёт файл со своим именем.
                     if !dest.exists() {
                         if let Ok(entries) = std::fs::read_dir(&dir) {
-                            let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+                            let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> =
+                                None;
                             for entry in entries.flatten() {
                                 let p = entry.path();
                                 if p == dest {
@@ -1959,7 +2511,10 @@ impl TelecomfortApp {
                     }
                 }
                 if dest.exists() {
-                    let _ = tx.send(BgEvent::StickerReady { message_id: mid, path: dest });
+                    let _ = tx.send(BgEvent::StickerReady {
+                        message_id: mid,
+                        path: dest,
+                    });
                 }
             });
         }
@@ -1999,7 +2554,9 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.share_contact(chat_id, &phone, &first, &last).await {
                 Ok(message_id) => {
-                    let _ = tx.send(BgEvent::Log(format!("контакт отправлен (msg {message_id})")));
+                    let _ = tx.send(BgEvent::Log(format!(
+                        "контакт отправлен (msg {message_id})"
+                    )));
                     let _ = tx.send(BgEvent::ReloadHistory { chat_id });
                 }
                 Err(e) => {
@@ -2116,9 +2673,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.hide_peer_stories(peer_id, hidden).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if hidden { "сторис автора скрыты".into() } else { "сторис автора возвращены".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if hidden {
+                        "сторис автора скрыты".into()
+                    } else {
+                        "сторис автора возвращены".into()
+                    }));
                     let _ = tx.send(BgEvent::ReloadStories);
                 }
                 Err(e) => {
@@ -2256,7 +2815,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.poll_voters(chat_id, message_id, option).await {
                 Ok((count, voters)) => {
-                    let _ = tx.send(BgEvent::PollVotersLoaded { message_id, count, voters });
+                    let _ = tx.send(BgEvent::PollVotersLoaded {
+                        message_id,
+                        count,
+                        voters,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("голоса: {e:#}")));
@@ -2275,7 +2838,11 @@ impl TelecomfortApp {
         }
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
-        let emoji = if self.folder_create_emoji.trim().is_empty() { None } else { Some(self.folder_create_emoji.trim().to_string()) };
+        let emoji = if self.folder_create_emoji.trim().is_empty() {
+            None
+        } else {
+            Some(self.folder_create_emoji.trim().to_string())
+        };
         self.rt.spawn(async move {
             match tg.create_folder(&title, &peers, emoji).await {
                 Ok(id) => {
@@ -2356,11 +2923,20 @@ impl TelecomfortApp {
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let label = if ed.rights.any() { "права обновлены".to_string() } else { "админ снят".to_string() };
-            match tg.set_admin(ed.chat_id, ed.user_id, ed.access_hash, ed.rights, &ed.title).await {
+            let label = if ed.rights.any() {
+                "права обновлены".to_string()
+            } else {
+                "админ снят".to_string()
+            };
+            match tg
+                .set_admin(ed.chat_id, ed.user_id, ed.access_hash, ed.rights, &ed.title)
+                .await
+            {
                 Ok(()) => {
                     let _ = tx.send(BgEvent::Log(label));
-                    let _ = tx.send(BgEvent::AdminSaved { chat_id: ed.chat_id });
+                    let _ = tx.send(BgEvent::AdminSaved {
+                        chat_id: ed.chat_id,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("админка: {e:#}")));
@@ -2379,10 +2955,7 @@ impl TelecomfortApp {
         if hours <= 0.0 {
             return None;
         }
-        Some(
-            std::time::SystemTime::now()
-                + std::time::Duration::from_secs((hours * 3600.0) as u64),
-        )
+        Some(std::time::SystemTime::now() + std::time::Duration::from_secs((hours * 3600.0) as u64))
     }
 
     /// Перевести сообщение (язык — авто: кириллица → en, иначе → ru).
@@ -2391,7 +2964,11 @@ impl TelecomfortApp {
             self.translations.remove(&(chat_id, m.id));
             return;
         }
-        let to_lang = if m.text.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c)) {
+        let to_lang = if m
+            .text
+            .chars()
+            .any(|c| ('\u{0400}'..='\u{04FF}').contains(&c))
+        {
             "en"
         } else {
             "ru"
@@ -2403,7 +2980,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.translate_message(chat_id, message_id, &to_lang).await {
                 Ok(text) => {
-                    let _ = tx.send(BgEvent::TranslatedMessage { chat_id, message_id, text });
+                    let _ = tx.send(BgEvent::TranslatedMessage {
+                        chat_id,
+                        message_id,
+                        text,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("перевод: {e:#}")));
@@ -2437,13 +3018,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.set_emoji_status(document_id).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if document_id.is_some() {
-                            "эмодзи-статус установлен".to_string()
-                        } else {
-                            "эмодзи-статус снят".to_string()
-                        },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if document_id.is_some() {
+                        "эмодзи-статус установлен".to_string()
+                    } else {
+                        "эмодзи-статус снят".to_string()
+                    }));
                     let _ = tx.send(BgEvent::OwnEmojiStatus(document_id));
                 }
                 Err(e) => {
@@ -2479,9 +3058,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.set_slowmode(chat_id, seconds).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if seconds <= 0 { "слоумод выключен".to_string() } else { format!("слоумод: {seconds}с") },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if seconds <= 0 {
+                        "слоумод выключен".to_string()
+                    } else {
+                        format!("слоумод: {seconds}с")
+                    }));
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("слоумод: {e:#}")));
@@ -2530,48 +3111,40 @@ impl TelecomfortApp {
 
     /// Отправить альбом файлов (выбор нескольких в диалоге).
     /// Если взведён флаг отложки вложений — отправка планируется по sched_hours.
+    /// Выбрать файлы в очередь вложений: отправятся вместе с текстом по Ctrl+Enter.
+    /// Один файл — как файл с подписью, несколько — альбомом с подписью.
     pub fn send_album_pick(&mut self, chat_id: i64) {
         let Some(paths) = rfd::FileDialog::new().pick_files() else {
             return;
         };
-        let schedule_at = self.attach_scheduled_at();
-        if paths.len() < 2 {
-            // Один файл — обычной отправкой.
-            if let Some(p) = paths.into_iter().next() {
-                let caption = self.composer_current.trim().to_string();
-                let tg = Arc::clone(&self.tg);
-                let tx = self.tx.clone();
-                let silent = self.silent_send;
-                self.rt.spawn(async move {
-                    match tg.send_file(chat_id, &p, &caption, silent, schedule_at).await {
-                        Ok(id) => {
-                            let _ = tx.send(BgEvent::Log(format!("файл отправлен (msg {id})")));
-                            let _ = tx.send(BgEvent::ReloadHistory { chat_id });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(BgEvent::Error(format!("файл: {e:#}")));
-                        }
-                    }
-                });
-            }
+        if paths.is_empty() {
             return;
         }
-        let caption = self.composer_current.trim().to_string();
-        self.composer_current.clear();
-        let tg = Arc::clone(&self.tg);
-        let tx = self.tx.clone();
-        self.log(format!("альбом: заливка {} файлов…", paths.len()));
-        let schedule_at = self.attach_scheduled_at();
-        self.rt.spawn(async move {
-            match tg.send_album(chat_id, &paths, &caption, schedule_at).await {
-                Ok(ids) => {
-                    let _ = tx.send(BgEvent::AlbumSent { chat_id, count: ids.len() });
-                }
-                Err(e) => {
-                    let _ = tx.send(BgEvent::Error(format!("альбом: {e:#}")));
-                }
+        let n = paths.len();
+        self.pending_attach
+            .entry(chat_id)
+            .or_default()
+            .extend(paths);
+        let total = self
+            .pending_attach
+            .get(&chat_id)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        self.log(format!(
+            "в очереди {total} файл(а/ов) (+{n}) — отправятся с сообщением"
+        ));
+    }
+
+    /// Убрать файл из очереди вложений по индексу.
+    pub fn drop_pending_attach(&mut self, chat_id: i64, idx: usize) {
+        if let Some(v) = self.pending_attach.get_mut(&chat_id) {
+            if idx < v.len() {
+                v.remove(idx);
             }
-        });
+            if v.is_empty() {
+                self.pending_attach.remove(&chat_id);
+            }
+        }
     }
 
     /// Загрузить архив своих сторис.
@@ -2601,7 +3174,9 @@ impl TelecomfortApp {
             return Some(t.clone());
         }
         if let Some(p) = self.archive_thumb_files.get(&story_id).cloned() {
-            if let Some(tex) = Self::thumb_from_file(ctx, &p, &format!("archthumb::{story_id}"), 160) {
+            if let Some(tex) =
+                Self::thumb_from_file(ctx, &p, &format!("archthumb::{story_id}"), 160)
+            {
                 self.archive_thumbs.insert(story_id, tex.clone());
                 return Some(tex);
             }
@@ -2634,11 +3209,18 @@ impl TelecomfortApp {
                                     crate::media::video::save_poster_jpeg(&frame, &poster);
                                 }
                             }
-                            if poster.exists() { poster } else { path }
+                            if poster.exists() {
+                                poster
+                            } else {
+                                path
+                            }
                         } else {
                             path
                         };
-                        let _ = tx.send(BgEvent::ArchiveThumbReady { story_id, path: show });
+                        let _ = tx.send(BgEvent::ArchiveThumbReady {
+                            story_id,
+                            path: show,
+                        });
                     }
                     Err(e) => {
                         tracing::debug!("archive thumb failed: {e}");
@@ -2772,8 +3354,28 @@ impl TelecomfortApp {
         else {
             return;
         };
-        self.story_publish = Some(StoryPublish { path, caption: String::new() });
+        self.story_publish = Some(StoryPublish {
+            path,
+            caption: String::new(),
+            music: None,
+        });
         self.screen = Screen::Stories;
+    }
+
+    /// Выбрать аудиофайл как музыку к публикуемой сторис.
+    pub fn pick_story_music(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Аудио",
+                &["mp3", "ogg", "oga", "opus", "m4a", "wav", "flac"],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        if let Some(sp) = self.story_publish.as_mut() {
+            sp.music = Some(path);
+        }
     }
 
     /// Опубликовать сторис (видно контактам). Фоновая задача, затем refresh.
@@ -2785,7 +3387,10 @@ impl TelecomfortApp {
         let tx = self.tx.clone();
         self.log(format!("публикация сторис: {}…", sp.path.display()));
         self.rt.spawn(async move {
-            match tg.publish_story(&sp.path, &sp.caption).await {
+            match tg
+                .publish_story(&sp.path, &sp.caption, sp.music.clone())
+                .await
+            {
                 Ok(id) => {
                     let _ = tx.send(BgEvent::StoryPublished { story_id: id });
                 }
@@ -2976,7 +3581,11 @@ impl TelecomfortApp {
             return;
         }
         let correct = if self.poll_quiz {
-            self.poll_correct.trim().parse::<usize>().ok().filter(|&i| i < options.len())
+            self.poll_correct
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&i| i < options.len())
         } else {
             None
         };
@@ -2988,9 +3597,15 @@ impl TelecomfortApp {
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            match tg.create_poll(chat_id, &question, &options, quiz, correct, anon, mult).await {
+            match tg
+                .create_poll(chat_id, &question, &options, quiz, correct, anon, mult)
+                .await
+            {
                 Ok(message_id) => {
-                    let _ = tx.send(BgEvent::PollCreated { chat_id, message_id });
+                    let _ = tx.send(BgEvent::PollCreated {
+                        chat_id,
+                        message_id,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("опрос: {e:#}")));
@@ -3015,7 +3630,10 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.send_geo(chat_id, lat, long).await {
                 Ok(message_id) => {
-                    let _ = tx.send(BgEvent::GeoSent { chat_id, message_id });
+                    let _ = tx.send(BgEvent::GeoSent {
+                        chat_id,
+                        message_id,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("гео: {e:#}")));
@@ -3026,9 +3644,10 @@ impl TelecomfortApp {
 
     /// Ответить на сторис текстом (ответ уходит в чат владельца).
     pub fn do_story_reply(&mut self) {
-        let (Some((peer_id, story_id)), text) =
-            (self.story_reply_target, self.story_reply_text.trim().to_string())
-        else {
+        let (Some((peer_id, story_id)), text) = (
+            self.story_reply_target,
+            self.story_reply_text.trim().to_string(),
+        ) else {
             return;
         };
         if text.is_empty() {
@@ -3039,7 +3658,10 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.story_reply(peer_id, story_id, &text).await {
                 Ok(message_id) => {
-                    let _ = tx.send(BgEvent::StoryReplySent { story_id, message_id });
+                    let _ = tx.send(BgEvent::StoryReplySent {
+                        story_id,
+                        message_id,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("ответ на сторис: {e:#}")));
@@ -3102,9 +3724,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.toggle_story_pin(story_id, !pinned).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if !pinned { "сторис закреплена".into() } else { "сторис откреплена".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if !pinned {
+                        "сторис закреплена".into()
+                    } else {
+                        "сторис откреплена".into()
+                    }));
                     let _ = tx.send(BgEvent::StoriesDeleted);
                 }
                 Err(e) => {
@@ -3338,9 +3962,11 @@ impl TelecomfortApp {
         self.rt.spawn(async move {
             match tg.block_user(chat_id, !blocked).await {
                 Ok(()) => {
-                    let _ = tx.send(BgEvent::Log(
-                        if !blocked { "пользователь заблокирован".into() } else { "разблокирован".into() },
-                    ));
+                    let _ = tx.send(BgEvent::Log(if !blocked {
+                        "пользователь заблокирован".into()
+                    } else {
+                        "разблокирован".into()
+                    }));
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("блок: {e:#}")));
@@ -3410,7 +4036,10 @@ impl TelecomfortApp {
             let tg = Arc::clone(&self.tg);
             let tx = self.tx.clone();
             let (chat_id, mid) = (msg.chat_id, msg.id);
-            let fname = msg.file_name.clone().unwrap_or_else(|| format!("video_{mid}.mp4"));
+            let fname = msg
+                .file_name
+                .clone()
+                .unwrap_or_else(|| format!("video_{mid}.mp4"));
             self.rt.spawn(async move {
                 let dir = crate::telegram::stickers_cache_dir().join("video");
                 std::fs::create_dir_all(&dir).ok();
@@ -3422,10 +4051,8 @@ impl TelecomfortApp {
                         // download кладёт файл со своим именем — ищем свежий.
                         if !dest.exists() {
                             if let Ok(mut entries) = std::fs::read_dir(&dir) {
-                                let mut best: Option<(
-                                    std::time::SystemTime,
-                                    std::path::PathBuf,
-                                )> = None;
+                                let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> =
+                                    None;
                                 for entry in entries.flatten() {
                                     let p = entry.path();
                                     if p == dest {
@@ -3433,7 +4060,11 @@ impl TelecomfortApp {
                                     }
                                     if let Ok(meta) = entry.metadata() {
                                         if let Ok(mtime) = meta.modified() {
-                                            if best.as_ref().map(|(t, _)| *t < mtime).unwrap_or(true) {
+                                            if best
+                                                .as_ref()
+                                                .map(|(t, _)| *t < mtime)
+                                                .unwrap_or(true)
+                                            {
                                                 best = Some((mtime, p));
                                             }
                                         }
@@ -3453,20 +4084,22 @@ impl TelecomfortApp {
                 // Постер первого кадра встроенными декодерами (без ffmpeg).
                 let poster = dest.with_extension("poster.jpg");
                 if !poster.exists() {
-                    if let Some(frame) =
-                        tokio::task::spawn_blocking({
-                            let dest = dest.clone();
-                            move || crate::media::video::first_frame_builtin(&dest)
-                        })
-                        .await
-                        .ok()
-                        .flatten()
+                    if let Some(frame) = tokio::task::spawn_blocking({
+                        let dest = dest.clone();
+                        move || crate::media::video::first_frame_builtin(&dest)
+                    })
+                    .await
+                    .ok()
+                    .flatten()
                     {
                         crate::media::video::save_poster_jpeg(&frame, &poster);
                     }
                 }
                 if poster.exists() {
-                    let _ = tx.send(BgEvent::VideoThumbReady { message_id: mid, path: poster });
+                    let _ = tx.send(BgEvent::VideoThumbReady {
+                        message_id: mid,
+                        path: poster,
+                    });
                 }
             });
         }
@@ -3508,7 +4141,10 @@ impl TelecomfortApp {
                     }
                 }
                 if dest.exists() {
-                    let _ = tx.send(BgEvent::WebThumbReady { photo_id: ph.photo_id, path: dest });
+                    let _ = tx.send(BgEvent::WebThumbReady {
+                        photo_id: ph.photo_id,
+                        path: dest,
+                    });
                 }
             });
         }
@@ -3526,7 +4162,10 @@ impl TelecomfortApp {
         let tx2 = self.tx.clone();
         self.rt.spawn(async move {
             let (s, d) = engine.run_once().await;
-            let _ = tx2.send(BgEvent::SyncDone { stories: s, downloads: d });
+            let _ = tx2.send(BgEvent::SyncDone {
+                stories: s,
+                downloads: d,
+            });
         });
     }
 
@@ -3541,8 +4180,7 @@ impl TelecomfortApp {
         let secs = self.cfg.sync.interval_secs.max(15);
         let tx = self.tx.clone();
         let handle = self.rt.spawn(async move {
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_secs(secs));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
@@ -3583,8 +4221,11 @@ impl TelecomfortApp {
             for (job, res) in crate::media::download_many(&downloader, tg, jobs, 4).await {
                 match res {
                     Ok(rep) => {
-                        let mut s =
-                            format!("сохранено: {} (msg {})", rep.local_path.display(), job.message_id);
+                        let mut s = format!(
+                            "сохранено: {} (msg {})",
+                            rep.local_path.display(),
+                            job.message_id
+                        );
                         if rep.duplicate {
                             s.push_str(" (дубль по хэшу)");
                         }
@@ -3778,8 +4419,7 @@ impl TelecomfortApp {
                         }
                         Some(crate::ai::phash::phash(&frame))
                     });
-                    match tokio::time::timeout(std::time::Duration::from_secs(60), work).await
-                    {
+                    match tokio::time::timeout(std::time::Duration::from_secs(60), work).await {
                         Ok(Ok(h)) => h,
                         _ => continue,
                     }
@@ -3818,7 +4458,11 @@ impl TelecomfortApp {
 
     pub fn profiles_to_cfg(&mut self) {
         // Синхронизируем редактируемые поля активного профиля обратно.
-        if let Some(p) = self.profiles.iter_mut().find(|p| p.name == self.active_profile) {
+        if let Some(p) = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == self.active_profile)
+        {
             p.api_id = self.api_id.trim().parse().unwrap_or(p.api_id);
             p.api_hash = self.api_hash.trim().to_string();
             p.phone = self.phone.trim().to_string();
@@ -3844,8 +4488,14 @@ impl TelecomfortApp {
         self.onnx_enabled = self.cfg.stories.onnx_enabled;
         self.onnx_model = self.cfg.stories.onnx_model_path.clone();
         self.onnx_input = self.cfg.stories.onnx_input_name.clone();
-        self.onnx_provider = crate::ai::normalize_provider(&self.cfg.stories.onnx_provider).to_string();
-        self.download_dir = self.cfg.downloader.download_dir.to_string_lossy().to_string();
+        self.onnx_provider =
+            crate::ai::normalize_provider(&self.cfg.stories.onnx_provider).to_string();
+        self.download_dir = self
+            .cfg
+            .downloader
+            .download_dir
+            .to_string_lossy()
+            .to_string();
         self.dl_cluster_threshold = self.cfg.downloader.cluster_max_dist.min(10);
         self.yandex_token = self.cfg.yandex.oauth_token.clone();
         self.yandex_folder = self.cfg.yandex.remote_folder.clone();
@@ -3861,7 +4511,11 @@ impl TelecomfortApp {
         self.profiles = self.cfg.profiles.clone();
         self.active_profile = self.cfg.active_profile.clone();
         if let Some(p) = self.profiles.iter().find(|p| p.name == self.active_profile) {
-            self.api_id = if p.api_id == 0 { String::new() } else { p.api_id.to_string() };
+            self.api_id = if p.api_id == 0 {
+                String::new()
+            } else {
+                p.api_id.to_string()
+            };
             self.api_hash = p.api_hash.clone();
             self.phone = p.phone.clone();
         }
@@ -3887,7 +4541,8 @@ impl TelecomfortApp {
             self.cfg.stories.onnx_enabled = self.onnx_enabled;
             self.cfg.stories.onnx_model_path = self.onnx_model.clone();
             self.cfg.stories.onnx_input_name = self.onnx_input.clone();
-            self.cfg.stories.onnx_provider = crate::ai::normalize_provider(&self.onnx_provider).to_string();
+            self.cfg.stories.onnx_provider =
+                crate::ai::normalize_provider(&self.onnx_provider).to_string();
             match self.cfg.export_bundle(&path) {
                 Ok(_) => self.log(format!("настройки экспортированы: {}", path.display())),
                 Err(e) => self.status = format!("экспорт не удался: {e:#}"),
@@ -3921,7 +4576,8 @@ impl TelecomfortApp {
         self.cfg.stories.onnx_enabled = self.onnx_enabled;
         self.cfg.stories.onnx_model_path = self.onnx_model.clone();
         self.cfg.stories.onnx_input_name = self.onnx_input.clone();
-        self.cfg.stories.onnx_provider = crate::ai::normalize_provider(&self.onnx_provider).to_string();
+        self.cfg.stories.onnx_provider =
+            crate::ai::normalize_provider(&self.onnx_provider).to_string();
         self.cfg.downloader.download_dir = PathBuf::from(&self.download_dir);
         self.cfg.downloader.cluster_max_dist = self.dl_cluster_threshold.min(10);
         self.cfg.yandex.oauth_token = self.yandex_token.clone();
@@ -3976,7 +4632,11 @@ impl TelecomfortApp {
     /// (`<имя>.poster.jpg`), иначе пометка «🎬 видео» от вызывающего.
     /// `None` — не картинка и постера нет (в группы такие не попадают).
     /// Загружается лениво: вызывается только для раскрытых групп.
-    pub fn ensure_dl_thumb(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    pub fn ensure_dl_thumb(
+        &mut self,
+        ctx: &egui::Context,
+        path: &str,
+    ) -> Option<egui::TextureHandle> {
         if let Some(t) = self.dl_thumbs.get(path) {
             return Some(t.clone());
         }
@@ -4210,8 +4870,7 @@ impl eframe::App for TelecomfortApp {
         // Адаптивный тикер для ноутбука: быстрый repaint только когда есть
         // живая анимация (прогресс передач, догружающиеся превью сторис),
         // в покое — редкий (события фона всё равно разбудят через SyncTick).
-        let busy = !self.uploads.is_empty()
-            || self.stories.iter().any(|c| c.preview_loading);
+        let busy = !self.uploads.is_empty() || self.stories.iter().any(|c| c.preview_loading);
         let every = if busy {
             std::time::Duration::from_millis(400)
         } else {
@@ -4239,8 +4898,16 @@ impl eframe::App for TelecomfortApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let dot = if self.tg.is_connected() { "● live" } else { "● демо (mock)" };
-                    ui.label(egui::RichText::new(format!("{dot} · {0}", self.me_label)).small().weak());
+                    let dot = if self.tg.is_connected() {
+                        "● live"
+                    } else {
+                        "● демо (mock)"
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{dot} · {0}", self.me_label))
+                            .small()
+                            .weak(),
+                    );
                 });
             });
             ui.horizontal(|ui| {
@@ -4274,27 +4941,90 @@ impl eframe::App for TelecomfortApp {
                 ),
                 ConfirmAction::LeaveChannel { .. } => (
                     "🚪 Покинуть чат?",
-                    "Вы больше не будете получать сообщения этого канала/супергруппы."
-                        .to_string(),
+                    "Вы больше не будете получать сообщения этого канала/супергруппы.".to_string(),
                 ),
                 ConfirmAction::DeleteStories { story_ids } => (
                     "🗑 Удалить сторис?",
                     format!("Удалить {} шт. безвозвратно?", story_ids.len()),
                 ),
             };
-            egui::Window::new(title).collapsible(false).show(ui.ctx(), |ui| {
-                ui.label(text);
-                ui.horizontal(|ui| {
-                    if ui.button("Подтвердить").clicked() {
-                        self.do_confirm_action();
-                    }
-                    if ui.button("Отмена").clicked() {
-                        self.confirm_action = None;
-                    }
+            egui::Window::new(title)
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(text);
+                    ui.horizontal(|ui| {
+                        if ui.button("Подтвердить").clicked() {
+                            self.do_confirm_action();
+                        }
+                        if ui.button("Отмена").clicked() {
+                            self.confirm_action = None;
+                        }
+                    });
                 });
-            });
         }
     }
+}
+
+/// Закодировать QR-токен в base64url без паддинга для `tg://login?token=`.
+pub fn qr_login_payload(token: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token)
+}
+
+/// Отрендерить QR-код 232×232 (масштаб ×8 от 29-модульного, тихая зона 4).
+/// Возвращает None, если полезная нагрузка не кодируется.
+pub fn qr_image_232(payload: &str) -> Option<egui::ColorImage> {
+    let code = qrcode::QrCode::new(payload.as_bytes()).ok()?;
+    let w = code.width();
+    let scale = 8usize;
+    let border = 4usize;
+    let side = (w + border * 2) * scale;
+    // Нормализуем к 232: code.width()==21 для коротких payload? tg-токен ~16 байт
+    // base64url ~22 символа -> версия 2 (25 модулей) -> (25+8)*8=264. Обрезаем/центрируем до 232.
+    let mut px = vec![egui::Color32::WHITE; side * side];
+    for y in 0..w {
+        for x in 0..w {
+            let dark = code[(x, y)] == qrcode::Color::Dark;
+            let c = if dark {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            };
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let ox = (x + border) * scale + dx;
+                    let oy = (y + border) * scale + dy;
+                    px[oy * side + ox] = c;
+                }
+            }
+        }
+    }
+    let mut img = egui::ColorImage {
+        size: [side, side],
+        source_size: egui::Vec2::new(side as f32, side as f32),
+        pixels: px,
+    };
+    // Центр-кроп или паддинг до 232×232.
+    const TARGET: usize = 232;
+    if side != TARGET {
+        let mut out = vec![egui::Color32::WHITE; TARGET * TARGET];
+        let copy = side.min(TARGET);
+        let sx = (side.saturating_sub(TARGET)) / 2;
+        let sy = (side.saturating_sub(TARGET)) / 2;
+        let dx = TARGET.saturating_sub(side) / 2;
+        let dy = TARGET.saturating_sub(side) / 2;
+        for y in 0..copy {
+            for x in 0..copy {
+                out[(dy + y) * TARGET + (dx + x)] = img.pixels[(sy + y) * side + (sx + x)];
+            }
+        }
+        img = egui::ColorImage {
+            size: [TARGET, TARGET],
+            source_size: egui::Vec2::new(TARGET as f32, TARGET as f32),
+            pixels: out,
+        };
+    }
+    Some(img)
 }
 
 #[cfg(test)]
@@ -4327,5 +5057,35 @@ mod tests {
         let s = format_msg_time(1_718_443_200);
         assert!(s.contains(':') || s.contains('.'), "{s}");
         assert_eq!(s.len(), 5, "{s}");
+    }
+
+    #[test]
+    fn qr_payload_is_base64url() {
+        let p = qr_login_payload(&[1u8, 2, 3, 250, 255, 0, 128]);
+        assert!(!p.contains('+') && !p.contains('/') && !p.contains('='));
+        assert!(!p.starts_with("tg://login?token="));
+        let full = format!("tg://login?token={p}");
+        assert!(full.starts_with("tg://login?token="));
+    }
+
+    #[test]
+    fn qr_image_is_232_and_has_dark_modules() {
+        let img = qr_image_232("tg://login?token=QUJDREVGR0hJSktMTU5PUA").expect("qr");
+        assert_eq!(img.size, [232, 232]);
+        assert_eq!(img.pixels.len(), 232 * 232);
+        let dark = img
+            .pixels
+            .iter()
+            .filter(|p| **p == egui::Color32::BLACK)
+            .count();
+        let white = img
+            .pixels
+            .iter()
+            .filter(|p| **p == egui::Color32::WHITE)
+            .count();
+        assert!(dark > 1000, "dark={dark}");
+        assert!(white > 1000, "white={white}");
+        // Пустой payload не должен паниковать.
+        let _ = qr_image_232("");
     }
 }

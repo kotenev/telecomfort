@@ -40,8 +40,7 @@ pub fn cluster_indices(hashes: &[u64], max_dist: u32) -> Vec<DupGroup> {
     for i in 0..n {
         by_root.entry(dsu.find(i)).or_default().push(i);
     }
-    let mut groups: Vec<DupGroup> =
-        by_root.into_values().filter(|g| g.len() >= 2).collect();
+    let mut groups: Vec<DupGroup> = by_root.into_values().filter(|g| g.len() >= 2).collect();
     for g in groups.iter_mut() {
         g.sort_unstable();
     }
@@ -58,7 +57,10 @@ struct Dsu {
 
 impl Dsu {
     fn new(n: usize) -> Self {
-        Self { parent: (0..n).collect(), rank: vec![0; n] }
+        Self {
+            parent: (0..n).collect(),
+            rank: vec![0; n],
+        }
     }
 
     fn find(&mut self, mut x: usize) -> usize {
@@ -138,9 +140,9 @@ mod tests {
         let hashes = [
             a0,
             b0,
-            a0 ^ 0b1,   // ~a0 (d=1)
-            b0 ^ 0b1,   // ~b0 (d=1)
-            a0 ^ 0b11,  // ~a0 (d=2)
+            a0 ^ 0b1,              // ~a0 (d=1)
+            b0 ^ 0b1,              // ~b0 (d=1)
+            a0 ^ 0b11,             // ~a0 (d=2)
             0x1234_5678_9ABC_DEF0, // синглтон (далеко от всех)
         ];
         assert!(hamming(a0, b0) > 2);
@@ -185,9 +187,8 @@ mod tests {
                 groups.push(comp);
             }
         }
-        groups.sort_by(|a: &Vec<usize>, b: &Vec<usize>| {
-            b.len().cmp(&a.len()).then(a[0].cmp(&b[0]))
-        });
+        groups
+            .sort_by(|a: &Vec<usize>, b: &Vec<usize>| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
         groups
     }
 

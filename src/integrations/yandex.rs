@@ -111,7 +111,8 @@ pub async fn upload_file_with_progress(
             Err(e) => {
                 // 4xx (кроме 429/408) не ретраим — это не сеть, а запрос.
                 let s = format!("{e:#}");
-                let non_retryable = (s.contains(" 400") || s.contains(" 401")
+                let non_retryable = (s.contains(" 400")
+                    || s.contains(" 401")
                     || s.contains(" 403")
                     || s.contains(" 404"))
                     && !s.contains("429")
@@ -137,8 +138,13 @@ async fn put_whole(
     total: u64,
     on_progress: impl Fn(u64, u64) + Send + Sync + 'static,
 ) -> Result<()> {
-    let url = format!("https://webdav.yandex.ru{}", ensure_leading_slash(remote_path));
-    let bytes = tokio::fs::read(local).await.with_context(|| format!("read {}", local.display()))?;
+    let url = format!(
+        "https://webdav.yandex.ru{}",
+        ensure_leading_slash(remote_path)
+    );
+    let bytes = tokio::fs::read(local)
+        .await
+        .with_context(|| format!("read {}", local.display()))?;
     on_progress(bytes.len() as u64, total);
     let resp = client()
         .put(&url)
@@ -159,7 +165,10 @@ async fn put_streaming(
     on_progress: impl Fn(u64, u64) + Send + Sync + 'static,
 ) -> Result<()> {
     use tokio_util::io::ReaderStream;
-    let url = format!("https://webdav.yandex.ru{}", ensure_leading_slash(remote_path));
+    let url = format!(
+        "https://webdav.yandex.ru{}",
+        ensure_leading_slash(remote_path)
+    );
     let done = Arc::new(AtomicU64::new(0));
     let file = tokio::fs::File::open(local)
         .await
@@ -262,6 +271,9 @@ mod tests {
 
     #[test]
     fn path_encoding_keeps_slashes() {
-        assert_eq!(ensure_leading_slash("/Telecomfort/книга 1.epub"), "/Telecomfort/%D0%BA%D0%BD%D0%B8%D0%B3%D0%B0%201.epub");
+        assert_eq!(
+            ensure_leading_slash("/Telecomfort/книга 1.epub"),
+            "/Telecomfort/%D0%BA%D0%BD%D0%B8%D0%B3%D0%B0%201.epub"
+        );
     }
 }

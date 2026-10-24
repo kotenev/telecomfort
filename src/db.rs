@@ -165,12 +165,25 @@ impl Db {
         conn.query_row(
             "SELECT p, boost, reasons FROM onnx_cache WHERE img_sha = ?1 AND model_key = ?2",
             params![img_sha, model_key],
-            |r| Ok((r.get::<_, f64>(0)? as f32, r.get::<_, f64>(1)? as f32, r.get::<_, String>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, f64>(0)? as f32,
+                    r.get::<_, f64>(1)? as f32,
+                    r.get::<_, String>(2)?,
+                ))
+            },
         )
         .ok()
     }
 
-    pub fn onnx_cache_put(&self, img_sha: &str, model_key: &str, p: f32, boost: f32, reasons: &str) {
+    pub fn onnx_cache_put(
+        &self,
+        img_sha: &str,
+        model_key: &str,
+        p: f32,
+        boost: f32,
+        reasons: &str,
+    ) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
             "INSERT OR REPLACE INTO onnx_cache(img_sha, model_key, p, boost, reasons)
@@ -181,20 +194,21 @@ impl Db {
 
     pub fn onnx_cache_len(&self) -> usize {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM onnx_cache", [], |r| r.get::<_, i64>(0))
-            .unwrap_or(0) as usize
+        conn.query_row("SELECT COUNT(*) FROM onnx_cache", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap_or(0) as usize
     }
 
     /// Все (путь, pHash) для построения in-memory индексов (BK-дерево,
     /// кластеризация). Строки без pHash (не-картинки) пропускаются.
     pub fn all_phashes(&self) -> Vec<(String, u64)> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare(
-            "SELECT local_path, phash FROM downloads WHERE phash IS NOT NULL",
-        ) {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+        let mut stmt =
+            match conn.prepare("SELECT local_path, phash FROM downloads WHERE phash IS NOT NULL") {
+                Ok(s) => s,
+                Err(_) => return vec![],
+            };
         stmt.query_map([], |r| {
             let path: String = r.get(0)?;
             let h: i64 = r.get(1)?;
@@ -279,10 +293,11 @@ impl Db {
 
     pub fn get_last_message_id(&self, chat_id: i64) -> i32 {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare("SELECT last_message_id FROM sync_state WHERE chat_id = ?1") {
-            Ok(s) => s,
-            Err(_) => return 0,
-        };
+        let mut stmt =
+            match conn.prepare("SELECT last_message_id FROM sync_state WHERE chat_id = ?1") {
+                Ok(s) => s,
+                Err(_) => return 0,
+            };
         stmt.query_row(params![chat_id], |r| r.get::<_, i32>(0))
             .unwrap_or(0)
     }
@@ -303,7 +318,11 @@ impl Db {
             .query_row("SELECT COUNT(*) FROM downloads", [], |r| r.get(0))
             .unwrap_or(0);
         let size: i64 = conn
-            .query_row("SELECT COALESCE(SUM(file_size),0) FROM downloads", [], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(SUM(file_size),0) FROM downloads",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
         let dupes: usize = conn
             .query_row("SELECT COUNT(*) FROM seen_hashes", [], |r| r.get(0))
@@ -321,21 +340,20 @@ impl Db {
             // Старая БД без новых колонок (миграция не применилась?): fallback без них.
             Err(_) => return self.recent_downloads_legacy(limit),
         };
-        let rows = stmt
-            .query_map(params![limit as i64], |r| {
-                Ok(DownloadRow {
-                    chat: r.get(0)?,
-                    message_id: r.get(1)?,
-                    file_name: r.get(2)?,
-                    file_size: r.get(3)?,
-                    local_path: r.get(4)?,
-                    yandex_path: r.get(5)?,
-                    calibre_imported: r.get::<_, i64>(6)? != 0,
-                    created_at: r.get(7)?,
-                    phash: r.get::<_, Option<i64>>(8)?,
-                    near_duplicate_of: r.get::<_, String>(9).unwrap_or_default(),
-                })
-            });
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(DownloadRow {
+                chat: r.get(0)?,
+                message_id: r.get(1)?,
+                file_name: r.get(2)?,
+                file_size: r.get(3)?,
+                local_path: r.get(4)?,
+                yandex_path: r.get(5)?,
+                calibre_imported: r.get::<_, i64>(6)? != 0,
+                created_at: r.get(7)?,
+                phash: r.get::<_, Option<i64>>(8)?,
+                near_duplicate_of: r.get::<_, String>(9).unwrap_or_default(),
+            })
+        });
         match rows {
             Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
             Err(_) => self.recent_downloads_legacy(limit),
@@ -409,8 +427,26 @@ mod tests {
     fn near_phash_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_at(dir.path().join("state.db")).unwrap();
-        db.record_download("chat", 1, "a.png", 10, "sha-a", "/tmp/a.png", Some(0x1234), "");
-        db.record_download("chat", 2, "b.png", 10, "sha-b", "/tmp/b.png", Some(0x1235), "");
+        db.record_download(
+            "chat",
+            1,
+            "a.png",
+            10,
+            "sha-a",
+            "/tmp/a.png",
+            Some(0x1234),
+            "",
+        );
+        db.record_download(
+            "chat",
+            2,
+            "b.png",
+            10,
+            "sha-b",
+            "/tmp/b.png",
+            Some(0x1235),
+            "",
+        );
         db.record_download("chat", 3, "c.txt", 10, "sha-c", "/tmp/c.txt", None, "");
         // 0x1234 vs 0x1235 — 1 бит разницы.
         let near = db.find_near_phash(0x1234, 6);

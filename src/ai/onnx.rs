@@ -157,10 +157,17 @@ pub fn try_onnx_boost(
     input_override: &str,
     provider: &str,
 ) -> Option<(f32, Vec<String>)> {
-    try_onnx_boost_many(db, model_path, enabled, &[Some(image)], input_override, provider)
-        .into_iter()
-        .next()
-        .flatten()
+    try_onnx_boost_many(
+        db,
+        model_path,
+        enabled,
+        &[Some(image)],
+        input_override,
+        provider,
+    )
+    .into_iter()
+    .next()
+    .flatten()
 }
 
 /// Пачка входных изображений для streaming-инференса.
@@ -496,8 +503,7 @@ mod backend {
         model_path: &str,
         provider: &str,
     ) -> Result<ort::session::Session, String> {
-        let builder =
-            ort::session::Session::builder(e).map_err(|err| format!("builder: {err}"))?;
+        let builder = ort::session::Session::builder(e).map_err(|err| format!("builder: {err}"))?;
         let ep = super::normalize_provider(provider);
         if !super::ep_compiled_in(ep) {
             tracing::warn!(
@@ -571,7 +577,11 @@ mod backend {
             .iter()
             .map(|o| format!("{}: {:?}", o.name(), o.dtype()))
             .collect();
-        tracing::info!("ONNX модель загружена. Входы: [{}]. Выходы: [{}]", ins.join(", "), outs.join(", "));
+        tracing::info!(
+            "ONNX модель загружена. Входы: [{}]. Выходы: [{}]",
+            ins.join(", "),
+            outs.join(", ")
+        );
     }
 
     /// Пачка кадров за одно удержание сессии: открываем сессию один раз,
@@ -611,14 +621,15 @@ mod backend {
         if inputs.is_empty() {
             return Err("у модели нет входов".into());
         }
-        let pick = |o: &ort::value::Outlet| -> bool {
-            matches!(o.dtype(), ValueType::Tensor { .. })
-        };
+        let pick =
+            |o: &ort::value::Outlet| -> bool { matches!(o.dtype(), ValueType::Tensor { .. }) };
         let idx = if !input_override.trim().is_empty() {
             inputs
                 .iter()
                 .position(|o| o.name() == input_override.trim() && pick(o))
-                .ok_or_else(|| format!("вход `{}` не найден среди тензоров", input_override.trim()))?
+                .ok_or_else(|| {
+                    format!("вход `{}` не найден среди тензоров", input_override.trim())
+                })?
         } else {
             inputs
                 .iter()
@@ -642,14 +653,26 @@ mod backend {
         let shape_dims: Vec<i64> = shape.iter().copied().collect();
         let (h, w, layout) = super::derive_layout(&shape_dims);
         let c = match layout {
-            super::InputLayout::Nchw => shape_dims.get(1).copied().filter(|&d| d == 1 || d == 3).unwrap_or(3),
-            super::InputLayout::Nhwc => shape_dims.last().copied().filter(|&d| d == 1 || d == 3).unwrap_or(3),
+            super::InputLayout::Nchw => shape_dims
+                .get(1)
+                .copied()
+                .filter(|&d| d == 1 || d == 3)
+                .unwrap_or(3),
+            super::InputLayout::Nhwc => shape_dims
+                .last()
+                .copied()
+                .filter(|&d| d == 1 || d == 3)
+                .unwrap_or(3),
         } as usize;
 
         // 2. Препроцессинг (нормализованные 0..1), затем каст под dtype входа.
         let rgb = image.to_rgb8();
-        let small =
-            image::imageops::resize(&rgb, w as u32, h as u32, image::imageops::FilterType::Triangle);
+        let small = image::imageops::resize(
+            &rgb,
+            w as u32,
+            h as u32,
+            image::imageops::FilterType::Triangle,
+        );
         let px = small.as_raw();
         let mut data_f32 = Vec::with_capacity(c * h * w);
         match layout {
@@ -659,7 +682,8 @@ mod backend {
                         let v = p[ch.min(2)] as f32 / 255.0;
                         data_f32.push(if c == 1 {
                             // grayscale: luma
-                            (p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114) / 255.0
+                            (p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114)
+                                / 255.0
                         } else {
                             v
                         });
@@ -670,7 +694,8 @@ mod backend {
                 if c == 1 {
                     for p in px.chunks(3) {
                         data_f32.push(
-                            (p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114) / 255.0,
+                            (p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114)
+                                / 255.0,
                         );
                     }
                 } else {
@@ -751,7 +776,11 @@ mod backend {
                     .run(vec![(input_name.clone(), t.upcast())])
                     .map_err(|e| format!("run: {e}"))?
             }
-            other => return Err(format!("тип входа {other:?} не поддерживается (нужен f32/u8/i8/i32/i64/f16)")),
+            other => {
+                return Err(format!(
+                    "тип входа {other:?} не поддерживается (нужен f32/u8/i8/i32/i64/f16)"
+                ))
+            }
         };
 
         // 4. Выход → p → буст (f32, квантованные u8/i8, целые, f16).
@@ -782,15 +811,15 @@ mod backend {
         if boost > 0.001 {
             Ok(Some((
                 boost,
-                vec![format!("ONNX {quantized_note}{short} [{input_name}]: p={p:.2}")],
+                vec![format!(
+                    "ONNX {quantized_note}{short} [{input_name}]: p={p:.2}"
+                )],
             )))
         } else {
             Ok(Some((0.0, vec![])))
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -911,9 +940,18 @@ mod tests {
 
     #[test]
     fn layout_nchw_nhwc() {
-        assert_eq!(derive_layout(&[1, 3, 224, 224]), (224, 224, InputLayout::Nchw));
-        assert_eq!(derive_layout(&[1, 300, 300, 3]), (300, 300, InputLayout::Nhwc));
-        assert_eq!(derive_layout(&[1, 3, -1, -1]), (224, 224, InputLayout::Nchw));
+        assert_eq!(
+            derive_layout(&[1, 3, 224, 224]),
+            (224, 224, InputLayout::Nchw)
+        );
+        assert_eq!(
+            derive_layout(&[1, 300, 300, 3]),
+            (300, 300, InputLayout::Nhwc)
+        );
+        assert_eq!(
+            derive_layout(&[1, 3, -1, -1]),
+            (224, 224, InputLayout::Nchw)
+        );
         assert_eq!(derive_layout(&[3, 128, 128]), (128, 128, InputLayout::Nchw));
         assert_eq!(derive_layout(&[64, 64, 3]), (64, 64, InputLayout::Nhwc));
         assert_eq!(derive_layout(&[]), (224, 224, InputLayout::Nchw));

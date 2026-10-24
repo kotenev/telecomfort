@@ -144,8 +144,13 @@ mod tests {
         {
             let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
             let rgb = small.to_rgb8();
-            enc.encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-                .unwrap();
+            enc.encode(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
         }
         let b = image::load_from_memory(&buf).unwrap();
         let d = hamming(phash(&a), phash(&b));
