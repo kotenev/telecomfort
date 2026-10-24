@@ -69,7 +69,11 @@ private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: ()
                     "api_hash" to store.apiHash, "proxy" to store.proxy))
                 Core.call("is_authorized", emptyMap()).optBoolean("authorized", false)
             }.getOrDefault(false)
-            if (ok) startDestination = "chats" else runCatching { Core.call("use_mock") }
+            if (ok) {
+                startDestination = "chats"
+                com.telecomfort.core.CoreBootstrap.markReady()
+                com.telecomfort.core.RealtimeService.start(ctx)
+            } else runCatching { Core.call("use_mock") }
             authed = true
         }
     }

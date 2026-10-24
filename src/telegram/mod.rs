@@ -396,6 +396,25 @@ pub struct StoryInfo {
     pub preview_path: Option<String>,
 }
 
+/// Live-обновление для пуш-канала Android (без FCM): новое сообщение,
+/// правка/удаление или событие звонка. Чистый serde-JSON для JNI.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LiveUpdate {
+    /// `message` | `edit` | `delete` | `call` | `call_ended`
+    pub kind: String,
+    pub chat_id: i64,
+    pub sender: Option<String>,
+    pub text: String,
+    pub message_id: i32,
+    /// Для `call`: id/access_hash нужны для `phone.discardCall` (отклонение).
+    pub call_id: Option<i64>,
+    pub call_access_hash: Option<i64>,
+    pub video: bool,
+    pub missed: bool,
+    /// Исходящее сообщение (своё) — не показывать пуш.
+    pub outgoing: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoginState {
     pub phone: String,
@@ -487,6 +506,16 @@ pub trait TelegramService: Send + Sync {
     /// Информация о текущем аккаунте (для мультиаккаунтов).
     async fn me(&self) -> anyhow::Result<AccountInfo> {
         anyhow::bail!("not implemented for this backend")
+    }
+    /// Следующее live-обновление (long-poll до `timeout_ms`). `None` — тишина.
+    /// Дефолт: короткая пауза и `None` (мок/бэкенды без потока обновлений).
+    async fn next_live_update(&self, timeout_ms: u64) -> anyhow::Result<Option<LiveUpdate>> {
+        tokio::time::sleep(std::time::Duration::from_millis(timeout_ms.min(1000))).await;
+        Ok(None)
+    }
+    /// Отклонить входящий звонок. Дефолт: не поддерживается.
+    async fn decline_call(&self, _call_id: i64, _access_hash: i64) -> anyhow::Result<()> {
+        anyhow::bail!("calls are not implemented for this backend")
     }
     /// Отправить текст (возвращает id отправленного). `reply_to` — ответ на сообщение.
     /// Дефолт: не поддерживается (mock переопределяет для демо).

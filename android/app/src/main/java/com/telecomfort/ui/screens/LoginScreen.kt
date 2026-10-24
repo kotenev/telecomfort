@@ -40,6 +40,7 @@ fun LoginScreen(onDone: () -> Unit, store: com.telecomfort.core.SecureStore? = n
             it.apiId = apiId; it.apiHash = apiHash; it.phone = phone; it.proxy = proxy
         }
         com.telecomfort.core.LockManager.touch()
+        com.telecomfort.core.RealtimeService.start(ctx)
         onDone()
     }
 
