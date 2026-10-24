@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -32,6 +33,9 @@ fun StoriesScreen(nav: NavController) {
     var scores by remember { mutableStateOf<Map<Int, JSONObject>>(emptyMap()) }
     var caption by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    var musicPath by remember { mutableStateOf<String?>(null) }
+    var viewersJson by remember { mutableStateOf<JSONObject?>(null) }
+    var showViewers by remember { mutableStateOf(false) }
     var yandexToken by remember { mutableStateOf("") }
     var showPublish by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -58,15 +62,25 @@ fun StoriesScreen(nav: NavController) {
     }
     LaunchedEffect(Unit) { reload() }
 
+    val pickMusic = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        val dst = File(ctx.cacheDir, "story_music_${System.currentTimeMillis()}.mp3")
+        ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+        musicPath = dst.absolutePath
+        status = "🎵 Музыка: ${dst.name}"
+    }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
             runCatching {
                 val dst = File(ctx.cacheDir, "story_${System.currentTimeMillis()}")
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                val r = Core.call("story_publish", mapOf("path" to dst.absolutePath, "caption" to caption))
+                val params = mutableMapOf<String, Any>("path" to dst.absolutePath, "caption" to caption)
+                musicPath?.let { params["music"] = it }
+                val r = Core.call("story_publish", params)
                 status = "Сторис опубликована (id ${r.optInt("id")})"
                 caption = ""
+                musicPath = null
                 showPublish = false
                 reload()
             }.onFailure { status = "Ошибка: ${it.message}" }
@@ -81,7 +95,7 @@ fun StoriesScreen(nav: NavController) {
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
         LazyColumn(Modifier.weight(1f)) {
-            items(items, key = { it.optInt("id") }) { s ->
+            itemsIndexed(items, key = { i, s -> "s-$i-${s.optInt("id")}" }) { _, s ->
                 val sc = scores[s.optInt("id")]
                 val score = sc?.optDouble("score", 0.0) ?: 0.0
                 Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
@@ -138,6 +152,15 @@ fun StoriesScreen(nav: NavController) {
                                         }.onFailure { status = "Ошибка: ${it.message}" }
                                     }
                                 }) { Text("↗️ Репост") }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        runCatching {
+                                            val r = Core.call("story_viewers", mapOf("story" to s.optInt("id"), "limit" to 100))
+                                            viewersJson = r
+                                            showViewers = true
+                                        }.onFailure { status = "Ошибка: ${it.message}" }
+                                    }
+                                }) { Text("👁 ${sc?.optInt("views", 0) ?: ""}") }
                             }
                         }
                     }
@@ -145,6 +168,18 @@ fun StoriesScreen(nav: NavController) {
             }
         }
         if (status.isNotEmpty()) Text(status, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+    }
+    if (showViewers) {
+        AlertDialog(onDismissRequest = { showViewers = false }, title = { Text("👁 Просмотры") }, text = {
+            Column {
+                Text("Всего: ${viewersJson?.optInt("count", 0)}")
+                (0 until (viewersJson?.optJSONArray("viewers")?.length() ?: 0)).map {
+                    viewersJson!!.getJSONArray("viewers").getJSONObject(it)
+                }.take(50).forEach { vw ->
+                    Text("• ${vw.optString("name", "?")}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Закрыть") } })
     }
     if (showPublish) {
         AlertDialog(onDismissRequest = { showPublish = false }, title = { Text("Новая сторис") }, text = {
@@ -154,7 +189,10 @@ fun StoriesScreen(nav: NavController) {
                     style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = {
-            TextButton(onClick = { pickMedia.launch("image/*") }) { Text("Выбрать файл") }
+            Row {
+                TextButton(onClick = { pickMusic.launch("audio/*") }) { Text("🎵 Музыка${if (musicPath != null) " ✓" else ""}") }
+                TextButton(onClick = { pickMedia.launch("*/*") }) { Text("Выбрать файл") }
+            }
         }, dismissButton = { TextButton(onClick = { showPublish = false }) { Text("Отмена") } })
     }
 }
