@@ -105,6 +105,34 @@ fn b64dec(s: &str) -> Result<Vec<u8>> {
         .context("bad base64")
 }
 
+fn is_image_path(p: &std::path::Path) -> bool {
+    matches!(
+        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()),
+        Some(ref e) if matches!(e.as_str(), "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif")
+    )
+}
+
+/// Рекурсивно собрать картинки (глубина ≤ 2) до `limit` штук.
+fn collect_image_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, limit: usize) {
+    if out.len() >= limit {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if out.len() >= limit {
+            return;
+        }
+        let p = entry.path();
+        if p.is_dir() {
+            collect_image_files(&p, out, limit);
+        } else if is_image_path(&p) {
+            out.push(p);
+        }
+    }
+}
+
 // --- entry -----------------------------------------------------------------
 /// Выполнить команду моста, вернуть JSON-ответ строкой.
 pub fn core_call(req_json: &str) -> String {
@@ -856,6 +884,52 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
                 .await?;
             Ok(json!({"path": path.to_string_lossy()}))
         }
+        "local_duplicates" => {
+            // Похожие картинки в локальных папках (pHash + BK-дерево/DSU).
+            // Аналог десктопного блока «Похожие» в Загрузках.
+            let dirs: Vec<std::path::PathBuf> = v
+                .get("dirs")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str())
+                        .map(std::path::PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let threshold = v
+                .get("threshold")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(crate::ai::phash::MAX_HAMMING as u64) as u32;
+            let max_files = v.get("max_files").and_then(|x| x.as_u64()).unwrap_or(300) as usize;
+            let mut paths = Vec::new();
+            for d in &dirs {
+                collect_image_files(d, &mut paths, max_files.saturating_mul(3));
+            }
+            paths.sort();
+            paths.dedup();
+            paths.truncate(max_files);
+            let mut hashes = Vec::new();
+            let mut ok_paths = Vec::new();
+            for p in paths {
+                if let Ok(img) = image::open(&p) {
+                    hashes.push(crate::ai::phash::phash(&img));
+                    ok_paths.push(p);
+                }
+            }
+            let groups = crate::ai::cluster::cluster_indices(&hashes, threshold.min(64));
+            let grouped: Vec<Value> = groups
+                .iter()
+                .map(|g| {
+                    json!(g
+                        .iter()
+                        .filter_map(|i| ok_paths.get(*i))
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect::<Vec<_>>())
+                })
+                .collect();
+            Ok(json!({"groups": grouped, "scanned": ok_paths.len()}))
+        }
         // -- экспорт (без диалога: путь задаёт Kotlin) --
         "export_history" => {
             let tg = core().tg()?;
@@ -1050,6 +1124,11 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
                 .await?;
             Ok(json!({"id": id}))
         }
+        "pin_message" => {
+            let tg = core().tg()?;
+            tg.pin_message(i64f(v, "chat")?, i32f(v, "id")?).await?;
+            Ok(json!({}))
+        }
         "unpin_message" => {
             let tg = core().tg()?;
             tg.unpin_message(i64f(v, "chat")?, i32f(v, "id")?).await?;
@@ -1090,6 +1169,18 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
                 Ok(_) => Ok(json!({"authorized": true})),
                 Err(_) => Ok(json!({"authorized": false})),
             }
+        }
+        "logout" => {
+            // Выход: забыть сервис и стереть session-файл (как десктопный logout).
+            let mut c = core();
+            c.tg = None;
+            let sess = c.dir.join("session_android.session");
+            let _ = std::fs::remove_file(&sess);
+            // SQLite-journal рядом с сессией (grammers/rusqlite).
+            let mut journal = sess.as_os_str().to_owned();
+            journal.push("-journal");
+            let _ = std::fs::remove_file(std::path::PathBuf::from(journal));
+            Ok(json!({"ok": true}))
         }
         _ => anyhow::bail!("unknown op: {op}"),
     }
@@ -1286,6 +1377,7 @@ mod tests {
             json!({"op": "get_profile"}),
             json!({"op": "kick_participant", "chat": -1001, "user": 1}),
             json!({"op": "share_contact", "chat": -1001, "phone": "+7", "first": "A"}),
+            json!({"op": "pin_message", "chat": -1001, "id": 1}),
             json!({"op": "unpin_message", "chat": -1001, "id": 1}),
             json!({"op": "send_to_topic", "chat": -1001, "topic": 1, "text": "hi"}),
         ] {
@@ -1387,6 +1479,30 @@ mod tests {
     fn bridge_test_proxy_manual() {
         let r = call(json!({"op": "test_proxy", "api_id": 0, "api_hash": "x"}));
         assert!(r.get("ok").is_some(), "{r}");
+    }
+
+    #[test]
+    fn bridge_local_duplicates_finds_groups() {
+        let dir = std::env::temp_dir().join(format!("tc_dup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = image::RgbImage::from_fn(64, 64, |x, y| {
+            image::Rgb([(x * 4) as u8, (y * 4) as u8, 128])
+        });
+        img.save(dir.join("a.png")).unwrap();
+        let dynimg = image::DynamicImage::ImageRgb8(img);
+        let small = image::imageops::resize(&dynimg, 48, 48, image::imageops::FilterType::Triangle);
+        small.save(dir.join("b.png")).unwrap();
+        let r = call(
+            json!({"op": "local_duplicates", "dirs": [dir.to_string_lossy()], "threshold": 6}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let groups = r["groups"].as_array().cloned().unwrap_or_default();
+        assert!(!groups.is_empty(), "{r}");
+        assert!(
+            groups[0].as_array().map(|g| g.len() >= 2).unwrap_or(false),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

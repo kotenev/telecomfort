@@ -39,12 +39,23 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var items by remember { mutableStateOf<List<Message>>(emptyList()) }
     var rawItems by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var webPhotos by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+    var mediaPaths by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+    var playingId by remember { mutableStateOf<Int?>(null) }
+    var player by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            player?.release()
+            player = null
+        }
+    }
     var replyTo by remember { mutableStateOf<Pair<Int, String>?>(null) }
     var editMsg by remember { mutableStateOf<Message?>(null) }
     var forwardIds by remember { mutableStateOf<List<Int>>(emptyList()) }
     var forwardTo by remember { mutableStateOf<Long?>(null) }
     var forwardChats by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var text by remember { mutableStateOf("") }
+    var silentSend by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var status by remember { mutableStateOf("") }
     var showInfo by remember { mutableStateOf(false) }
     var showParticipants by remember { mutableStateOf(false) }
@@ -94,6 +105,9 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var scheduled by remember { mutableStateOf<List<Message>>(emptyList()) }
     var showPinned by remember { mutableStateOf(false) }
     var pinned by remember { mutableStateOf<List<Message>>(emptyList()) }
+    var pinnedOne by remember { mutableStateOf<Message?>(null) }
+    var loadingOlder by remember { mutableStateOf(false) }
+    var reachedStart by remember { mutableStateOf(false) }
     var showPoll by remember { mutableStateOf(false) }
     var showSchedule by remember { mutableStateOf(false) }
     var schedDate by remember { mutableStateOf("") }
@@ -130,11 +144,43 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 val r = Core.call("history", mapOf("chat" to chatId, "limit" to limit))
                 rawItems = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
                 items = rawItems.map { parseMessage(it) }
+                reachedStart = false
+                loadingOlder = false
             }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
+    fun loadOlder() {
+        if (loadingOlder || reachedStart || rawItems.isEmpty()) return
+        loadingOlder = true
+        scope.launch {
+            runCatching {
+                val oldest = rawItems.last().optInt("id")
+                val r = Core.call("history_before", mapOf("chat" to chatId, "offset_id" to oldest, "limit" to 100))
+                val page = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                if (page.isEmpty()) {
+                    reachedStart = true
+                } else {
+                    val known = rawItems.map { it.optInt("id") }.toHashSet()
+                    val fresh = page.filter { it.optInt("id") !in known }
+                    if (fresh.isEmpty()) reachedStart = true
+                    rawItems = rawItems + fresh
+                    items = rawItems.map { parseMessage(it) }
+                }
+            }.onFailure { status = "Ошибка: ${it.message}" }
+            loadingOlder = false
+        }
+    }
+    fun refreshPinned() {
+        scope.launch {
+            runCatching {
+                val r = Core.call("pinned_one", mapOf("chat" to chatId))
+                pinnedOne = r.optJSONObject("result")?.let { parseMessage(it) }
+            }
         }
     }
     LaunchedEffect(chatId) {
         reload()
+        refreshPinned()
         scope.launch {
             // Помечаем прочитанным при открытии (как десктопный select_chat).
             runCatching { Core.call("mark_read", mapOf("chat" to chatId)) }
@@ -147,7 +193,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             runCatching {
                 val dst = File(ctx.cacheDir, "round_${System.currentTimeMillis()}.mp4")
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                val r = Core.call("send_round", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text))
+                val r = Core.call("send_round", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text, "silent" to silentSend))
                 status = "Кружок отправлен (msg ${r.optInt("id")})"
                 text = ""
                 reload()
@@ -158,20 +204,14 @@ fun ChatScreen(chatId: Long, nav: NavController) {
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             runCatching {
-                val paths = uris.mapIndexed { i, uri ->
+                // Как в десктопе: файлы попадают в очередь вложений, капшн — текст композера.
+                val added = uris.mapIndexed { i, uri ->
                     val dst = File(ctx.cacheDir, "attach_${System.currentTimeMillis()}_$i")
                     ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                    dst.absolutePath
+                    dst.absolutePath to dst.name
                 }
-                if (paths.size == 1) {
-                    val r = Core.call("send_file", mapOf("chat" to chatId, "path" to paths[0], "caption" to text))
-                    status = "Отправлено (msg ${r.optInt("id")})"
-                } else {
-                    val r = Core.call("send_album", mapOf("chat" to chatId, "paths" to paths, "caption" to text))
-                    status = "Альбом отправлен"
-                }
-                text = ""
-                reload()
+                pending = pending + added
+                status = "В очереди: ${pending.size} файл(ов). Текст станет подписью."
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
@@ -183,7 +223,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 val name = "attach_${System.currentTimeMillis()}"
                 val dst = File(ctx.cacheDir, name)
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
-                val r = Core.call("send_file", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text))
+                val r = Core.call("send_file", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text, "silent" to silentSend))
                 status = "Отправлено (msg ${r.optInt("id")})"
                 text = ""
                 reload()
@@ -194,13 +234,28 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     fun sendText() {
         scope.launch {
             runCatching {
+                if (pending.isNotEmpty() && editMsg == null) {
+                    val paths = pending.map { it.first }
+                    if (paths.size == 1) {
+                        val r = Core.call("send_file", mapOf("chat" to chatId, "path" to paths[0], "caption" to text, "silent" to silentSend))
+                        status = "Отправлено (msg ${r.optInt("id")})"
+                    } else {
+                        Core.call("send_album", mapOf("chat" to chatId, "paths" to paths, "caption" to text, "silent" to silentSend))
+                        status = "Альбом отправлен (${paths.size})"
+                    }
+                    pending = emptyList()
+                    replyTo = null
+                    text = ""
+                    reload()
+                    return@runCatching
+                }
                 if (editMsg != null) {
                     Core.call("edit_text", mapOf("chat" to chatId, "id" to editMsg!!.id, "text" to text))
                     editMsg = null
                 } else if (topicId != null) {
-                    Core.call("send_to_topic", mapOf("chat" to chatId, "topic" to topicId!!, "text" to text))
+                    Core.call("send_to_topic", mapOf("chat" to chatId, "topic" to topicId!!, "text" to text, "silent" to silentSend))
                     } else {
-                        val params = mutableMapOf<String, Any>("chat" to chatId, "text" to text)
+                        val params = mutableMapOf<String, Any>("chat" to chatId, "text" to text, "silent" to silentSend)
                         replyTo?.let { params["reply_to"] = it.first }
                         Core.call("send_text", params)
                         replyTo = null
@@ -237,7 +292,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 runCatching {
                     val ogg = File(ctx.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
                     Core.call("wav_to_ogg", mapOf("src" to wav.absolutePath, "dst" to ogg.absolutePath))
-                    Core.call("send_voice", mapOf("chat" to chatId, "path" to ogg.absolutePath, "caption" to text))
+                    Core.call("send_voice", mapOf("chat" to chatId, "path" to ogg.absolutePath, "caption" to text, "silent" to silentSend))
                     status = "Войс отправлен (Opus)"
                     text = ""
                     reload()
@@ -358,7 +413,52 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }, label = { Text(label) })
             }
         }
+        pinnedOne?.let { p ->
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                ) {
+                    Text("📌", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        p.text.take(80).ifEmpty { "[медиа]" },
+                        modifier = Modifier.weight(1f).padding(start = 6.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                    )
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                val r = Core.call("pinned_list", mapOf("chat" to chatId, "limit" to 50))
+                                pinned = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                                showPinned = true
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("Все") }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("unpin_message", mapOf("chat" to chatId, "id" to p.id))
+                                refreshPinned()
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("✕") }
+                }
+            }
+        }
         LazyColumn(Modifier.weight(1f), state = listState, reverseLayout = true) {
+            item {
+                TextButton(
+                    onClick = { loadOlder() },
+                    enabled = !loadingOlder && !reachedStart,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (reachedStart) "— начало истории —" else if (loadingOlder) "Загрузка…" else "⬆ Загрузить ещё")
+                }
+            }
             itemsIndexed(items.reversed(), key = { _, m -> m.id }) { ri, m ->
                     val poll = rawItems.getOrNull(rawItems.size - 1 - ri)?.optJSONObject("poll")
                 Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)) {
@@ -366,16 +466,97 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         Text(if (m.outgoing) "я" else (m.sender ?: "—"), style = MaterialTheme.typography.labelSmall)
                         Text(m.text)
                         if (m.hasMedia) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("[${m.mediaKind ?: "медиа"} ${m.fileName ?: ""}]", style = MaterialTheme.typography.bodySmall)
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        runCatching {
-                                            val r = Core.call("download_media", mapOf("chat" to chatId, "id" to m.id))
-                                            status = "Скачано: ${r.optString("path")}"
-                                        }.onFailure { status = "Ошибка: ${it.message}" }
+                            val kind = (m.mediaKind ?: "").lowercase()
+                            val path = mediaPaths[m.id]
+                            val name = m.fileName ?: ""
+                            val isImage = path != null && (kind.contains("photo") || kind.contains("image") ||
+                                kind.contains("sticker") || name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) ||
+                                name.endsWith(".png", true) || name.endsWith(".webp", true))
+                            val isAudio = path != null && (kind.contains("voice") || kind.contains("audio") ||
+                                kind.contains("music") || name.endsWith(".ogg", true) || name.endsWith(".mp3", true) ||
+                                name.endsWith(".m4a", true) || name.endsWith(".wav", true))
+                            val isVideo = path != null && (kind.contains("video") || kind.contains("round") ||
+                                name.endsWith(".mp4", true) || name.endsWith(".mkv", true) || name.endsWith(".webm", true))
+                            Column {
+                                Text("[${m.mediaKind ?: "медиа"} $name]", style = MaterialTheme.typography.bodySmall)
+                                if (path != null && isImage) {
+                                    val bmp = remember(path) { android.graphics.BitmapFactory.decodeFile(path) }
+                                    if (bmp != null) {
+                                        Image(
+                                            bmp.asImageBitmap(), contentDescription = null,
+                                            modifier = Modifier
+                                                .heightIn(max = 260.dp)
+                                                .widthIn(max = 320.dp)
+                                                .padding(vertical = 4.dp),
+                                        )
+                                    } else {
+                                        Text("Не удалось открыть изображение", style = MaterialTheme.typography.bodySmall)
                                     }
-                                }) { Text("⬇") }
+                                } else if (path != null && isAudio) {
+                                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                        val active = playingId == m.id
+                                        TextButton(onClick = {
+                                            if (active) {
+                                                player?.stop()
+                                                player?.release()
+                                                player = null
+                                                playingId = null
+                                            } else {
+                                                player?.release()
+                                                runCatching {
+                                                    val mp = android.media.MediaPlayer()
+                                                    mp.setDataSource(path)
+                                                    mp.setOnCompletionListener {
+                                                        playingId = null
+                                                    }
+                                                    mp.prepare()
+                                                    mp.start()
+                                                    player = mp
+                                                    playingId = m.id
+                                                }.onFailure {
+                                                    status = "Не удалось воспроизвести: ${it.message}"
+                                                }
+                                            }
+                                        }) { Text(if (active) "⏸" else "▶") }
+                                        Text(if (isAudio && kind.contains("voice")) "голосовое" else "аудио",
+                                            style = MaterialTheme.typography.bodySmall)
+                                    }
+                                } else if (path != null && isVideo) {
+                                    TextButton(onClick = {
+                                        runCatching {
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                ctx, ctx.packageName + ".files", File(path))
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                setDataAndType(uri, "video/*")
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            ctx.startActivity(intent)
+                                        }.onFailure { status = "Нет видеоплеера: ${it.message}" }
+                                    }) { Text("🎬 Открыть видео") }
+                                } else if (path != null) {
+                                    TextButton(onClick = {
+                                        runCatching {
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                ctx, ctx.packageName + ".files", File(path))
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                setDataAndType(uri, "application/octet-stream")
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            ctx.startActivity(intent)
+                                        }.onFailure { status = "Нет приложения: ${it.message}" }
+                                    }) { Text("📂 Открыть файл") }
+                                } else {
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            runCatching {
+                                                val r = Core.call("download_media", mapOf("chat" to chatId, "id" to m.id))
+                                                val p = r.optString("path")
+                                                mediaPaths = mediaPaths + (m.id to p)
+                                                status = "Скачано: $p"
+                                            }.onFailure { status = "Ошибка: ${it.message}" }
+                                        }
+                                    }) { Text("⬇ Скачать") }
+                                }
                             }
                         }
                         rawItems.getOrNull(rawItems.size - 1 - ri)?.optJSONObject("web_preview")?.let { wp ->
@@ -408,6 +589,15 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("pin_message", mapOf("chat" to chatId, "id" to m.id))
+                                        refreshPinned()
+                                        status = "Закреплено"
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("📌") }
                             TextButton(onClick = {
                                 scope.launch {
                                     runCatching {
@@ -528,7 +718,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                 val fr = s.optString("file_reference", "")
                                 Core.call("send_doc_ref", mapOf(
                                     "chat" to chatId, "doc_id" to s.optLong("id"),
-                                    "access_hash" to s.optLong("access_hash"), "file_ref" to fr,
+                                    "access_hash" to s.optLong("access_hash"), "file_ref" to fr, "silent" to silentSend,
                                 ))
                                 showStickers = false; showGifs = false
                                 reload()
@@ -538,6 +728,16 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = { showStickers = false; showGifs = false }) { Text("✕") }
+            }
+        }
+        if (pending.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    pending.forEachIndexed { i, (_, name) ->
+                        Text("📎 $i ${name.take(32)}", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    }
+                }
+                TextButton(onClick = { pending = emptyList() }) { Text("✕") }
             }
         }
         replyTo?.let { (id, snippet) ->
@@ -598,6 +798,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("📍") }
             IconButton(onClick = { showSchedule = true }) { Text("⏰") }
+                        IconButton(onClick = { silentSend = !silentSend }) { Text(if (silentSend) "🔕" else "🔔") }
             if (recording != null) {
             val bars = "▁▂▃▄▅▆▇".take(((recLevel * 7).toInt()).coerceIn(1, 7))
             Text("● $bars", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -885,6 +1086,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                     Core.call("unpin_message", mapOf("chat" to chatId, "id" to pinned[i].id))
                                     val r = Core.call("pinned_list", mapOf("chat" to chatId, "limit" to 50))
                                     pinned = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                                    refreshPinned()
                                 }.onFailure { status = "Ошибка: ${it.message}" }
                             }
                         }) { Text("✕") }
@@ -961,7 +1163,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         val tp = schedTime.trim().split(":").map { it.toInt() }
                         val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Europe/Moscow"))
                         cal.set(dp[0], dp[1] - 1, dp[2], tp[0], tp[1], 0)
-                        Core.call("send_scheduled", mapOf("chat" to chatId, "text" to text, "at" to cal.timeInMillis / 1000))
+                        Core.call("send_scheduled", mapOf("chat" to chatId, "text" to text, "at" to cal.timeInMillis / 1000, "silent" to silentSend))
                         text = ""
                         showSchedule = false
                         status = "Запланировано"
