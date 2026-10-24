@@ -280,6 +280,30 @@ pub struct StarGiftFull {
     pub convert_stars: i64,
 }
 
+/// Одна Stars-транзакция (payments.getStarsTransactions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarTxInfo {
+    pub tx_id: String,
+    pub date: i64,
+    /// Подписанная сумма: + вход, − расход.
+    pub stars: i64,
+    pub title: Option<String>,
+    pub peer_name: Option<String>,
+    pub flags: Vec<String>,
+}
+
+/// Сохранённый Stars-подарок (payments.getSavedStarGifts, только чтение).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedGiftInfo {
+    pub gift_id: i64,
+    pub title: String,
+    pub stars: i64,
+    pub date: i64,
+    pub from_name: Option<String>,
+    pub can_upgrade: bool,
+    pub message: Option<String>,
+}
+
 /// Рядом находящийся пир (contacts.getLocated, без точной дистанции — API её не отдаёт).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NearbyPeer {
@@ -1086,6 +1110,23 @@ pub trait TelegramService: Send + Sync {
     /// Пожаловаться на спам от имени чата (messages.reportSpam).
     async fn report_spam(&self, _chat_id: i64) -> anyhow::Result<bool> {
         anyhow::bail!("report_spam is not implemented for this backend")
+    }
+    /// История Stars-транзакций (payments.getStarsTransactions).
+    async fn stars_transactions(
+        &self,
+        _inbound: bool,
+        _outbound: bool,
+        _limit: i32,
+    ) -> anyhow::Result<Vec<StarTxInfo>> {
+        anyhow::bail!("stars_transactions is not implemented for this backend")
+    }
+    /// Мои сохранённые Stars-подарки (payments.getSavedStarGifts).
+    async fn saved_star_gifts(&self) -> anyhow::Result<Vec<SavedGiftInfo>> {
+        anyhow::bail!("saved_star_gifts is not implemented for this backend")
+    }
+    /// Подсказка пароля 2FA с сервера (account.getPassword.hint).
+    async fn password_hint(&self) -> anyhow::Result<Option<String>> {
+        anyhow::bail!("password_hint is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

@@ -122,6 +122,19 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             submit_code(app);
         }
     });
+    // Подсказка пароля с сервера (account.getPassword.hint).
+    if app.login_stage == "password" && app.pw_server_hint.is_none() {
+        app.load_pw_hint();
+    }
+    if let Some(hint) = app.pw_server_hint.clone() {
+        if !hint.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("💡 подсказка: {hint}"))
+                    .small()
+                    .weak(),
+            );
+        }
+    }
     ui.horizontal(|ui| {
         ui.label("Пароль 2FA:");
         ui.add(egui::TextEdit::singleline(&mut app.password).password(true));
@@ -143,6 +156,13 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         match app.stars {
             Some((amount, _)) => {
                 ui.label(format!("⭐ {amount}"));
+                if ui
+                    .small_button("📜")
+                    .on_hover_text("История Stars и мои подарки")
+                    .clicked()
+                {
+                    app.load_stars_history();
+                }
             }
             None => {
                 if app.login_stage == "done"
@@ -192,6 +212,64 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         .small()
         .weak(),
     );
+    // Окно истории Stars: транзакции + сохранённые подарки.
+    if app.stars_window_open {
+        let txs = app.stars_tx.clone();
+        let gifts = app.saved_gifts.clone();
+        egui::Window::new("⭐ Stars")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(380.0);
+                if let Some((amount, _)) = app.stars {
+                    ui.heading(format!("Баланс: ⭐ {amount}"));
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Транзакции:").strong());
+                if txs.is_empty() {
+                    ui.label(egui::RichText::new("пока пусто").small().weak());
+                }
+                for t in txs.iter().take(50) {
+                    let sign = if t.stars >= 0 { "+" } else { "" };
+                    let mut line = format!(
+                        "{}{} ⭐ · {}",
+                        sign,
+                        t.stars,
+                        crate::ui::app::format_msg_time(t.date)
+                    );
+                    if let Some(title) = &t.title {
+                        line += &format!(" · {title}");
+                    }
+                    if let Some(peer) = &t.peer_name {
+                        line += &format!(" ({peer})");
+                    }
+                    if !t.flags.is_empty() {
+                        line += &format!(" [{}]", t.flags.join(", "));
+                    }
+                    ui.label(egui::RichText::new(line).small());
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Мои подарки:").strong());
+                if gifts.is_empty() {
+                    ui.label(egui::RichText::new("пока пусто").small().weak());
+                }
+                for g in gifts.iter().take(30) {
+                    let mut line = format!("🎁 {} — ⭐ {}", g.title, g.stars);
+                    if let Some(from) = &g.from_name {
+                        line += &format!(" от {from}");
+                    }
+                    if g.can_upgrade {
+                        line += " [можно улучшить]";
+                    }
+                    if let Some(msg) = &g.message {
+                        line += &format!(" «{msg}»");
+                    }
+                    ui.label(egui::RichText::new(line).small());
+                }
+                if ui.button("Закрыть").clicked() {
+                    app.stars_window_open = false;
+                }
+            });
+    }
 }
 
 fn current_session_path(app: &TelecomfortApp) -> std::path::PathBuf {
