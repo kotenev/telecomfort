@@ -2,7 +2,8 @@
 
 use super::{
     AccountInfo, ChatFullInfo, ChatInfo, GifInfo, MessageInfo, NearbyPeer, PeerFullInfo,
-    ReactionVoter, StarGiftFull, StarGiftOption, StickerInfo, StoryInfo, TelegramService,
+    ReactionVoter, SavedGiftInfo, StarGiftFull, StarGiftOption, StarTxInfo, StickerInfo, StoryInfo,
+    TelegramService,
 };
 use async_trait::async_trait;
 
@@ -1191,6 +1192,47 @@ impl TelegramService for MockTelegram {
     async fn report_spam(&self, _chat_id: i64) -> anyhow::Result<bool> {
         Ok(true)
     }
+    async fn stars_transactions(
+        &self,
+        _inbound: bool,
+        _outbound: bool,
+        limit: i32,
+    ) -> anyhow::Result<Vec<StarTxInfo>> {
+        let mut out = vec![
+            StarTxInfo {
+                tx_id: "t1".into(),
+                date: 1_700_000_000,
+                stars: 100,
+                title: Some("пополнение".into()),
+                peer_name: Some("Fragment".into()),
+                flags: vec![],
+            },
+            StarTxInfo {
+                tx_id: "t2".into(),
+                date: 1_700_001_000,
+                stars: -50,
+                title: Some("подарок".into()),
+                peer_name: Some("Анна".into()),
+                flags: vec!["подарок".into()],
+            },
+        ];
+        out.truncate(limit.max(0) as usize);
+        Ok(out)
+    }
+    async fn saved_star_gifts(&self) -> anyhow::Result<Vec<SavedGiftInfo>> {
+        Ok(vec![SavedGiftInfo {
+            gift_id: 7001,
+            title: "Мишка".into(),
+            stars: 50,
+            date: 1_700_002_000,
+            from_name: Some("Борис".into()),
+            can_upgrade: true,
+            message: Some("держи!".into()),
+        }])
+    }
+    async fn password_hint(&self) -> anyhow::Result<Option<String>> {
+        Ok(Some("демо-хинт (mock)".into()))
+    }
     async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
         Ok((vec![7u8; 16], 9_999_999_999))
     }
@@ -1817,6 +1859,20 @@ mod tests {
         // Антиспам и жалоба: mock всегда ок.
         m.toggle_antispam(-1001, true).await.expect("antispam");
         assert!(m.report_spam(-1001).await.expect("report"));
+        // Stars: транзакции + сохранённые подарки + хинт.
+        let txs = m.stars_transactions(true, true, 10).await.expect("txs");
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].stars, 100);
+        assert_eq!(txs[1].flags, vec!["подарок".to_string()]);
+        let limited = m.stars_transactions(true, true, 1).await.expect("txs1");
+        assert_eq!(limited.len(), 1);
+        let saved = m.saved_star_gifts().await.expect("saved");
+        assert_eq!(saved.len(), 1);
+        assert!(saved[0].can_upgrade);
+        assert_eq!(
+            m.password_hint().await.expect("hint"),
+            Some("демо-хинт (mock)".into())
+        );
         assert!(m.change_password("old", "123", "", "").await.is_err());
     }
 }

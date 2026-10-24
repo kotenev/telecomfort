@@ -322,6 +322,12 @@ pub enum BgEvent {
     },
     /// Каталог подарков для отправки.
     GiftCatalogLoaded(Vec<crate::telegram::StarGiftFull>),
+    /// История Stars-транзакций.
+    StarsTxLoaded(Vec<crate::telegram::StarTxInfo>),
+    /// Мои сохранённые подарки.
+    SavedGiftsLoaded(Vec<crate::telegram::SavedGiftInfo>),
+    /// Подсказка пароля 2FA.
+    PwHintLoaded(Option<String>),
     /// Прыжок к дате: окно истории + достигнуто ли начало.
     JumpLoaded {
         chat_id: i64,
@@ -648,8 +654,15 @@ pub struct TelecomfortApp {
     pub gift_armed: Option<i64>,
     pub gift_hide_name: bool,
     pub gift_message: String,
+    pub stars_tx: Vec<crate::telegram::StarTxInfo>,
+    pub stars_window_open: bool,
+    pub saved_gifts: Vec<crate::telegram::SavedGiftInfo>,
+    pub pw_server_hint: Option<String>,
     pub jump_date: String,
     pub jump_open: Option<i64>,
+    pub export_open: Option<i64>,
+    pub export_format: String,
+    pub export_with_media: bool,
     pub ttl_custom: String,
     pub pw_current: String,
     pub pw_new: String,
@@ -884,8 +897,15 @@ impl TelecomfortApp {
             gift_armed: None,
             gift_hide_name: false,
             gift_message: String::new(),
+            stars_tx: Vec::new(),
+            stars_window_open: false,
+            saved_gifts: Vec::new(),
+            pw_server_hint: None,
             jump_date: String::new(),
             jump_open: None,
+            export_open: None,
+            export_format: "html".into(),
+            export_with_media: false,
             ttl_custom: String::new(),
             pw_current: String::new(),
             pw_new: String::new(),
@@ -1698,6 +1718,15 @@ impl TelecomfortApp {
                 BgEvent::GiftCatalogLoaded(list) => {
                     self.gift_catalog = list;
                 }
+                BgEvent::StarsTxLoaded(list) => {
+                    self.stars_tx = list;
+                }
+                BgEvent::SavedGiftsLoaded(list) => {
+                    self.saved_gifts = list;
+                }
+                BgEvent::PwHintLoaded(hint) => {
+                    self.pw_server_hint = hint;
+                }
                 BgEvent::JumpLoaded {
                     chat_id,
                     items,
@@ -2145,7 +2174,8 @@ impl TelecomfortApp {
     }
 
     /// Экспорт истории чата в JSON или HTML (до 20000 сообщений, страницами по 500).
-    pub fn export_history(&mut self, chat_id: i64, format: &str) {
+    /// with_media: скачать медиа (лимит 150 файлов) в папку рядом и сослаться из HTML.
+    pub fn export_history(&mut self, chat_id: i64, format: &str, with_media: bool) {
         let format = format.to_string();
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(format!("history_{chat_id}.{format}"))
@@ -2153,6 +2183,7 @@ impl TelecomfortApp {
         else {
             return;
         };
+        self.export_open = None;
         let tg = Arc::clone(&self.tg);
         let tx = self.tx.clone();
         let title = self
@@ -2183,8 +2214,40 @@ impl TelecomfortApp {
                 }
             }
             all.sort_by_key(|m| m.id);
+            // Медиа: качаем в папку рядом, в HTML — относительные ссылки.
+            let mut media: std::collections::HashMap<i32, String> =
+                std::collections::HashMap::new();
+            if with_media && format == "html" {
+                let dir = path.with_extension("").with_extension("files");
+                std::fs::create_dir_all(&dir).ok();
+                let mut done = 0;
+                for m in all.iter().filter(|m| m.has_media) {
+                    if done >= 150 {
+                        break;
+                    }
+                    match tg.download_message_media(chat_id, m.id, &dir).await {
+                        Ok(p) => {
+                            if let Some(name) =
+                                p.file_name().map(|n| n.to_string_lossy().to_string())
+                            {
+                                media.insert(
+                                    m.id,
+                                    format!(
+                                        "{}/{name}",
+                                        dir.file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_default()
+                                    ),
+                                );
+                                done += 1;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
             let text = if format == "html" {
-                export_history_html(&title, &all)
+                export_history_html(&title, &all, &media)
             } else {
                 serde_json::to_string_pretty(&all).unwrap_or_else(|_| "[]".into())
             };
@@ -2701,6 +2764,50 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("прокси: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить историю Stars-транзакций + сохранённые подарки.
+    pub fn load_stars_history(&mut self) {
+        self.stars_window_open = true;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.stars_transactions(true, true, 50).await {
+                Ok(list) => {
+                    let _ = tx.send(BgEvent::StarsTxLoaded(list));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("транзакции: {e:#}")));
+                }
+            }
+            match tg.saved_star_gifts().await {
+                Ok(list) => {
+                    let _ = tx.send(BgEvent::SavedGiftsLoaded(list));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подарки: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить подсказку пароля 2FA (показывается в строке пароля).
+    pub fn load_pw_hint(&mut self) {
+        if self.pw_server_hint.is_some() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.password_hint().await {
+                Ok(hint) => {
+                    let _ = tx.send(BgEvent::PwHintLoaded(hint));
+                }
+                Err(_) => {
+                    let _ = tx.send(BgEvent::PwHintLoaded(None));
                 }
             }
         });
@@ -5930,7 +6037,11 @@ pub fn qr_image_232(payload: &str) -> Option<egui::ColorImage> {
 }
 
 /// HTML-экспорт истории: таблица время/автор/текст/медиа.
-pub fn export_history_html(title: &str, items: &[crate::telegram::MessageInfo]) -> String {
+pub fn export_history_html(
+    title: &str,
+    items: &[crate::telegram::MessageInfo],
+    media: &std::collections::HashMap<i32, String>,
+) -> String {
     fn esc(s: &str) -> String {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -5950,7 +6061,16 @@ pub fn export_history_html(title: &str, items: &[crate::telegram::MessageInfo]) 
         if m.has_media {
             let kind = m.media_kind.clone().unwrap_or_else(|| "медиа".into());
             let name = m.file_name.clone().unwrap_or_default();
-            body += &format!("<br><i>[{} {}]</i>", esc(&kind), esc(&name));
+            if let Some(local) = media.get(&m.id) {
+                body += &format!(
+                    "<br><a href=\"{}\">[{} {}]</a>",
+                    esc(local),
+                    esc(&kind),
+                    esc(&name)
+                );
+            } else {
+                body += &format!("<br><i>[{} {}]</i>", esc(&kind), esc(&name));
+            }
         }
         if let Some(p) = &m.poll {
             body += &format!("<br><b>Опрос:</b> {}", esc(&p.question));
@@ -6134,9 +6254,13 @@ mod tests {
                 topic_id: None,
             },
         ];
-        let html = export_history_html("Тест <чат>", &items);
+        let mut media = std::collections::HashMap::new();
+        media.insert(1, "history_files/a.jpg".to_string());
+        let html = export_history_html("Тест <чат>", &items, &media);
         assert!(html.contains("&lt;b&gt;привет&lt;/b&gt; &amp; пока"));
-        assert!(html.contains("[photo a.jpg]"));
+        assert!(html.contains("<a href=\"history_files/a.jpg\">[photo a.jpg]</a>"));
+        let html2 = export_history_html("x", &items[..1], &std::collections::HashMap::new());
+        assert!(html2.contains("[photo a.jpg]"));
         assert!(html.contains("Сообщений: 2"));
         assert!(html.contains("Тест &lt;чат&gt;"));
         assert!(html.contains(">я<"));

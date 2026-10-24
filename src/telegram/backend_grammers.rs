@@ -4096,6 +4096,209 @@ impl GrammersBackend {
     }
 }
 
+impl GrammersBackend {
+    /// История Stars-транзакций (payments.getStarsTransactions).
+    pub async fn stars_transactions(
+        &self,
+        inbound: bool,
+        outbound: bool,
+        limit: i32,
+    ) -> Result<Vec<super::StarTxInfo>> {
+        use grammers_client::tl;
+        use std::collections::HashMap;
+        let res = self
+            .client
+            .invoke(&tl::functions::payments::GetStarsTransactions {
+                inbound,
+                outbound,
+                ascending: false,
+                ton: false,
+                subscription_id: None,
+                peer: tl::enums::InputPeer::PeerSelf,
+                offset: String::new(),
+                limit,
+            })
+            .await
+            .context("getStarsTransactions failed")?;
+        let status = match res {
+            tl::enums::payments::StarsStatus::Status(s) => s,
+        };
+        let mut names: HashMap<i64, String> = HashMap::new();
+        for u in status.users {
+            if let tl::enums::User::User(t) = u {
+                let name = format!(
+                    "{} {}",
+                    t.first_name.unwrap_or_default(),
+                    t.last_name.unwrap_or_default()
+                )
+                .trim()
+                .to_string();
+                names.insert(t.id, name);
+            }
+        }
+        for c in status.chats {
+            let (id, title) = match c {
+                tl::enums::Chat::Channel(t) => (t.id, t.title),
+                tl::enums::Chat::Chat(t) => (t.id, t.title),
+                _ => continue,
+            };
+            names.insert(id, title);
+        }
+        let history = status.history.unwrap_or_default();
+        Ok(history
+            .into_iter()
+            .filter_map(|t| match t {
+                tl::enums::StarsTransaction::Transaction(t) => {
+                    let mut flags: Vec<String> = vec![];
+                    if t.gift {
+                        flags.push("подарок".into());
+                    }
+                    if t.reaction {
+                        flags.push("реакция".into());
+                    }
+                    if t.pending {
+                        flags.push("pending".into());
+                    }
+                    if t.failed {
+                        flags.push("failed".into());
+                    }
+                    if t.refund {
+                        flags.push("возврат".into());
+                    }
+                    let peer_name = match &t.peer {
+                        tl::enums::StarsTransactionPeer::Peer(p) => {
+                            let id = match &p.peer {
+                                tl::enums::Peer::User(u) => u.user_id,
+                                tl::enums::Peer::Chat(c) => c.chat_id,
+                                tl::enums::Peer::Channel(c) => c.channel_id,
+                            };
+                            names.get(&id).cloned()
+                        }
+                        tl::enums::StarsTransactionPeer::PremiumBot => Some("PremiumBot".into()),
+                        tl::enums::StarsTransactionPeer::Fragment => Some("Fragment".into()),
+                        tl::enums::StarsTransactionPeer::AppStore => Some("AppStore".into()),
+                        tl::enums::StarsTransactionPeer::PlayMarket => Some("PlayMarket".into()),
+                        tl::enums::StarsTransactionPeer::Ads => Some("Ads".into()),
+                        _ => None,
+                    };
+                    Some(super::StarTxInfo {
+                        tx_id: t.id,
+                        date: t.date as i64,
+                        stars: t.amount.amount(),
+                        title: t.title,
+                        peer_name,
+                        flags,
+                    })
+                }
+            })
+            .collect())
+    }
+
+    /// Мои сохранённые Stars-подарки (только чтение).
+    pub async fn saved_star_gifts(&self) -> Result<Vec<super::SavedGiftInfo>> {
+        use grammers_client::tl;
+        use std::collections::HashMap;
+        let res = self
+            .client
+            .invoke(&tl::functions::payments::GetSavedStarGifts {
+                exclude_unsaved: false,
+                exclude_saved: false,
+                exclude_unlimited: false,
+                exclude_unique: false,
+                sort_by_value: false,
+                exclude_upgradable: false,
+                exclude_unupgradable: false,
+                peer_color_available: false,
+                exclude_hosted: false,
+                peer: tl::enums::InputPeer::PeerSelf,
+                collection_id: None,
+                offset: String::new(),
+                limit: 50,
+            })
+            .await
+            .context("getSavedStarGifts failed")?;
+        let payload = match res {
+            tl::enums::payments::SavedStarGifts::Gifts(g) => g,
+        };
+        let mut names: HashMap<String, String> = HashMap::new();
+        for u in payload.users {
+            if let tl::enums::User::User(t) = u {
+                let name = format!(
+                    "{} {}",
+                    t.first_name.unwrap_or_default(),
+                    t.last_name.unwrap_or_default()
+                )
+                .trim()
+                .to_string();
+                names.insert(format!("u{}", t.id), name);
+            }
+        }
+        for c in payload.chats {
+            let (id, title) = match c {
+                tl::enums::Chat::Channel(t) => (t.id, t.title),
+                tl::enums::Chat::Chat(t) => (t.id, t.title),
+                _ => continue,
+            };
+            names.insert(format!("c{id}"), title);
+        }
+        Ok(payload
+            .gifts
+            .into_iter()
+            .filter_map(|g| match g {
+                tl::enums::SavedStarGift::Gift(t) => {
+                    let (gift_id, title, stars) = match t.gift {
+                        tl::enums::StarGift::Gift(g) => (
+                            g.id,
+                            g.title.unwrap_or_else(|| format!("подарок {}", g.id)),
+                            g.stars,
+                        ),
+                        tl::enums::StarGift::Unique(_) => return None,
+                    };
+                    let from_name = t.from_id.map(|p| match p {
+                        tl::enums::Peer::User(u) => names
+                            .get(&format!("u{}", u.user_id))
+                            .cloned()
+                            .unwrap_or_else(|| format!("id {}", u.user_id)),
+                        tl::enums::Peer::Chat(c) => names
+                            .get(&format!("c{}", c.chat_id))
+                            .cloned()
+                            .unwrap_or_else(|| format!("id {}", c.chat_id)),
+                        tl::enums::Peer::Channel(c) => names
+                            .get(&format!("c{}", c.channel_id))
+                            .cloned()
+                            .unwrap_or_else(|| format!("id {}", c.channel_id)),
+                    });
+                    let message = t.message.map(|m| match m {
+                        tl::enums::TextWithEntities::Entities(e) => e.text,
+                    });
+                    Some(super::SavedGiftInfo {
+                        gift_id,
+                        title,
+                        stars,
+                        date: t.date as i64,
+                        from_name,
+                        can_upgrade: t.can_upgrade,
+                        message,
+                    })
+                }
+            })
+            .collect())
+    }
+
+    /// Подсказка пароля 2FA (account.getPassword.hint).
+    pub async fn password_hint(&self) -> Result<Option<String>> {
+        use grammers_client::tl;
+        let pw = self
+            .client
+            .invoke(&tl::functions::account::GetPassword {})
+            .await
+            .context("getPassword failed")?;
+        Ok(match pw {
+            tl::enums::account::Password::Password(p) => p.hint,
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -4639,6 +4842,20 @@ impl crate::telegram::TelegramService for GrammersBackend {
             on_progress,
         )
         .await
+    }
+    async fn stars_transactions(
+        &self,
+        inbound: bool,
+        outbound: bool,
+        limit: i32,
+    ) -> anyhow::Result<Vec<super::StarTxInfo>> {
+        GrammersBackend::stars_transactions(self, inbound, outbound, limit).await
+    }
+    async fn saved_star_gifts(&self) -> anyhow::Result<Vec<super::SavedGiftInfo>> {
+        GrammersBackend::saved_star_gifts(self).await
+    }
+    async fn password_hint(&self) -> anyhow::Result<Option<String>> {
+        GrammersBackend::password_hint(self).await
     }
     fn is_connected(&self) -> bool {
         GrammersBackend::is_connected(self)

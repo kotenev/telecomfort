@@ -378,11 +378,8 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("⭐").on_hover_text("Тарифы Stars-подарков").clicked() {
                     app.load_star_gifts(chat_id);
                 }
-                if ui.small_button("⤵J").on_hover_text("Экспорт истории в JSON").clicked() {
-                    app.export_history(chat_id, "json");
-                }
-                if ui.small_button("⤵H").on_hover_text("Экспорт истории в HTML").clicked() {
-                    app.export_history(chat_id, "html");
+                if ui.small_button("⤵").on_hover_text("Экспорт истории (JSON/HTML, опционально с медиа)").clicked() {
+                    app.export_open = Some(chat_id);
                 }
                 if ui.small_button("📌×N").on_hover_text("Все закреплённые сообщения").clicked() {
                     app.load_pinned_all(chat_id);
@@ -693,6 +690,28 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     if ui.button("Закрыть").clicked() {
                         app.jump_open = None;
                     }
+                });
+            }
+            // Окно экспорта истории.
+            if let Some(cid) = app.export_open {
+                egui::Window::new("⤵ Экспорт истории").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Формат:");
+                        ui.selectable_value(&mut app.export_format, "html".into(), "HTML");
+                        ui.selectable_value(&mut app.export_format, "json".into(), "JSON");
+                    });
+                    ui.checkbox(&mut app.export_with_media, "Скачать медиа (до 150 файлов, только HTML)")
+                        .on_hover_text("Медиа сохранится в папку рядом, HTML сошлётся на файлы.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Экспортировать").clicked() {
+                            let fmt = app.export_format.clone();
+                            let with_media = app.export_with_media && fmt == "html";
+                            app.export_history(cid, &fmt, with_media);
+                        }
+                        if ui.button("Отмена").clicked() {
+                            app.export_open = None;
+                        }
+                    });
                 });
             }
             // Окно «кто реагировал».
