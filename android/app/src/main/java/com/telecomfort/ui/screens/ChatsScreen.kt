@@ -135,6 +135,7 @@ fun ChatsScreen(nav: NavController) {
         LazyColumn(Modifier.weight(1f)) {
             itemsIndexed(chats.filter { query.isEmpty() || it.title.contains(query, true) }, key = { i, c -> "chat-$i-${c.id}" }) { _, c ->
                 ListItem(
+                    leadingContent = { com.telecomfort.ui.AvatarImage(c.id, c.title) },
                     headlineContent = { Text(c.title) },
                     supportingContent = { Text("unread=${c.unread}${if (c.muted) " · muted" else ""}") },
                     modifier = Modifier.clickable { nav.navigate("chat/${c.id}") },

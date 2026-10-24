@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -36,6 +38,7 @@ import java.io.File
 fun ChatScreen(chatId: Long, nav: NavController) {
     var items by remember { mutableStateOf<List<Message>>(emptyList()) }
     var rawItems by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var webPhotos by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var replyTo by remember { mutableStateOf<Pair<Int, String>?>(null) }
     var editMsg by remember { mutableStateOf<Message?>(null) }
     var forwardIds by remember { mutableStateOf<List<Int>>(emptyList()) }
@@ -50,6 +53,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var graphInter by remember { mutableStateOf<Pair<List<String>, List<Double>>?>(null) }
     var showGraphs by remember { mutableStateOf(false) }
     var participants by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var chatTitle by remember { mutableStateOf("") }
     var showScheduled by remember { mutableStateOf(false) }
     var showTopics by remember { mutableStateOf(false) }
     var newTopic by remember { mutableStateOf("") }
@@ -108,6 +112,18 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var jumpDate by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
+    LaunchedEffect(chatId) {
+        scope.launch {
+            runCatching {
+                val r = Core.call("dialogs", emptyMap())
+                val arr = r.getJSONArray("result")
+                for (i in 0 until arr.length()) {
+                    val d = arr.getJSONObject(i)
+                    if (d.optLong("id") == chatId) { chatTitle = d.optString("title", "?"); break }
+                }
+            }
+        }
+    }
     fun reload(limit: Int = 100) {
         scope.launch {
             runCatching {
@@ -249,6 +265,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
+            com.telecomfort.ui.AvatarImage(chatId, chatTitle.ifEmpty { "?" }, size = 36.dp)
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
@@ -359,6 +376,35 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                         }.onFailure { status = "Ошибка: ${it.message}" }
                                     }
                                 }) { Text("⬇") }
+                            }
+                        }
+                        rawItems.getOrNull(rawItems.size - 1 - ri)?.optJSONObject("web_preview")?.let { wp ->
+                            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                Column(Modifier.padding(6.dp)) {
+                                    Text(wp.optString("title", "").take(80), style = MaterialTheme.typography.bodySmall)
+                                    Text(wp.optString("description", "").take(160), style = MaterialTheme.typography.bodySmall)
+                                    val wphoto = wp.optJSONObject("photo")
+                                    if (wphoto != null) {
+                                        val cached = webPhotos[m.id]
+                                        if (cached != null) {
+                                            val bmp = remember(cached) { android.graphics.BitmapFactory.decodeFile(cached) }
+                                            bmp?.let {
+                                                Image(it.asImageBitmap(), contentDescription = null,
+                                                    modifier = Modifier.heightIn(max = 120.dp).fillMaxWidth())
+                                            }
+                                        } else {
+                                            TextButton(onClick = {
+                                                scope.launch {
+                                                    runCatching {
+                                                        val r = Core.call("download_web_photo", mapOf(
+                                                            "photo" to wphoto, "chat" to chatId))
+                                                        webPhotos = webPhotos + (m.id to r.optString("path"))
+                                                    }.onFailure { status = "Превью не загрузилось" }
+                                                }
+                                            }) { Text("� показать превью") }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -473,7 +519,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             }
         }
         if (showStickers || showGifs) {
-            Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 (if (showStickers) stickers else gifs).take(12).forEach { s ->
                     val emoji = s.optString("emoji", if (showStickers) "😀" else "🎞")
                     TextButton(onClick = {
