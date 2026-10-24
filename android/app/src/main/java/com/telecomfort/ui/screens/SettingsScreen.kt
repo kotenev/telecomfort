@@ -18,7 +18,7 @@ import org.json.JSONObject
 
 /** Настройки: профиль, прокси+тест, PIN, 2FA, сессии, Yandex-токен. */
 @Composable
-fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.telecomfort.core.SecureStore? = null, onLockNow: () -> Unit = {}) {
+fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.telecomfort.core.SecureStore? = null, onLockNow: () -> Unit = {}, onThemeMode: (String) -> Unit = {}, currentTheme: String = "system") {
     var first by remember { mutableStateOf("") }
     var last by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("") }
@@ -102,7 +102,12 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
             Row {
                 IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
                 Text("Настройки", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = onToggleTheme) { Text("🌙/☀") }
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text("Тема: ", style = MaterialTheme.typography.bodySmall)
+                        listOf("system" to "Авто", "dark" to "🌙", "light" to "☀").forEach { (mode, label) ->
+                            FilterChip(mode == currentTheme, { onThemeMode(mode) }, { Text(label) })
+                        }
+                    }
             }
         }
         item {

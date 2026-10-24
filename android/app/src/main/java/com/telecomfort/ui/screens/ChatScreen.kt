@@ -52,6 +52,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var participants by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var showScheduled by remember { mutableStateOf(false) }
     var showTopics by remember { mutableStateOf(false) }
+    var newTopic by remember { mutableStateOf("") }
     var topics by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var topicId by remember { mutableStateOf<Int?>(null) }
     var votersTitle by remember { mutableStateOf<String?>(null) }
@@ -646,6 +647,18 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                             }) { Text("📋") }
                         }
                     }
+                    invite?.takeIf { it.isNotEmpty() }?.let {
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("revoke_invite", mapOf("chat" to chatId, "link" to it))
+                                    val r = Core.call("invite_link", mapOf("chat" to chatId))
+                                    infoJson = infoJson?.put("invite", r.optString("link"))
+                                    status = "Ссылка обновлена"
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("🔄 Обновить ссылку") }
+                    }
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         OutlinedTextField(slowmode, { slowmode = it }, label = { Text("Слоумод, сек") }, modifier = Modifier.weight(1f))
                         TextButton(onClick = {
@@ -951,6 +964,20 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     if (showShareContact) {
         AlertDialog(onDismissRequest = { showShareContact = false }, title = { Text("👤 Поделиться контактом") }, text = {
             Column {
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            OutlinedTextField(newTopic, { newTopic = it }, label = { Text("Новый топик") }, modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("create_topic", mapOf("chat" to chatId, "title" to newTopic))
+                                        newTopic = ""
+                                        val rr = Core.call("forum_topics", mapOf("chat" to chatId))
+                                        topics = (0 until rr.getJSONArray("result").length()).map { rr.getJSONArray("result").getJSONObject(it) }
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("＋") }
+                        }
+
                 OutlinedTextField(shareName, { shareName = it }, label = { Text("Имя") })
                 OutlinedTextField(sharePhone, { sharePhone = it }, label = { Text("Телефон") })
             }

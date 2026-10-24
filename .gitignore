@@ -22,3 +22,4 @@ android/.gradle/
 android/local.properties
 android/keystore.properties
 android/*.keystore
+android/.kotlin/

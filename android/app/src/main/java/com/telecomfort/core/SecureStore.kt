@@ -35,6 +35,9 @@ class SecureStore(ctx: Context) {
     var pinSha256: String
         get() = prefs.getString("pin", "") ?: ""
         set(v) = prefs.edit().putString("pin", v).apply()
+    var theme: String
+        get() = prefs.getString("theme", "system") ?: "system"
+        set(v) = prefs.edit().putString("theme", v).apply()
     var autoLockSecs: Long
         get() = prefs.getLong("autolock", 0)
         set(v) = prefs.edit().putLong("autolock", v).apply()

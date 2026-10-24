@@ -18,7 +18,7 @@ import com.telecomfort.ui.screens.*
 import kotlinx.coroutines.launch
 
 @Composable
-fun AppNav(onToggleTheme: () -> Unit) {
+fun AppNav(onToggleTheme: () -> Unit = {}, onThemeMode: (String) -> Unit = {}, currentTheme: String = "system") {
     val ctx = LocalContext.current
     val store = remember { SecureStore(ctx) }
     var locked by remember { mutableStateOf(store.pinSha256.isNotEmpty()) }
@@ -52,7 +52,7 @@ fun AppNav(onToggleTheme: () -> Unit) {
 }
 
 @Composable
-private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: () -> Unit) {
+private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: () -> Unit, onThemeMode: (String) -> Unit = {}, currentTheme: String = "system") {
     val ctx = LocalContext.current
     val nav = rememberNavController()
     var authed by remember { mutableStateOf<Boolean?>(null) }
