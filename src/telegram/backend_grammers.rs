@@ -3751,6 +3751,295 @@ impl GrammersBackend {
     }
 }
 
+impl GrammersBackend {
+    /// Извлечь (salt1, salt2, g, p) из KDF-алгоритма. Только SHA256+PBKDF2-HMAC-SHA512-100000.
+    fn kdf_params(
+        algo: &grammers_client::tl::enums::PasswordKdfAlgo,
+    ) -> Result<(Vec<u8>, Vec<u8>, i32, Vec<u8>)> {
+        use grammers_client::tl;
+        match algo {
+            tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(t) => {
+                Ok((t.salt1.clone(), t.salt2.clone(), t.g, t.p.clone()))
+            }
+            _ => anyhow::bail!("неподдерживаемый KDF-алгоритм сервера"),
+        }
+    }
+
+    /// Построить SRP-проверку пароля (InputCheckPasswordSrp) по данным GetPassword.
+    fn srp_check(
+        pw: &grammers_client::tl::types::account::Password,
+        password: &str,
+    ) -> Result<grammers_client::tl::enums::InputCheckPasswordSrp> {
+        use grammers_client::tl;
+        let algo = pw
+            .current_algo
+            .as_ref()
+            .context("у аккаунта нет пароля — оставьте текущее пустым")?;
+        let (salt1, salt2, g, p) = Self::kdf_params(algo)?;
+        let srp_b = pw.srp_b.clone().context("нет srp_B")?;
+        let srp_id = pw.srp_id.context("нет srp_id")?;
+        let a = pw.secure_random.clone();
+        let (m1, g_a) = grammers_crypto::two_factor_auth::calculate_2fa(
+            &salt1, &salt2, &p, &g, srp_b, a, password,
+        );
+        Ok(tl::enums::InputCheckPasswordSrp::Srp(
+            tl::types::InputCheckPasswordSrp {
+                srp_id,
+                a: g_a.to_vec(),
+                m1: m1.to_vec(),
+            },
+        ))
+    }
+
+    /// Сменить/установить пароль 2FA. После обновления сразу проверяет новый
+    /// пароль через GetPasswordSettings — доказательство, что хэш верный.
+    pub async fn change_password(
+        &self,
+        current: &str,
+        new: &str,
+        hint: &str,
+        email: &str,
+    ) -> Result<()> {
+        use grammers_client::tl;
+        if new.len() < 4 {
+            anyhow::bail!("новый пароль — минимум 4 символа");
+        }
+        let pw = self
+            .client
+            .invoke(&tl::functions::account::GetPassword {})
+            .await
+            .context("getPassword failed")?;
+        let pw = match pw {
+            tl::enums::account::Password::Password(p) => p,
+        };
+        if !pw.has_password && !current.is_empty() {
+            anyhow::bail!("у аккаунта нет пароля — поле текущего оставьте пустым");
+        }
+        let check = if pw.has_password {
+            Self::srp_check(&pw, current)?
+        } else {
+            tl::enums::InputCheckPasswordSrp::InputCheckPasswordEmpty
+        };
+        let (new_salt1, new_salt2, _, _) = Self::kdf_params(&pw.new_algo)?;
+        let new_hash = password_hash_ph2(new.as_bytes(), &new_salt1, &new_salt2);
+        self.client
+            .invoke(&tl::functions::account::UpdatePasswordSettings {
+                password: check,
+                new_settings: tl::enums::account::PasswordInputSettings::Settings(
+                    tl::types::account::PasswordInputSettings {
+                        new_algo: Some(pw.new_algo.clone()),
+                        new_password_hash: Some(new_hash),
+                        hint: Some(hint.to_string()),
+                        email: Some(email.to_string()),
+                        new_secure_settings: None,
+                    },
+                ),
+            })
+            .await
+            .context("updatePasswordSettings failed (неверный текущий пароль?)")?;
+        // Проверка: свежие параметры + новый пароль обязаны пройти.
+        let pw2 = self
+            .client
+            .invoke(&tl::functions::account::GetPassword {})
+            .await
+            .context("getPassword failed")?;
+        let pw2 = match pw2 {
+            tl::enums::account::Password::Password(p) => p,
+        };
+        let check2 = Self::srp_check(&pw2, new)?;
+        self.client
+            .invoke(&tl::functions::account::GetPasswordSettings { password: check2 })
+            .await
+            .context("проверка нового пароля не прошла — СРОЧНО проверьте вход!")?;
+        Ok(())
+    }
+}
+
+impl GrammersBackend {
+    /// Каталог Stars-подарков для отправки (payments.getStarGifts).
+    pub async fn gift_catalog(&self) -> Result<Vec<super::StarGiftFull>> {
+        use grammers_client::tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::payments::GetStarGifts { hash: 0 })
+            .await
+            .context("getStarGifts failed")?;
+        let gifts = match res {
+            tl::enums::payments::StarGifts::Gifts(g) => g.gifts,
+            tl::enums::payments::StarGifts::NotModified => vec![],
+        };
+        Ok(gifts
+            .into_iter()
+            .filter_map(|g| match g {
+                tl::enums::StarGift::Gift(t) => Some(super::StarGiftFull {
+                    id: t.id,
+                    stars: t.stars,
+                    title: t.title.unwrap_or_else(|| format!("подарок {}", t.id)),
+                    sold_out: t.sold_out,
+                    require_premium: t.require_premium,
+                    limited: t.limited,
+                    convert_stars: t.convert_stars,
+                }),
+                // Коллекционные (unique) через обычный invoice не отправить.
+                tl::enums::StarGift::Unique(_) => None,
+            })
+            .collect())
+    }
+
+    /// Отправить Stars-подарок: invoice → форма → sendStarsForm.
+    pub async fn send_star_gift(
+        &self,
+        chat_id: i64,
+        gift_id: i64,
+        hide_name: bool,
+        message: &str,
+    ) -> Result<String> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let invoice = tl::enums::InputInvoice::StarGift(tl::types::InputInvoiceStarGift {
+            hide_name,
+            include_upgrade: false,
+            peer: (&pref).into(),
+            gift_id,
+            message: if message.is_empty() {
+                None
+            } else {
+                Some(tl::enums::TextWithEntities::Entities(
+                    tl::types::TextWithEntities {
+                        text: message.to_string(),
+                        entities: vec![],
+                    },
+                ))
+            },
+        });
+        let form = self
+            .client
+            .invoke(&tl::functions::payments::GetPaymentForm {
+                invoice: invoice.clone(),
+                theme_params: None,
+            })
+            .await
+            .context("getPaymentForm failed (нет звёзд? нет подарка?)")?;
+        let form_id = form.form_id();
+        let result = self
+            .client
+            .invoke(&tl::functions::payments::SendStarsForm { form_id, invoice })
+            .await
+            .context("sendStarsForm failed")?;
+        match result {
+            tl::enums::payments::PaymentResult::Result(_) => {
+                Ok(format!("подарок #{gift_id} отправлен"))
+            }
+            tl::enums::payments::PaymentResult::PaymentVerificationNeeded(_) => {
+                anyhow::bail!("нужна верификация платежа в официальном клиенте")
+            }
+        }
+    }
+}
+
+impl GrammersBackend {
+    /// Видео-кружок: заливка + SendMedia с round_message (dims из первого кадра,
+    /// duration 0 — сервер терпит, как в сторис).
+    pub async fn send_round_video(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: &str,
+        silent: bool,
+        schedule_at: Option<std::time::SystemTime>,
+    ) -> Result<i32> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let uploaded = self.client.upload_file(path).await?;
+        let (w, h) = crate::media::video::first_frame_builtin(path)
+            .map(|img| (img.width() as i32, img.height() as i32))
+            .unwrap_or((320, 320));
+        let fname = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "round.mp4".into());
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::SendMedia {
+                silent,
+                background: false,
+                clear_draft: false,
+                noforwards: false,
+                update_stickersets_order: false,
+                invert_media: false,
+                allow_paid_floodskip: false,
+                peer: (&pref).into(),
+                reply_to: None,
+                media: tl::enums::InputMedia::UploadedDocument(
+                    tl::types::InputMediaUploadedDocument {
+                        nosound_video: false,
+                        force_file: false,
+                        spoiler: false,
+                        file: uploaded.raw,
+                        thumb: None,
+                        mime_type: "video/mp4".to_string(),
+                        attributes: vec![
+                            tl::enums::DocumentAttribute::Video(
+                                tl::types::DocumentAttributeVideo {
+                                    round_message: true,
+                                    supports_streaming: true,
+                                    nosound: false,
+                                    duration: 0.0,
+                                    w,
+                                    h,
+                                    preload_prefix_size: None,
+                                    video_start_ts: None,
+                                    video_codec: None,
+                                },
+                            ),
+                            tl::enums::DocumentAttribute::Filename(
+                                tl::types::DocumentAttributeFilename { file_name: fname },
+                            ),
+                        ],
+                        stickers: None,
+                        video_cover: None,
+                        video_timestamp: None,
+                        ttl_seconds: None,
+                    },
+                ),
+                message: caption.to_string(),
+                random_id,
+                reply_markup: None,
+                entities: None,
+                schedule_date: schedule_at.map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i32)
+                        .unwrap_or(0)
+                }),
+                schedule_repeat_period: None,
+                send_as: None,
+                quick_reply_shortcut: None,
+                effect: None,
+                allow_paid_stars: None,
+                suggested_post: None,
+            })
+            .await
+            .context("sendMedia (round) failed (нужно квадратное видео?)")?;
+        let mid = match res {
+            tl::enums::Updates::UpdateShortSentMessage(m) => m.id,
+            tl::enums::Updates::Updates(u) => u
+                .updates
+                .iter()
+                .find_map(|x| match x {
+                    tl::enums::Update::NewMessage(nm) => Some(nm.message.id()),
+                    _ => None,
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        Ok(mid)
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -4240,6 +4529,37 @@ impl crate::telegram::TelegramService for GrammersBackend {
     async fn star_gift_options(&self, chat_id: i64) -> anyhow::Result<Vec<super::StarGiftOption>> {
         GrammersBackend::star_gift_options(self, chat_id).await
     }
+    async fn change_password(
+        &self,
+        current: &str,
+        new: &str,
+        hint: &str,
+        email: &str,
+    ) -> anyhow::Result<()> {
+        GrammersBackend::change_password(self, current, new, hint, email).await
+    }
+    async fn gift_catalog(&self) -> anyhow::Result<Vec<super::StarGiftFull>> {
+        GrammersBackend::gift_catalog(self).await
+    }
+    async fn send_star_gift(
+        &self,
+        chat_id: i64,
+        gift_id: i64,
+        hide_name: bool,
+        message: &str,
+    ) -> anyhow::Result<String> {
+        GrammersBackend::send_star_gift(self, chat_id, gift_id, hide_name, message).await
+    }
+    async fn send_round_video(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: &str,
+        silent: bool,
+        schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        GrammersBackend::send_round_video(self, chat_id, path, caption, silent, schedule_at).await
+    }
     fn is_connected(&self) -> bool {
         GrammersBackend::is_connected(self)
     }
@@ -4346,6 +4666,28 @@ fn text_of(t: &grammers_client::tl::enums::TextWithEntities) -> String {
 }
 
 /// grammers Message → MessageInfo (единая точка: history, pinned).
+/// PH2 хэш нового пароля (байт-в-байт как grammers_crypto::two_factor_auth):
+/// PH2(pw, salt1, salt2) = SH(pbkdf2_hmac_sha512(PH1, salt1, 100000), salt2),
+/// PH1 = SH(SH(pw, salt1), salt2), SH(data, salt) = SHA256(salt + data + salt).
+pub fn password_hash_ph2(password: &[u8], salt1: &[u8], salt2: &[u8]) -> Vec<u8> {
+    use hmac::Mac;
+    use sha2::{Digest, Sha256, Sha512};
+    fn sh(data: &[u8], salt: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(salt);
+        h.update(data);
+        h.update(salt);
+        h.finalize().into()
+    }
+    let hash1 = {
+        let inner = sh(password, salt1);
+        sh(&inner, salt2)
+    };
+    let mut dk = [0u8; 64];
+    pbkdf2::pbkdf2::<hmac::Hmac<Sha512>>(&hash1, salt1, 100_000, &mut dk).expect("pbkdf2 failed");
+    sh(&dk, salt2).to_vec()
+}
+
 fn message_to_info(m: &grammers_client::message::Message, chat_id: i64) -> MessageInfo {
     use grammers_client::media::Media as M;
     use grammers_client::tl;
@@ -4836,5 +5178,33 @@ mod stats_tests {
         .concat();
         let (l, v) = parse_stats_json(&data);
         assert!(l.len() <= 180 && v.len() == l.len() && !v.is_empty());
+    }
+
+    #[test]
+    fn password_ph2_matches_independent_python_vector() {
+        // Вектор посчитан независимым Python (hashlib): см. историю разработки.
+        let salt1: Vec<u8> = (0..32).collect();
+        let salt2: Vec<u8> = (0..32).map(|i| 255 - i).collect();
+        let got = super::password_hash_ph2(b"test-password-123", &salt1, &salt2);
+        assert_eq!(
+            hex::encode(&got),
+            "342283160858b0a3c8c7a91e1f02e44ab80a8246e693b4bfd970494b5ba84c4b"
+        );
+    }
+
+    #[test]
+    fn password_ph2_is_deterministic_and_sensitive() {
+        let s1 = vec![1u8; 32];
+        let s2 = vec![2u8; 32];
+        let a = super::password_hash_ph2(b"pw", &s1, &s2);
+        let b = super::password_hash_ph2(b"pw", &s1, &s2);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 32);
+        // Чувствительность к каждому входу.
+        assert_ne!(a, super::password_hash_ph2(b"pw!", &s1, &s2));
+        assert_ne!(a, super::password_hash_ph2(b"pw", &vec![3u8; 32], &s2));
+        assert_ne!(a, super::password_hash_ph2(b"pw", &s1, &vec![4u8; 32]));
+        // Пустой пароль — валидный 32-байтный хэш (сервер решает, принимать ли).
+        assert_eq!(super::password_hash_ph2(b"", &s1, &s2).len(), 32);
     }
 }

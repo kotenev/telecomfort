@@ -594,20 +594,44 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                             ui.label(egui::RichText::new(flags.join(" · ")).small().strong());
                         }
                     }
-                    // Тарифы Stars-подарков.
-                    if let Some(opts) = app.star_gifts.get(&cid).cloned() {
-                        ui.separator();
-                        ui.label("🎁 Тарифы подарков (только просмотр):");
-                        for o in opts.iter().take(10) {
-                            ui.label(format!("• ⭐ {} — {} {} ({} за штуку)", o.stars, o.amount, o.currency, o.currency));
+                    // Каталог Stars-подарков: выбор + отправка (спишет звёзды!).
+                    ui.separator();
+                    ui.label("🎁 Stars-подарки:");
+                    if app.gift_catalog.is_empty() {
+                        if ui.small_button("Загрузить каталог").clicked() {
+                            app.load_gift_catalog();
                         }
-                        ui.label(
-                            egui::RichText::new("Отправка подарков: нужны коллекционные gift_id — вне скоупа Bot API.")
-                                .small()
-                                .weak(),
-                        );
-                    } else if ui.small_button("🎁 Тарифы подарков").clicked() {
-                        app.load_star_gifts(cid);
+                    }
+                    for g in app.gift_catalog.clone() {
+                        ui.horizontal(|ui| {
+                            let mut title = format!("⭐ {} — {}", g.stars, g.title);
+                            if g.limited {
+                                title += " [лимит]";
+                            }
+                            if g.require_premium {
+                                title += " [Premium]";
+                            }
+                            ui.label(title);
+                            if g.sold_out {
+                                ui.label(egui::RichText::new("распродан").small().weak());
+                            } else if ui
+                                .small_button(if app.gift_armed == Some(g.id) {
+                                    "⚠ Подарить!"
+                                } else {
+                                    "Подарить"
+                                })
+                                .clicked()
+                            {
+                                app.send_gift(cid, g.id);
+                            }
+                        });
+                    }
+                    if app.gift_armed.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut app.gift_hide_name, "анонимно");
+                            ui.label("текст:");
+                            ui.text_edit_singleline(&mut app.gift_message);
+                        });
                     }
                     ui.separator();
                     if ui.button("Закрыть").clicked() {
@@ -1599,12 +1623,52 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
         {
             app.geo_open = true;
         }
+        // Запись с микрофона (WAV): старт/стоп. Opus-энкодер — когда появится сеть.
+        let recording = app.voice_rec.is_some() && app.voice_chat == Some(chat_id);
+        if ui
+            .button(if recording { "■" } else { "🎙" })
+            .on_hover_text(if recording {
+                "Стоп и отправить запись (WAV)"
+            } else {
+                "Записать с микрофона (WAV 48кГц, отправка как аудио)"
+            })
+            .clicked()
+        {
+            app.toggle_voice_record(chat_id);
+        }
+        if recording {
+            let secs = app
+                .voice_rec
+                .as_ref()
+                .map(|r| r.elapsed().as_secs())
+                .unwrap_or(0);
+            let lvl = app.voice_rec.as_ref().map(|r| r.level()).unwrap_or(0.0);
+            let bars = "▁▂▃▄▅▆▇"[..((lvl * 7.0) as usize).min(7).max(1)].to_string();
+            ui.label(
+                egui::RichText::new(format!("● REC {:02}:{:02} {}", secs / 60, secs % 60, bars))
+                    .small()
+                    .strong()
+                    .color(egui::Color32::from_rgb(200, 50, 50)),
+            );
+            if let Some(other) = app.voice_chat {
+                if other != chat_id {
+                    app.voice_chat = Some(chat_id);
+                }
+            }
+        }
         if ui
             .button("🎤")
             .on_hover_text("Голосовое из аудиофайла (ogg/opus/mp3/m4a)")
             .clicked()
         {
             app.send_voice_pick(chat_id);
+        }
+        if ui
+            .button("◉")
+            .on_hover_text("Видео-кружок из файла (лучше квадратное mp4)")
+            .clicked()
+        {
+            app.send_round_pick(chat_id);
         }
         if ui.button("😀").on_hover_text("Недавние стикеры").clicked() {
             app.load_stickers();

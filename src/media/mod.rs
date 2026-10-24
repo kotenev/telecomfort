@@ -5,6 +5,7 @@ pub mod h264;
 pub mod hevc;
 pub mod mtproto;
 pub mod video;
+pub mod voice_rec;
 
 use crate::config::{DownloaderSettings, MediaKind};
 use crate::db::Db;

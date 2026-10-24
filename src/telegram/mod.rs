@@ -265,6 +265,18 @@ pub struct StarGiftOption {
     pub amount: i64,
 }
 
+/// Подарок из каталога (payments.getStarGifts), готовый к отправке.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarGiftFull {
+    pub id: i64,
+    pub stars: i64,
+    pub title: String,
+    pub sold_out: bool,
+    pub require_premium: bool,
+    pub limited: bool,
+    pub convert_stars: i64,
+}
+
 /// Рядом находящийся пир (contacts.getLocated, без точной дистанции — API её не отдаёт).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NearbyPeer {
@@ -1028,6 +1040,41 @@ pub trait TelegramService: Send + Sync {
     /// Тарифы Stars-подарков для пользователя (только чтение).
     async fn star_gift_options(&self, _chat_id: i64) -> anyhow::Result<Vec<StarGiftOption>> {
         anyhow::bail!("star_gifts is not implemented for this backend")
+    }
+    /// Сменить/установить пароль 2FA (с проверкой нового через GetPasswordSettings).
+    async fn change_password(
+        &self,
+        _current: &str,
+        _new: &str,
+        _hint: &str,
+        _email: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("change_password is not implemented for this backend")
+    }
+    /// Каталог Stars-подарков (payments.getStarGifts).
+    async fn gift_catalog(&self) -> anyhow::Result<Vec<StarGiftFull>> {
+        anyhow::bail!("gifts are not implemented for this backend")
+    }
+    /// Отправить Stars-подарок (invoice → форма → sendStarsForm). Возвращает итог.
+    async fn send_star_gift(
+        &self,
+        _chat_id: i64,
+        _gift_id: i64,
+        _hide_name: bool,
+        _message: &str,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("gifts are not implemented for this backend")
+    }
+    /// Отправить видео как «кружок» (round_message, dims из первого кадра).
+    async fn send_round_video(
+        &self,
+        _chat_id: i64,
+        _path: &std::path::Path,
+        _caption: &str,
+        _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("round video is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }

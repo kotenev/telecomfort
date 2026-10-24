@@ -2,7 +2,7 @@
 
 use super::{
     AccountInfo, ChatFullInfo, ChatInfo, GifInfo, MessageInfo, NearbyPeer, PeerFullInfo,
-    ReactionVoter, StarGiftOption, StickerInfo, StoryInfo, TelegramService,
+    ReactionVoter, StarGiftFull, StarGiftOption, StickerInfo, StoryInfo, TelegramService,
 };
 use async_trait::async_trait;
 
@@ -1128,6 +1128,62 @@ impl TelegramService for MockTelegram {
             },
         ])
     }
+    async fn change_password(
+        &self,
+        _current: &str,
+        new: &str,
+        _hint: &str,
+        _email: &str,
+    ) -> anyhow::Result<()> {
+        if new.len() < 4 {
+            anyhow::bail!("новый пароль — минимум 4 символа");
+        }
+        Ok(())
+    }
+    async fn gift_catalog(&self) -> anyhow::Result<Vec<StarGiftFull>> {
+        Ok(vec![
+            StarGiftFull {
+                id: 7001,
+                stars: 50,
+                title: "Мишка".into(),
+                sold_out: false,
+                require_premium: false,
+                limited: false,
+                convert_stars: 25,
+            },
+            StarGiftFull {
+                id: 7002,
+                stars: 500,
+                title: "Ракета (sold out)".into(),
+                sold_out: true,
+                require_premium: true,
+                limited: true,
+                convert_stars: 250,
+            },
+        ])
+    }
+    async fn send_star_gift(
+        &self,
+        _chat_id: i64,
+        gift_id: i64,
+        _hide_name: bool,
+        _message: &str,
+    ) -> anyhow::Result<String> {
+        if gift_id == 7002 {
+            anyhow::bail!("распродан");
+        }
+        Ok(format!("подарок #{gift_id} отправлен"))
+    }
+    async fn send_round_video(
+        &self,
+        _chat_id: i64,
+        _path: &std::path::Path,
+        _caption: &str,
+        _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        Ok(9200)
+    }
     async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
         Ok((vec![7u8; 16], 9_999_999_999))
     }
@@ -1732,5 +1788,25 @@ mod tests {
         assert_eq!(m.nearby(55.75, 37.61).await.expect("nearby").len(), 2);
         let opts = m.star_gift_options(11).await.expect("gifts");
         assert_eq!(opts[0].stars, 25);
+        // Подарки: каталог + отправка + sold_out + короткий пароль.
+        let catalog = m.gift_catalog().await.expect("catalog");
+        assert_eq!(catalog.len(), 2);
+        assert!(catalog[1].sold_out);
+        let done = m
+            .send_star_gift(-1001, 7001, false, "держи")
+            .await
+            .expect("send gift");
+        assert!(done.contains("7001"));
+        assert!(m.send_star_gift(-1001, 7002, false, "").await.is_err());
+        m.change_password("old", "new-password", "", "")
+            .await
+            .expect("pw");
+        assert_eq!(
+            m.send_round_video(-1001, std::path::Path::new("v.mp4"), "", false, None)
+                .await
+                .expect("round"),
+            9200
+        );
+        assert!(m.change_password("old", "123", "", "").await.is_err());
     }
 }
