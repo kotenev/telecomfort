@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.Telecomfort" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0B1220</item>
+    </style>
+</resources>

@@ -1128,5 +1128,17 @@ pub trait TelegramService: Send + Sync {
     async fn password_hint(&self) -> anyhow::Result<Option<String>> {
         anyhow::bail!("password_hint is not implemented for this backend")
     }
+    /// Запросить login-код (возвращает opaque ключ сессии входа).
+    async fn request_code(&self, _phone: &str) -> anyhow::Result<String> {
+        anyhow::bail!("request_code is not implemented for this backend")
+    }
+    /// Войти по коду (ключ из request_code).
+    async fn sign_in_code(&self, _key: &str, _code: &str) -> anyhow::Result<()> {
+        anyhow::bail!("sign_in_code is not implemented for this backend")
+    }
+    /// Войти по паролю 2FA (после SignInError::PasswordRequired — ключ тот же).
+    async fn sign_in_password(&self, _key: &str, _password: &str) -> anyhow::Result<()> {
+        anyhow::bail!("sign_in_password is not implemented for this backend")
+    }
     fn is_connected(&self) -> bool;
 }

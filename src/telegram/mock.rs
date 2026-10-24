@@ -1233,6 +1233,29 @@ impl TelegramService for MockTelegram {
     async fn password_hint(&self) -> anyhow::Result<Option<String>> {
         Ok(Some("демо-хинт (mock)".into()))
     }
+    async fn request_code(&self, _phone: &str) -> anyhow::Result<String> {
+        Ok("mock-login-key".into())
+    }
+    async fn sign_in_code(&self, key: &str, code: &str) -> anyhow::Result<()> {
+        if key != "mock-login-key" {
+            anyhow::bail!("сессия входа истекла");
+        }
+        if code == "00000" {
+            return Ok(());
+        }
+        if code == "11111" {
+            anyhow::bail!("PASSWORD_REQUIRED")
+        } else {
+            anyhow::bail!("неверный код (демо: 00000 — вход, 11111 — пароль)")
+        }
+    }
+    async fn sign_in_password(&self, key: &str, password: &str) -> anyhow::Result<()> {
+        if key == "mock-login-key" && password == "demo" {
+            Ok(())
+        } else {
+            anyhow::bail!("неверный пароль (демо: demo)")
+        }
+    }
     async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
         Ok((vec![7u8; 16], 9_999_999_999))
     }

@@ -197,7 +197,8 @@ cargo check --features ort,ort-coreml  # macOS: CoreML-провайдер
 - [Диаграммы Mermaid](docs/architecture-mermaid.md) — контекст, pump, вход,
   отправка, экспорт, 2FA, синк, состояния, хранилище.
 - [Инструкция пользователя](docs/USER_GUIDE.md) — вход, чаты, сторис, настройки, FAQ.
-- [Инструкция разработчика](docs/DEVELOPER_GUIDE.md) — как добавить фичу за 6 шагов,
+- [Инструкция разработчика](docs/DEVELOPER_GUIDE.md)
+- [Android-приложение](docs/ANDROID.md) — Kotlin/Compose UI + то же Rust-ядро через JNI-мост (`android/`) — как добавить фичу за 6 шагов,
   паттерны, контракт-тесты, релизный чеклист.
 
 ## Как это устроено

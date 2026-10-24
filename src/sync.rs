@@ -9,9 +9,9 @@
 
 use crate::config::AppConfig;
 use crate::db::Db;
+use crate::events::BgEvent;
 use crate::media::AutoDownloader;
 use crate::telegram::TelegramService;
-use crate::ui::app::BgEvent;
 use std::sync::{mpsc, Arc};
 
 pub fn notify(title: &str, body: &str) {

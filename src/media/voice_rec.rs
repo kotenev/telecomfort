@@ -24,11 +24,15 @@ struct RecState {
 }
 
 /// Запись с микрофона. Владение потоком = идёт запись; `stop()` забирает сэмплы.
+///
+/// На Android запись делает Kotlin (AudioRecord) и отдаёт WAV сюда на упаковку.
+#[cfg(not(target_os = "android"))]
 pub struct Recorder {
     _stream: cpal::Stream,
     state: Arc<Mutex<RecState>>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Recorder {
     /// Старт записи с устройства ввода по умолчанию.
     /// Просит 48 кГц моно f32, иначе берёт дефолтную конфигурацию.
@@ -225,6 +229,96 @@ pub fn write_wav_16(path: &std::path::Path, samples: &[f32]) -> anyhow::Result<(
     Ok(())
 }
 
+/// Закодировать моно 48 кГц в Ogg/Opus (голосовые Telegram).
+/// Кадры 20 мс (960 сэмплов), VoIP, 32 кбит/с, granule = число сэмплов.
+pub fn encode_ogg_opus(samples_48k_mono: &[f32]) -> anyhow::Result<Vec<u8>> {
+    use audiopus::{Application, Channels, SampleRate};
+    let mut enc =
+        audiopus::coder::Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip)
+            .map_err(|e| anyhow::anyhow!("opus encoder: {e:?}"))?;
+    enc.set_bitrate(audiopus::Bitrate::BitsPerSecond(32_000))
+        .map_err(|e| anyhow::anyhow!("opus bitrate: {e:?}"))?;
+    let mut writer = ogg::PacketWriter::new(Vec::new());
+    let serial: u32 = 0x5443_4F4D; // "TCOM"
+                                   // OpusHead: magic + ver + ch + pre_skip + rate + gain + mapping.
+    let mut head = Vec::with_capacity(19);
+    head.extend_from_slice(b"OpusHead");
+    head.push(1); // version
+    head.push(1); // mono
+    head.extend_from_slice(&384u16.to_le_bytes()); // pre-skip
+    head.extend_from_slice(&48_000u32.to_le_bytes());
+    head.extend_from_slice(&0i16.to_le_bytes()); // gain
+    head.push(0); // mapping family
+    writer
+        .write_packet(head, serial, ogg::PacketWriteEndInfo::NormalPacket, 0)
+        .map_err(|e| anyhow::anyhow!("ogg head: {e}"))?;
+    // OpusTags: magic + vendor + 0 комментариев.
+    let vendor = b"telecomfort";
+    let mut tags = Vec::with_capacity(16 + vendor.len());
+    tags.extend_from_slice(b"OpusTags");
+    tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    tags.extend_from_slice(vendor);
+    tags.extend_from_slice(&0u32.to_le_bytes());
+    writer
+        .write_packet(tags, serial, ogg::PacketWriteEndInfo::NormalPacket, 0)
+        .map_err(|e| anyhow::anyhow!("ogg tags: {e}"))?;
+    // Аудиокадры с паддингом последнего до 960.
+    let mut padded = samples_48k_mono.to_vec();
+    let rem = padded.len() % 960;
+    if rem != 0 {
+        padded.resize(padded.len() + (960 - rem), 0.0);
+    }
+    let mut buf = [0u8; 4000];
+    let mut granule: u64 = 0;
+    let frames = padded.len() / 960;
+    for (i, frame) in padded.chunks(960).enumerate() {
+        let n = enc
+            .encode_float(frame, &mut buf)
+            .map_err(|e| anyhow::anyhow!("opus encode: {e:?}"))?;
+        let packet = buf[..n].to_vec();
+        granule += 960;
+        let last = i + 1 == frames;
+        writer
+            .write_packet(
+                packet,
+                serial,
+                if last {
+                    ogg::PacketWriteEndInfo::EndStream
+                } else {
+                    ogg::PacketWriteEndInfo::NormalPacket
+                },
+                granule,
+            )
+            .map_err(|e| anyhow::anyhow!("ogg packet: {e}"))?;
+    }
+    Ok(writer.into_inner())
+}
+
+/// WAV-файл (16-bit PCM) → Ogg/Opus: декодируем rodio, ресемплим, кодируем.
+pub fn wav_file_to_ogg_voice(
+    wav_path: &std::path::Path,
+    ogg_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let file = std::fs::File::open(wav_path)?;
+    let src = rodio::Decoder::new(std::io::BufReader::new(file))
+        .map_err(|e| anyhow::anyhow!("wav decode: {e}"))?;
+    use rodio::Source;
+    let rate = src.sample_rate().get();
+    let ch = src.channels().get();
+    let raw: Vec<f32> = src.collect();
+    // rodio отдаёт интерливированные сэмплы — в моно усреднением при ресемпле.
+    let mono48 = resample_to_48k(&raw, rate as u32, ch as u16);
+    if mono48.is_empty() {
+        anyhow::bail!("пустой аудиофайл");
+    }
+    let ogg = encode_ogg_opus(&mono48)?;
+    if let Some(parent) = ogg_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(ogg_path, ogg)?;
+    Ok(())
+}
+
 trait ContextInput<T> {
     fn context_input(self, what: &str) -> anyhow::Result<T>;
 }
@@ -292,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "android"))]
     fn recorder_fails_gracefully_without_mic() {
         // На headless-машине микрофона нет — главное, что нет паники.
         // Если микрофон есть, тест просто создаст и тут же уронит запись.
@@ -304,6 +399,77 @@ mod tests {
             Err(e) => {
                 assert!(!format!("{e:#}").is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn opus_roundtrip_keeps_duration() {
+        // 1с синуса 440 Гц → Ogg/Opus → декод: длительность и тон целы.
+        let src: Vec<f32> = (0..48000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.5)
+            .collect();
+        let ogg = super::encode_ogg_opus(&src).expect("encode");
+        assert!(ogg.starts_with(b"OggS"), "ogg magic");
+        assert!(ogg.len() > 1000, "len={}", ogg.len());
+        // Декодируем обратно через audiopus (парсим свои же пакеты наивно:
+        // ищем Opus-пакеты после двух заголовочных — проверяем через Decoder потоково).
+        use audiopus::{Channels, SampleRate};
+        let mut dec =
+            audiopus::coder::Decoder::new(SampleRate::Hz48000, Channels::Mono).expect("decoder");
+        // Распакуем ogg постранично своим парсером заголовков.
+        let frames = extract_opus_packets(&ogg);
+        assert!(frames.len() >= 48, "frames={}", frames.len());
+        let mut total = 0usize;
+        let mut out = [0f32; 5760];
+        for f in &frames {
+            let n = dec
+                .decode_float(Some(&f[..]), &mut out[..], false)
+                .expect("decode");
+            total += n;
+        }
+        assert!((total as i32 - 48000).abs() < 2000, "decoded={total}");
+    }
+
+    /// Минимальный парсер Ogg-страниц: вернуть аудиопакеты (пропустить 2 заголовка).
+    fn extract_opus_packets(ogg: &[u8]) -> Vec<Vec<u8>> {
+        let mut packets: Vec<Vec<u8>> = vec![];
+        let mut cur: Vec<u8> = vec![];
+        let mut i = 0;
+        while i + 27 <= ogg.len() {
+            if &ogg[i..i + 4] != b"OggS" {
+                break;
+            }
+            let segs = ogg[i + 26] as usize;
+            if i + 27 + segs > ogg.len() {
+                break;
+            }
+            let mut sizes: Vec<usize> = vec![];
+            let mut body_len = 0;
+            for k in 0..segs {
+                let v = ogg[i + 27 + k] as usize;
+                body_len += v;
+                sizes.push(v);
+            }
+            let body_start = i + 27 + segs;
+            if body_start + body_len > ogg.len() {
+                break;
+            }
+            let mut off = 0;
+            for (k, &sz) in sizes.iter().enumerate() {
+                cur.extend_from_slice(&ogg[body_start + off..body_start + off + sz]);
+                off += sz;
+                let last_seg = k + 1 == sizes.len();
+                if sz < 255 || last_seg {
+                    packets.push(std::mem::take(&mut cur));
+                }
+            }
+            i = body_start + body_len;
+        }
+        // Первые два пакета — OpusHead/OpusTags.
+        if packets.len() > 2 {
+            packets.split_off(2)
+        } else {
+            vec![]
         }
     }
 }

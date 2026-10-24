@@ -14,3 +14,9 @@
 # Локальные секреты и рантайм-данные (не коммитить!)
 .env
 *.session
+
+# Android NDK .so — собираются из Rust (см. docs/ANDROID.md), в git не коммитим.
+android/app/src/main/jniLibs/
+android/app/build/
+android/.gradle/
+android/local.properties
