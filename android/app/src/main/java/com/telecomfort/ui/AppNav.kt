@@ -1,41 +1,62 @@
 package com.telecomfort.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.telecomfort.core.Core
+import com.telecomfort.core.LockManager
+import com.telecomfort.core.SecureStore
 import com.telecomfort.ui.screens.*
 import kotlinx.coroutines.launch
 
 @Composable
 fun AppNav(onToggleTheme: () -> Unit) {
     val ctx = LocalContext.current
-    val store = remember { com.telecomfort.core.SecureStore(ctx) }
-    // PIN задан → стартуем заблокированными.
+    val store = remember { SecureStore(ctx) }
     var locked by remember { mutableStateOf(store.pinSha256.isNotEmpty()) }
-    com.telecomfort.core.LockManager.locked = locked
-    // Автоблок: проверка каждые 5с.
+    LockManager.locked = locked
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(5000)
-            if (!locked && store.pinSha256.isNotEmpty()
-                && com.telecomfort.core.LockManager.due(store.autoLockSecs)) {
+            if (!locked && store.pinSha256.isNotEmpty() && LockManager.due(store.autoLockSecs)) {
                 locked = true
-                com.telecomfort.core.LockManager.locked = true
+                LockManager.locked = true
             }
         }
     }
     if (locked) {
-        com.telecomfort.ui.screens.LockScreen(store) { locked = false }
+        LockScreen(store) { locked = false }
         return
     }
+    // Глобальный трекер активности: любое касание сбрасывает таймер автоблока.
+    Box(
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent(PointerEventPass.Initial)
+                    LockManager.touch()
+                }
+            }
+        }
+    ) {
+        AppNavHost(onToggleTheme, store, onLock = { locked = true })
+    }
+}
+
+@Composable
+private fun AppNavHost(onToggleTheme: () -> Unit, store: SecureStore, onLock: () -> Unit) {
     val nav = rememberNavController()
     var authed by remember { mutableStateOf<Boolean?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
-        // Демо-режим сразу; live — после входа.
         scope.launch {
             runCatching { Core.call("use_mock") }
             authed = true
@@ -51,6 +72,7 @@ fun AppNav(onToggleTheme: () -> Unit) {
         composable("stories") { StoriesScreen(nav) }
         composable("stars") { StarsScreen(nav) }
         composable("contacts") { ContactsScreen(nav) }
-        composable("settings") { SettingsScreen(nav, onToggleTheme, store, onLockNow = { locked = true }) }
+        composable("downloads") { DownloadsScreen(nav) }
+        composable("settings") { SettingsScreen(nav, onToggleTheme, store, onLockNow = onLock) }
     }
 }

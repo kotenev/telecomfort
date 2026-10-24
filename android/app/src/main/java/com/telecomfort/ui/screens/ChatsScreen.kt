@@ -28,6 +28,9 @@ fun ChatsScreen(nav: NavController) {
     var nearby by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var showNearby by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
+    var showFolders by remember { mutableStateOf(false) }
+    var folders by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var newFolder by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     fun reload() {
@@ -47,8 +50,18 @@ fun ChatsScreen(nav: NavController) {
             IconButton(onClick = { nav.navigate("stars") }) { Text("⭐") }
             IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Default.Settings, "Настройки") }
             IconButton(onClick = { nav.navigate("contacts") }) { Icon(Icons.Default.Person, "Контакты") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("dialog_filters", emptyMap())
+                        folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                        showFolders = true
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("📁") }
             IconButton(onClick = { showNearby = !showNearby }) { Text("📍") }
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = { nav.navigate("downloads") }) { Icon(Icons.Default.Menu, "Загрузки") }
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
         OutlinedTextField(query, {
@@ -96,5 +109,29 @@ fun ChatsScreen(nav: NavController) {
             }
         }
         if (status.isNotEmpty()) Text(status, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+        if (showFolders) {
+            var title by remember { mutableStateOf("") }
+            AlertDialog(onDismissRequest = { showFolders = false }, title = { Text("📁 Папки") }, text = {
+                Column {
+                    folders.forEach { f ->
+                        Text("• ${f.optString("title", "?")}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    OutlinedTextField(title, { title = it }, label = { Text("Новая папка") })
+                }
+            }, confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching {
+                            if (title.isNotBlank()) {
+                                Core.call("create_folder", mapOf("title" to title, "peers" to emptyList<Long>()))
+                                title = ""
+                                val r = Core.call("dialog_filters", emptyMap())
+                                folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                            } else showFolders = false
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Создать") }
+            }, dismissButton = { TextButton(onClick = { showFolders = false }) { Text("Закрыть") } })
+        }
     }
 }

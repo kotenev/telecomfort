@@ -2,12 +2,14 @@ package com.telecomfort.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.MediaRecorder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -33,9 +35,19 @@ import java.io.File
 @Composable
 fun ChatScreen(chatId: Long, nav: NavController) {
     var items by remember { mutableStateOf<List<Message>>(emptyList()) }
+    var rawItems by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var text by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var showInfo by remember { mutableStateOf(false) }
+    var showParticipants by remember { mutableStateOf(false) }
+    var participants by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var showScheduled by remember { mutableStateOf(false) }
+    var scheduled by remember { mutableStateOf<List<Message>>(emptyList()) }
+    var showPinned by remember { mutableStateOf(false) }
+    var pinned by remember { mutableStateOf<List<Message>>(emptyList()) }
+    var showPoll by remember { mutableStateOf(false) }
+    var pollQ by remember { mutableStateOf("") }
+    var pollOpts by remember { mutableStateOf("") }
     var infoJson by remember { mutableStateOf<JSONObject?>(null) }
     var showTtl by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -44,8 +56,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var stickers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var gifs by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var jumpDate by remember { mutableStateOf("") }
-    var recording by remember { mutableStateOf<MediaRecorder?>(null) }
-    var recFile by remember { mutableStateOf<File?>(null) }
+    var recording by remember { mutableStateOf<com.telecomfort.core.PcmRecorder?>(null) }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val listState = rememberLazyListState()
@@ -54,7 +65,8 @@ fun ChatScreen(chatId: Long, nav: NavController) {
         scope.launch {
             runCatching {
                 val r = Core.call("history", mapOf("chat" to chatId, "limit" to limit))
-                items = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                rawItems = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                items = rawItems.map { parseMessage(it) }
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
@@ -89,10 +101,12 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     fun toggleRecord() {
         val rec = recording
         if (rec != null) {
-            // Стоп → WAV → OGG/Opus → войс.
-            runCatching { rec.stop(); rec.release() }
+            // Стоп → WAV (PCM 48кГц моно) → OGG/Opus → войс.
             recording = null
-            val wav = recFile ?: return
+            val wav = runCatching { rec.stop() }.getOrNull() ?: run {
+                status = "Запись не удалась"
+                return
+            }
             scope.launch {
                 runCatching {
                     val ogg = File(ctx.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
@@ -109,23 +123,21 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             status = "Нужно разрешение на микрофон"
             return
         }
-        val wav = File(ctx.cacheDir, "rec_${System.currentTimeMillis()}.wav")
-        val mr = MediaRecorder(ctx).apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.DEFAULT)
-            setAudioEncoder(MediaRecorder.AudioEncoder.DEFAULT)
-            setAudioSamplingRate(48000)
-            setAudioChannels(1)
-            setOutputFile(wav.absolutePath)
-            prepare(); start()
+        recording = try {
+            com.telecomfort.core.PcmRecorder.start(File(ctx.cacheDir, "rec_${System.currentTimeMillis()}.wav"))
+        } catch (e: Exception) {
+            status = "Микрофон: ${e.message}"
+            null
         }
-        recFile = wav
-        recording = mr
-        status = "● Запись… нажмите ■ для отправки"
+        if (recording != null) status = "● Запись… нажмите ■ для отправки"
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(4.dp)
+                .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
             IconButton(onClick = {
                 scope.launch {
@@ -136,8 +148,36 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                     }.onFailure { status = "Ошибка: ${it.message}" }
                 }
             }) { Text("ℹ️") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("participants", mapOf("chat" to chatId, "limit" to 200))
+                        participants = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                        showParticipants = true
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("👥") }
             IconButton(onClick = { showTtl = true }) { Text("⏳") }
             var showJump by remember { mutableStateOf(false) }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("scheduled_list", mapOf("chat" to chatId))
+                        scheduled = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                        showScheduled = true
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("⏰") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("pinned_list", mapOf("chat" to chatId, "limit" to 50))
+                        pinned = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                        showPinned = true
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("📌") }
+            IconButton(onClick = { showPoll = true }) { Text("📊") }
             IconButton(onClick = { jumpDate = ""; showJump = true }) { Text("📅") }
             if (showJump) {
                 AlertDialog(onDismissRequest = { showJump = false }, title = { Text("📅 Перейти к дате") }, text = {
@@ -164,7 +204,8 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
         LazyColumn(Modifier.weight(1f), state = listState, reverseLayout = true) {
-            items(items.reversed(), key = { it.id }) { m ->
+            itemsIndexed(items.reversed(), key = { _, m -> m.id }) { ri, m ->
+                    val poll = rawItems.getOrNull(rawItems.size - 1 - ri)?.optJSONObject("poll")
                 Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)) {
                     Column(Modifier.padding(8.dp)) {
                         Text(if (m.outgoing) "я" else (m.sender ?: "—"), style = MaterialTheme.typography.labelSmall)
@@ -209,6 +250,33 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                     }.onFailure { status = "Ошибка: ${it.message}" }
                                 }
                             }) { Text("⚠") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        val r = Core.call("translate", mapOf("chat" to chatId, "id" to m.id, "to" to "ru"))
+                                        status = "Перевод: " + r.optString("text").take(300)
+                                    }.onFailure { status = "Ошибка перевода (нужен Premium?): ${it.message}" }
+                                }
+                            }) { Text("🌐") }
+                        if (poll != null) {
+                            Column {
+                                Text("📊 ${poll.optString("question")}", style = MaterialTheme.typography.bodySmall)
+                                val answers = poll.optJSONArray("answers") ?: org.json.JSONArray()
+                                for (ai in 0 until answers.length()) {
+                                    val a = answers.getJSONObject(ai)
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            runCatching {
+                                                Core.call("vote", mapOf("chat" to chatId, "id" to m.id, "option" to a.optString("option")))
+                                                reload()
+                                            }.onFailure { status = "Ошибка: ${it.message}" }
+                                        }
+                                    }) {
+                                        Text("${if (a.optBoolean("chosen")) "✓ " else ""}${a.optString("text")} ${a.optInt("votes", 0)}")
+                                    }
+                                }
+                            }
+                        }
                         }
                     }
                 }
@@ -240,6 +308,23 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text("Сообщение…") })
             IconButton(onClick = { sendText() }) { Icon(Icons.Default.Send, "Отправить") }
             IconButton(onClick = { pickFile.launch("*/*") }) { Text("📎") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("save_draft", mapOf("chat" to chatId, "text" to text))
+                        status = "Черновик сохранён (синк)"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("💾") }
+            IconButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        // Геопозиция: центр Москвы по умолчанию; TODO: GPS.
+                        Core.call("send_geo", mapOf("chat" to chatId, "lat" to 55.75, "long" to 37.61))
+                        reload()
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("📍") }
             IconButton(onClick = { toggleRecord() }) { Text(if (recording != null) "■" else "🎙") }
             IconButton(onClick = {
                 showStickers = !showStickers; showGifs = false
@@ -265,8 +350,90 @@ fun ChatScreen(chatId: Long, nav: NavController) {
 
     if (showInfo) {
         AlertDialog(onDismissRequest = { showInfo = false }, title = { Text("ℹ️ О чате") }, text = {
-            Text(infoJson?.toString(2)?.take(2000) ?: "загрузка…")
+            Column {
+                val about = infoJson?.optString("about", "").orEmpty()
+                if (about.isNotEmpty()) Text(about)
+                val j = infoJson
+                if (j == null) {
+                    Text("загрузка…")
+                } else {
+                    listOf(
+                        "Участников" to j.opt("participants_count"),
+                        "Админов" to j.opt("admins_count"),
+                        "Онлайн" to j.opt("online_count"),
+                        "TTL" to j.opt("ttl_period"),
+                    ).filter { it.second != null && it.second.toString() != "null" }
+                        .forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.bodySmall) }
+                    if (j.optBoolean("antispam", false)) Text("🛡 антиспам вкл", style = MaterialTheme.typography.bodySmall)
+                    j.optLong("linked_chat_id", 0).takeIf { it != 0L }?.let { linked ->
+                        TextButton(onClick = { showInfo = false; nav.navigate("chat/$linked") }) {
+                            Text("→ Связанный чат $linked")
+                        }
+                    }
+                }
+            }
         }, confirmButton = { TextButton(onClick = { showInfo = false }) { Text("Закрыть") } })
+    }
+    if (showParticipants) {
+        AlertDialog(onDismissRequest = { showParticipants = false }, title = { Text("👥 Участники") }, text = {
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                items(participants.size) { i ->
+                    val pm = participants[i]
+                    Text("• ${pm.optString("name", "?")}${if (pm.optBoolean("admin")) " 🛡" else ""}",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showParticipants = false }) { Text("Закрыть") } })
+    }
+    if (showScheduled) {
+        AlertDialog(onDismissRequest = { showScheduled = false }, title = { Text("⏰ Запланированные") }, text = {
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                items(scheduled.size) { i ->
+                    val m = scheduled[i]
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text("${m.text.take(80)}", modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("cancel_scheduled", mapOf("chat" to chatId, "id" to m.id))
+                                    scheduled = scheduled.filter { it.id != m.id }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("✕") }
+                    }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showScheduled = false }) { Text("Закрыть") } })
+    }
+    if (showPinned) {
+        AlertDialog(onDismissRequest = { showPinned = false }, title = { Text("📌 Закреплённые") }, text = {
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                items(pinned.size) { i ->
+                    Text(pinned[i].text.take(120), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { showPinned = false }) { Text("Закрыть") } })
+    }
+    if (showPoll) {
+        AlertDialog(onDismissRequest = { showPoll = false }, title = { Text("📊 Новый опрос") }, text = {
+            Column {
+                OutlinedTextField(pollQ, { pollQ = it }, label = { Text("Вопрос") })
+                OutlinedTextField(pollOpts, { pollOpts = it }, label = { Text("Варианты через ;") })
+            }
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val opts = pollOpts.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+                        Core.call("create_poll", mapOf("chat" to chatId, "question" to pollQ, "options" to opts, "quiz" to false))
+                        pollQ = ""; pollOpts = ""; showPoll = false
+                        reload()
+                        status = "Опрос создан"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Создать") }
+        }, dismissButton = { TextButton(onClick = { showPoll = false }) { Text("Отмена") } })
     }
     if (showTtl) {
         var secs by remember { mutableStateOf("86400") }

@@ -1264,6 +1264,57 @@ mod tests {
     }
 
     #[test]
+    fn bridge_round3_ops_smoke() {
+        call(json!({"op": "use_mock"}));
+        for op in [
+            // участники/инфо/планировщик/закреп/опросы
+            json!({"op": "participants", "chat": -1001, "limit": 10}),
+            json!({"op": "chat_full", "chat": -1001}),
+            json!({"op": "scheduled_list", "chat": -1001}),
+            json!({"op": "pinned_list", "chat": -1001, "limit": 10}),
+            json!({"op": "pinned_one", "chat": -1001}),
+            json!({"op": "create_poll", "chat": -1001, "question": "q?", "options": ["a", "b"], "quiz": false}),
+            json!({"op": "vote", "chat": -1001, "id": 1}),
+            json!({"op": "poll_voters", "chat": -1001, "id": 1}),
+            json!({"op": "stop_poll", "chat": -1001, "id": 1}),
+            // папки/черновики/перевод/гео
+            json!({"op": "dialog_filters"}),
+            json!({"op": "create_folder", "title": "f", "peers": []}),
+            json!({"op": "rename_folder", "id": 1, "title": "f2"}),
+            json!({"op": "delete_folder", "id": 1}),
+            json!({"op": "save_draft", "chat": -1001, "text": "draft"}),
+            json!({"op": "send_to_topic", "chat": -1001, "topic": 1, "text": "t"}),
+            json!({"op": "topic_history", "chat": -1001, "topic": 1, "limit": 5}),
+            json!({"op": "send_geo", "chat": -1001, "lat": 1.0, "long": 2.0}),
+            json!({"op": "nearby", "lat": 1.0, "long": 2.0}),
+            // медиа-загрузки/сторис-сервис
+            json!({"op": "download_media", "chat": -1001, "id": 1}),
+            json!({"op": "download_story_media", "peer": 1, "story": 1}),
+            json!({"op": "toggle_story_pin", "story": 1, "pinned": true}),
+            json!({"op": "hide_peer_stories", "peer": 1, "hidden": true}),
+            json!({"op": "archived_stories"}),
+            json!({"op": "story_albums"}),
+            json!({"op": "create_album", "title": "a", "ids": [1]}),
+            json!({"op": "album_stories", "album": 1}),
+            json!({"op": "delete_album", "album": 1}),
+            json!({"op": "enable_stealth"}),
+            json!({"op": "story_react", "peer": 1, "story": 1, "emoji": "❤"}),
+            json!({"op": "story_reply", "peer": 1, "story": 1, "text": "hi"}),
+            json!({"op": "story_views", "story": 1}),
+            json!({"op": "story_viewers", "story": 1, "limit": 10}),
+            json!({"op": "forward_story", "peer": 1, "story": 1}),
+            json!({"op": "edit_story_caption", "story": 1, "caption": "c"}),
+            json!({"op": "delete_stories", "ids": [1]}),
+            // export with media via mock download
+            json!({"op": "export_history", "chat": -1001, "format": "html", "with_media": true,
+                   "path": std::env::temp_dir().join("bridge_export_test.html").to_string_lossy()}),
+        ] {
+            let r = call(op);
+            assert_eq!(r["ok"], true, "{r}");
+        }
+    }
+
+    #[test]
     fn bridge_unknown_op_errors() {
         let r = call(json!({"op": "nope"}));
         assert_eq!(r["ok"], false);
