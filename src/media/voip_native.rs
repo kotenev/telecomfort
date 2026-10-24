@@ -2,7 +2,7 @@
 //!
 //! Android: `libtgvoip.so` (см. `android/build-tgvoip.sh`) с
 //! `TGVOIP_USE_CUSTOM_CRYPTO` (крипта ниже), `TGVOIP_USE_CALLBACK_AUDIO_IO`
-//! (PCM 48 кГц моно из cpal/AAudio) и `TGVOIP_NO_DSP` (AEC/NS/AGC выключены).
+//! (PCM 48 кГц моно из cpal/AAudio) и встроенным WebRTC DSP (AEC + AGC2).
 //! Десктоп: модуль компилируется, но `NativeCall::start` возвращает ошибку —
 //! бинарник libtgvoip собирается только под Android.
 //!
