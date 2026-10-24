@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Вход: API ID/HASH + телефон/код/пароль 2FA + QR.
- * Поля сохраняются в EncryptedSharedPreferences (TODO) — пока in-memory.
+ * Поля сохраняются в EncryptedSharedPreferences.
  */
 @Composable
 fun LoginScreen(onDone: () -> Unit, store: com.telecomfort.core.SecureStore? = null) {

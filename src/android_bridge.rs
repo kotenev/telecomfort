@@ -1361,6 +1361,15 @@ mod tests {
             json!({"op": "share_contact", "chat": -1001, "phone": "+7", "first": "A"}),
             json!({"op": "enable_stealth"}),
             json!({"op": "create_poll", "chat": -1001, "question": "q?", "options": ["a"], "quiz": true, "correct": 0}),
+            json!({"op": "revoke_invite", "chat": -1001, "link": "https://t.me/x"}),
+            json!({"op": "rename_folder", "id": 1, "title": "renamed"}),
+            json!({"op": "hide_peer_stories", "peer": 1, "hidden": true}),
+            json!({"op": "toggle_story_pin", "story": 1, "pinned": true}),
+            json!({"op": "vote", "chat": -1001, "id": 1, "option": "AA=="}),
+            json!({"op": "stop_poll", "chat": -1001, "id": 1}),
+            json!({"op": "poll_voters", "chat": -1001, "id": 1}),
+            json!({"op": "qr_bitmap", "payload": "test"}),
+            json!({"op": "archived_stories"}),
         ] {
             let r = call(op);
             assert_eq!(r["ok"], true, "{r}");
