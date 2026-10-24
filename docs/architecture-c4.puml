@@ -1,0 +1,100 @@
+@startuml Telecomfort C4
+!theme plain
+' =============================================================================
+' Telecomfort — C4-модель архитектуры (PlantUML + C4-PlantUML stdlib).
+' Рендер:  plantuml docs/architecture-c4.puml
+' Online:  https://kroki.io  или VS Code "PlantUML" + graphviz.
+' Требует C4-PlantUML (!include ниже подтянет его автоматически при наличии
+' сети; для офлайна: git clone C4-PlantUML и -I <путь> в plantuml).
+' =============================================================================
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+' -----------------------------------------------------------------------------
+' Уровень 1 — System Context: Telecomfort среди внешних систем
+' -----------------------------------------------------------------------------
+System_Boundary(telecomfort_scope, "Telecomfort (десктоп-клиент)") {
+    System(telecomfort, "Telecomfort", "Нативный Telegram-клиент: чаты, сторис, медиа, экспорт")
+}
+
+Person(user, "Пользователь", "Владелец аккаунта Telegram")
+System_Ext(mtproto, "Telegram MTProto API", "DC 1–5: updates, media, payments, stories, stats")
+System_Ext(yadisk, "Yandex Disk API", "OAuth: автозагрузка медиа в облако")
+System_Ext(calibre, "Calibre", "Локальная библиотека: импорт книг (fb2/epub/pdf)")
+System_Ext(osmedia, "ОС: микрофон / аудиовыход", "cpal — запись; rodio — воспроизведение")
+
+Rel(user, telecomfort, "Пользуется (GUI, eframe/egui)")
+Rel(telecomfort, mtproto, "MTProto over TCP (+opt SOCKS5), grammers 0.11")
+Rel(telecomfort, yadisk, "HTTPS, streaming upload")
+Rel(telecomfort, calibre, "Файлы книг из загрузок")
+Rel(telecomfort, osmedia, "Запись WAV 48кГц / playback")
+
+' -----------------------------------------------------------------------------
+' Уровень 2 — Containers: процесс, рантайм, хранилища
+' -----------------------------------------------------------------------------
+System_Boundary(app_proc, "Процесс telecomfort (Rust, 1 бинарь)") {
+    Container(ui_thread, "UI-поток", "eframe/egui, 60fps event-loop", "Экраны: Chats/Stories/Downloads/Contacts/Settings; окна-модалки; BgEvent-pump")
+    Container(tokio_rt, "Tokio multi-thread runtime", "tokio", "Фоновые задачи: сеть MTProto, загрузки, экспорт, синк; связь с UI — mpsc BgEvent")
+    ContainerDb(sqlite_db, "Локальная БД", "rusqlite", "Дедуп sha256, phash-индекс, кэш ONNX, записи загрузок, yandex/calibre метки")
+    Container(session_files, "Сессии grammers", "SQLite-файлы session_<профиль>.session", "Auth-ключи MTProto, по файлу на профиль")
+    Container(media_cache, "Медиа-кэш", "Файлы в cache_dir", "stories/avatars/audio/stickers/posters; resume-part файлы")
+    Container(config_toml, "Конфиг", "config.toml (serde)", "Профили, API-ключи, тема, PIN-sha256, автоблок, прокси, правила автозагрузки")
+}
+
+Rel(ui_thread, tokio_rt, "spawn задач; mpsc::Sender<BgEvent>", "in-process")
+Rel(tokio_rt, ui_thread, "mpsc::Receiver<BgEvent> → pump_events()", "in-process")
+Rel(tokio_rt, sqlite_db, "SQL-запросы", "rusqlite")
+Rel(tokio_rt, session_files, "Auth-сессии (SqliteSession)", "grammers-session")
+Rel(tokio_rt, media_cache, "Скачивание/постеры/превью", "fs")
+Rel(ui_thread, config_toml, "Чтение/запись настроек", "serde/toml")
+Rel(tokio_rt, mtproto, "Invoke функций, upload/download чанков", "TCP MTProto")
+Rel(tokio_rt, yadisk, "Автозагрузка новых медиа", "HTTPS")
+
+' -----------------------------------------------------------------------------
+' Уровень 3 — Components: крейт telecomfort (src/)
+' -----------------------------------------------------------------------------
+Container_Boundary(crate, "Крейт telecomfort (src/)") {
+    Component(main, "main", "Точка входа", "tracing, tokio-rt, eframe NativeOptions, иконка в коде")
+    Component(cfg, "config", "AppConfig/профили", "TelegramSettings+UiSettings+правила; load/save/migrate")
+    Component(db, "db", "Db-обёртка", "Дедуп, phash, onnx-кэш, загрузки")
+    Component(sync, "sync", "SyncEngine + notify", "Фоновый синк диалогов/сторис, десктоп-уведомления")
+
+    Component(tg_trait, "telegram::TelegramService", "Трейт ~110 методов", "Контракт backend'ов: чаты, сторис, медиа, payments, stats, 2FA, gifts")
+    Component(tg_live, "telegram::GrammersBackend", "Live-реализация", "grammers Client/SenderPool; raw invoke; waveform/PH2/OGG-хелперы")
+    Component(tg_mock, "telegram::MockTelegram", "Mock-реализация", "Демо-режим без ключей; contract_NN тесты")
+    Component(tg_session, "telegram::session", "Хелперы сессий", "Пути session-файлов, экспорт/импорт")
+
+    Component(ui_app, "ui::app::TelecomfortApp", "Состояние + BgEvent-pump", "~6k строк: поля экранов, pump_events, ~150 методов-действий")
+    Component(ui_views, "ui::views", "6 экранов", "chats/contacts/downloads/login/settings/stories; окна-модалки")
+    Component(ui_lock, "Экран блокировки", "PIN-gate", "SHA-256 сверка, автоблок по неактивности")
+
+    Component(media_par, "media::mtproto", "Параллельный качальщик", "Чанки ×N workers, resume, on_progress callback")
+    Component(media_dec, "media::{av1,h264,hevc,video}", "Декодеры+постеры", "rusty_* без asm/asm-free; first_frame_builtin для превью")
+    Component(media_rec, "media::voice_rec", "Запись голоса", "cpal 48кГц моно → ресемпл → WAV 16-bit; уровень/таймер")
+    Component(ai_pipe, "ai::", "Анти-реклама в сторис", "heuristic → CLIP/ONNX → blur; phash+bktree дедуп; visual-кластеры")
+    Component(integ, "integrations::", "Внешние выгрузки", "yandex (OAuth, streaming) + calibre (импорт книг)")
+}
+
+Rel(main, cfg, "Загружает AppConfig")
+Rel(main, db, "Открывает БД")
+Rel(main, ui_app, "Создаёт TelecomfortApp, run_native")
+Rel(ui_app, ui_views, "Делегирует отрисовку экранам")
+Rel(ui_app, ui_lock, "Gate при locked / автоблоке")
+Rel(ui_views, ui_app, "Вызывают методы-действия (spawn задач)")
+Rel(ui_app, tg_trait, "Только через трейт (Arc<dyn>)")
+Rel(tg_live, tg_trait, "Реализует")
+Rel(tg_mock, tg_trait, "Реализует (демо)")
+Rel(tg_live, cfg, "API id/hash, proxy_url → connect_with_proxy")
+Rel(tg_live, tg_session, "Пути сессий")
+Rel(ui_app, db, "Дедуп/кэши при загрузках")
+Rel(ui_app, sync, "restart_background_sync, SyncTick")
+Rel(ui_app, media_par, "Скачивание с прогрессом")
+Rel(ui_app, media_rec, "Старт/стоп записи")
+Rel(ui_views, media_dec, "Постеры сторис/GIF через thumb")
+Rel(ui_views, ai_pipe, "Скоринг сторис (AdScore), blur-превью")
+Rel(ui_app, integ, "Автозагрузка по правилам")
+
+SHOW_LEGEND()
+
+@enduml
