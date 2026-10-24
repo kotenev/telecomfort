@@ -1,0 +1,80 @@
+name: android-release
+
+# Публикация APK без ручных шагов: тег v* → сборка, подпись (если есть секреты)
+# и GitHub Release. Секреты: ANDROID_KEYSTORE_B64, KEYSTORE_PASSWORD,
+# KEY_ALIAS, KEY_PASSWORD (Settings → Secrets → Actions).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK r27
+        run: sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+      - name: Autotools for opus
+        run: brew install autoconf automake libtool
+
+      - name: Restore keystore (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 --decode > android/telecomfort-release.keystore
+            cat > android/keystore.properties <<PROPS
+          storeFile=$PWD/android/telecomfort-release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPS
+            echo "release signing: enabled"
+          else
+            echo "release signing: secrets missing (unsigned APK)"
+          fi
+
+      - name: Build Rust .so
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: ./android/build-rust.sh release
+
+      - name: Assemble release APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          cd android
+          ./gradlew assembleRelease -PtcVersionName="$TAG" -PtcVersionCode="${{ github.run_number }}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: telecomfort-release
+          path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$APK" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$APK" --generate-notes --title "Telecomfort $GITHUB_REF_NAME"
+          fi

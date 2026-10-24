@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_client::{Client, SignInError};
-use grammers_mtsender::SenderPool;
+use grammers_mtsender::{SenderPool, UpdatesConfiguration};
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,12 @@ pub struct GrammersBackend {
     /// Ожидающие входы: opaque ключ → LoginToken (для моста/API без владения токеном).
     pending_logins: std::sync::Mutex<std::collections::HashMap<String, LoginToken>>,
     pending_pw: std::sync::Mutex<std::collections::HashMap<String, PasswordToken>>,
+    /// Приёмник обновлений от sender-пула (забирается один раз в live-стрим).
+    updates_rx: tokio::sync::Mutex<
+        Option<tokio::sync::mpsc::Receiver<grammers_session::updates::UpdatesLike>>,
+    >,
+    /// Живой поток обновлений (создаётся лениво после авторизации).
+    update_stream: tokio::sync::Mutex<Option<grammers_client::client::UpdateStream>>,
 }
 
 // Grammers Client клонируемый и потокобезопасный (внутри Arc).
@@ -57,7 +63,12 @@ impl GrammersBackend {
         }
         let session =
             Arc::new(SqliteSession::open(session_path.to_string_lossy().to_string()).await?);
-        let SenderPool { runner, handle, .. } = match proxy_url.filter(|u| !u.trim().is_empty()) {
+        let SenderPool {
+            runner,
+            handle,
+            updates,
+            ..
+        } = match proxy_url.filter(|u| !u.trim().is_empty()) {
             Some(url) => {
                 use grammers_mtsender::ConnectionParams;
                 SenderPool::with_configuration(
@@ -81,6 +92,8 @@ impl GrammersBackend {
             parallel_workers: std::sync::Mutex::new(crate::media::mtproto::DEFAULT_WORKERS),
             pending_logins: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending_pw: std::sync::Mutex::new(std::collections::HashMap::new()),
+            updates_rx: tokio::sync::Mutex::new(Some(updates)),
+            update_stream: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -370,6 +383,56 @@ impl GrammersBackend {
             phone: me.phone().map(|s| s.to_string()),
             username: me.username().map(|s| s.to_string()),
         })
+    }
+
+    /// Следующее live-обновление (long-poll). Поток создаётся лениво после входа.
+    async fn next_live_update(&self, timeout_ms: u64) -> Result<Option<super::LiveUpdate>> {
+        let mut st = self.update_stream.lock().await;
+        if st.is_none() {
+            if !self.client.is_authorized().await.unwrap_or(false) {
+                tokio::time::sleep(std::time::Duration::from_millis(timeout_ms.min(500))).await;
+                return Ok(None);
+            }
+            let rx = self.updates_rx.lock().await.take();
+            if let Some(rx) = rx {
+                match self
+                    .client
+                    .stream_updates(rx, UpdatesConfiguration { catch_up: true })
+                    .await
+                {
+                    Ok(s) => *st = Some(s),
+                    Err(e) => anyhow::bail!("updates stream: {e}"),
+                }
+            }
+        }
+        let Some(stream) = st.as_mut() else {
+            tokio::time::sleep(std::time::Duration::from_millis(timeout_ms.min(1000))).await;
+            return Ok(None);
+        };
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), stream.next())
+            .await
+        {
+            Err(_) => Ok(None),
+            Ok(Err(e)) => anyhow::bail!("updates: {e}"),
+            Ok(Ok(u)) => Ok(parse_live_update(u)),
+        }
+    }
+
+    /// Отклонить входящий звонок (`phone.discardCall`, reason=missed).
+    async fn decline_call(&self, call_id: i64, access_hash: i64) -> Result<()> {
+        use grammers_tl_types as tl;
+        let req = tl::functions::phone::DiscardCall {
+            video: false,
+            peer: tl::enums::InputPhoneCall::Call(tl::types::InputPhoneCall {
+                id: call_id,
+                access_hash,
+            }),
+            duration: 0,
+            reason: tl::enums::PhoneCallDiscardReason::Missed,
+            connection_id: 0,
+        };
+        let _ = self.client.invoke(&req).await?;
+        Ok(())
     }
 
     async fn send_text(
@@ -4383,6 +4446,60 @@ impl GrammersBackend {
     }
 }
 
+/// Разобрать обновление grammers в сериализуемый `LiveUpdate`.
+fn parse_live_update(u: grammers_client::update::Update) -> Option<super::LiveUpdate> {
+    use grammers_client::update::Update as U;
+    let msg_live = |kind: &str, m: &grammers_client::message::Message| super::LiveUpdate {
+        kind: kind.to_string(),
+        chat_id: m.peer_id().bare_id_unchecked(),
+        sender: m.sender().and_then(|p| p.name()).map(|s| s.to_string()),
+        text: m.text().to_string(),
+        message_id: m.id(),
+        outgoing: m.outgoing(),
+        ..Default::default()
+    };
+    match u {
+        U::NewMessage(m) => Some(msg_live("message", &m)),
+        U::MessageEdited(m) => Some(msg_live("edit", &m)),
+        U::MessageDeleted(d) => Some(super::LiveUpdate {
+            kind: "delete".into(),
+            chat_id: d.channel_id().unwrap_or(0),
+            message_id: d.messages().first().copied().unwrap_or(0),
+            ..Default::default()
+        }),
+        U::Raw(raw) => match raw.raw {
+            grammers_tl_types::enums::Update::PhoneCall(pc) => match pc.phone_call {
+                grammers_tl_types::enums::PhoneCall::Requested(r) => Some(super::LiveUpdate {
+                    kind: "call".into(),
+                    chat_id: r.admin_id,
+                    sender: None,
+                    text: String::new(),
+                    message_id: 0,
+                    call_id: Some(r.id),
+                    call_access_hash: Some(r.access_hash),
+                    video: r.video,
+                    missed: false,
+                    ..Default::default()
+                }),
+                grammers_tl_types::enums::PhoneCall::Discarded(d) => Some(super::LiveUpdate {
+                    kind: "call_ended".into(),
+                    chat_id: 0,
+                    call_id: Some(d.id),
+                    video: d.video,
+                    missed: matches!(
+                        d.reason,
+                        Some(grammers_tl_types::enums::PhoneCallDiscardReason::Missed)
+                    ),
+                    ..Default::default()
+                }),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -4412,6 +4529,15 @@ impl crate::telegram::TelegramService for GrammersBackend {
     }
     async fn me(&self) -> anyhow::Result<AccountInfo> {
         GrammersBackend::me(self).await
+    }
+    async fn next_live_update(
+        &self,
+        timeout_ms: u64,
+    ) -> anyhow::Result<Option<crate::telegram::LiveUpdate>> {
+        GrammersBackend::next_live_update(self, timeout_ms).await
+    }
+    async fn decline_call(&self, call_id: i64, access_hash: i64) -> anyhow::Result<()> {
+        GrammersBackend::decline_call(self, call_id, access_hash).await
     }
     async fn send_text(
         &self,

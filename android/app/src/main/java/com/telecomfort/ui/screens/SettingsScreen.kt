@@ -279,7 +279,7 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
         }
         item {
             Text("🔄 Фоновый синк", style = MaterialTheme.typography.titleSmall)
-            Text("Без FCM-сервера: WorkManager тянет диалоги и уведомляет о новых.",
+            Text("Без FCM: foreground-сервис держит live-поток обновлений, WorkManager — резерв каждые 15 мин.",
                 style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -362,6 +362,8 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     runCatching {
                         Core.call("logout", emptyMap())
                         showLogout = false
+                        com.telecomfort.core.RealtimeService.stop(ctx)
+                        com.telecomfort.core.CoreBootstrap.reset()
                         com.telecomfort.core.LockManager.locked = false
                         onLogout()
                     }.onFailure { status = "Ошибка: ${it.message}" }

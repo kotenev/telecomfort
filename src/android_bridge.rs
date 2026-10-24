@@ -1161,6 +1161,22 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
             let _ = std::fs::remove_file(&probe);
             Ok(json!({"ok_proxy": true, "authorized": authed}))
         }
+        "poll_updates" => {
+            // Long-poll live-обновлений (без FCM): новое сообщение/правка/звонок.
+            let tg = core().tg()?;
+            let ms = v
+                .get("timeout_ms")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(25_000)
+                .min(60_000);
+            Ok(json!({"update": tg.next_live_update(ms).await?}))
+        }
+        "decline_call" => {
+            let tg = core().tg()?;
+            tg.decline_call(i64f(v, "call_id")?, i64f(v, "access_hash")?)
+                .await?;
+            Ok(json!({}))
+        }
         "is_authorized" => {
             let tg = core().tg()?;
             // is_authorized — inherent-метод бэкенда: пробуем через downcast.
@@ -1465,6 +1481,8 @@ mod tests {
             json!({"op": "avatar_path", "chat": -1001}),
             json!({"op": "pinned_one", "chat": -1001}),
             json!({"op": "is_authorized"}),
+            json!({"op": "poll_updates", "timeout_ms": 1}),
+            json!({"op": "decline_call", "call_id": 1, "access_hash": 2}),
         ] {
             let r = call(op);
             assert_eq!(r["ok"], true, "{r}");

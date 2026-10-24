@@ -208,9 +208,38 @@ CI (`android.yml`) собирает всё с нуля и прикладывае
 - Проверено: `cargo test --lib` 136 passed, clippy без ошибок, Kotlin
   `compileDebugKotlin`, `build-rust.sh debug` (arm64+x86_64) и `assembleDebug`.
 
+## Что закрыто в тринадцатом заходе (без FCM и сторонних сервисов)
+
+- **Push без FCM/Firebase**: `RealtimeService` — foreground-сервис
+  (`dataSync`) держит `poll_updates` (long-poll 25 с) поверх MTProto-сессии и
+  показывает локальные уведомления; без Firebase-проекта и сторонних серверов.
+  Сервис стартует после входа/автологина, останавливается при logout,
+  переживает смерть процесса (`START_STICKY`) и сам поднимает init из
+  SecureStore. WorkManager-синк остаётся резервом (15 мин) и для случая,
+  когда ОС не даёт держать foreground-сервис.
+- **Rust-поток обновлений**: `SenderPool.updates` больше не выбрасывается —
+  `GrammersBackend` лениво создаёт `stream_updates(catch_up: true)` и отдаёт
+  события через `next_live_update()` (трейт + мок). Новые сообщения/правки/
+  удаления и `updatePhoneCall` (requested/discarded).
+- **Звонки (максимум без VoIP-стека)**: уведомление «Входящий звонок» с
+  действием «Отклонить» (`phone.discardCall`, reason=missed) + «Пропущенный
+  звонок». Сам аудиопоток (WebRTC/DTLS-SRTP) невозможен без нативного
+  VoIP-стека — честно остаётся вне клиента.
+- **Камера в приложении без CameraX**: `InAppCamera` на `android.hardware.Camera`
+  + SurfaceView (живое превью, съёмка в JPEG → публикация сторис); системная
+  камера остаётся для видео. Никаких новых Gradle-зависимостей.
+- **Публикация**: workflow `.github/workflows/android-release.yml` по тегу
+  `v*` собирает release-APK (подпись из секретов, если заданы), прикладывает
+  артефакт и создаёт GitHub Release через `gh`. Версия берётся из тега.
+- Права/рантайм: `FOREGROUND_SERVICE(_DATA_SYNC)`, запрос
+  `POST_NOTIFICATIONS` на Android 13+, подавление дублей при открытом
+  приложении (`AppVisibility`).
+- Проверено: `cargo test` 136 passed, clippy без ошибок, android-таргеты
+  собираются, `assembleDebug` ставится и запускается на эмуляторе Pixel 5 API 33.
+
 ## Осталось (честно)
 
-- Push через FCM — нужен Firebase-проект (консольный шаг, не код).
-- CameraX-превью (сейчас системная камера/файлы — достаточно для сторис).
-- Публикация в Play (нужны keystore-секреты CI + аккаунт разработчика).
-- Звонки (нет VoIP-стека в grammers — как и на десктопе).
+- Медиа-поток звонков (VoIP/WebRTC) — нужен нативный стек; клиент умеет
+  уведомлять и отклонять входящий вызов.
+- Публикация в Google Play — нужен аккаунт разработчика (код релиза готов:
+  подпись + GitHub Release по тегу).

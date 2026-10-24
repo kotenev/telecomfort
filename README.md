@@ -142,6 +142,8 @@
    (C++, WebRTC-наследие, UDP с обфускацией, эхоподавление). В Rust VoIP-стека под MTProto нет,
    grammers не оборачивает phone.*. Мостик к C++ libtgvoip через FFI — огромный unsafe-контур
    и платформенный аудиокод. Вывод: только через upstream VoIP-стек, вне скоупа клиента.
+   Android-клиент при этом получает `updatePhoneCall` из live-потока, показывает входящий
+   звонок и умеет отклонить его (`phone.discardCall`) — без медиапотока.
 2. Секретные чаты (E2E). Нужны messages.requestEncryption + DH (E2E-вариант MTProto 2.0 KDF) +
    слой encryptedMessage/decryptedMessage (random_id, ttl, fingerprint ключа, PFS-перешифрование,
    сверка ключа по QR/эмодзи) + отдельные апдейты (updateEncryption, updateEncryptedChatTyping).

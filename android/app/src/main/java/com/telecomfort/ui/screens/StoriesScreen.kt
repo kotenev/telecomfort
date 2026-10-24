@@ -50,6 +50,10 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
     var viewerPath by remember { mutableStateOf<String?>(null) }
     var viewerVideo by remember { mutableStateOf(false) }
     var viewerCaption by remember { mutableStateOf("") }
+    var showInAppCamera by remember { mutableStateOf(false) }
+    val camPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) showInAppCamera = true else status = "Нет разрешения на камеру"
+    }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         scope.launch {
@@ -413,9 +417,24 @@ fun StoriesScreen(nav: NavController, store: com.telecomfort.core.SecureStore? =
                 TextButton(onClick = { pickMusic.launch("audio/*") }) { Text("🎵${if (musicPath != null) " ✓" else ""}") }
                 TextButton(onClick = { pickMedia.launch("*/*") }) { Text("Файл") }
                 TextButton(onClick = { launchCamera(false) }) { Text("📷") }
+                TextButton(onClick = {
+                    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                        ctx, android.Manifest.permission.CAMERA
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted) showInAppCamera = true else camPerm.launch(android.Manifest.permission.CAMERA)
+                }) { Text("📸 Превью") }
                 TextButton(onClick = { launchCamera(true) }) { Text("🎬") }
             }
         }, dismissButton = { TextButton(onClick = { showPublish = false }) { Text("Отмена") } })
+    }
+    if (showInAppCamera) {
+        InAppCamera(
+            onCapture = { f ->
+                showInAppCamera = false
+                publishStory(f)
+            },
+            onClose = { showInAppCamera = false },
+        )
     }
     viewerPath?.let { path ->
         androidx.compose.ui.window.Dialog(

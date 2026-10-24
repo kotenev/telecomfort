@@ -833,6 +833,10 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
+    async fn decline_call(&self, _call_id: i64, _access_hash: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn unpin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
         Ok(())
     }
