@@ -5185,6 +5185,7 @@ dependencies = [
 name = "telecomfort"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "async-stream",
  "async-trait",
@@ -5197,6 +5198,7 @@ dependencies = [
  "eframe",
  "egui",
  "futures",
+ "getrandom 0.3.4",
  "grammers-client",
  "grammers-crypto",
  "grammers-mtsender",
@@ -5209,6 +5211,8 @@ dependencies = [
  "jni",
  "mime_guess",
  "notify-rust",
+ "num-bigint 0.4.8",
+ "num-traits",
  "ogg",
  "open",
  "ort",
@@ -5224,6 +5228,7 @@ dependencies = [
  "rusty_h265",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",

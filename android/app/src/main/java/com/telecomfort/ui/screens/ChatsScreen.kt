@@ -141,6 +141,14 @@ fun ChatsScreen(nav: NavController) {
                     modifier = Modifier.clickable { nav.navigate("chat/${c.id}") },
                     trailingContent = {
                         Row {
+                            if (c.id > 0) IconButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("call_start", mapOf("chat" to c.id, "video" to false))
+                                        nav.navigate("call")
+                                    }.onFailure { status = "Звонок: ${it.message}" }
+                                }
+                            }) { Text("📞") }
                             IconButton(onClick = { scope.launch { runCatching { Core.call("archive", mapOf("chat" to c.id, "archived" to !c.archived)); reload() } } }) { Text(if (c.archived) "📥" else "🗄") }
                             IconButton(onClick = { scope.launch { runCatching { Core.call("pin_dialog", mapOf("chat" to c.id, "pinned" to true)); reload() } } }) { Text("📌") }
                             IconButton(onClick = { scope.launch { runCatching { Core.call("mute", mapOf("chat" to c.id, "muted" to !c.muted)); reload() } } }) { Text(if (c.muted) "🔔" else "🔕") }

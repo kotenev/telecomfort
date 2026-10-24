@@ -30,10 +30,13 @@ android/app (Kotlin/Compose)          Rust core (cdylib libtelecomfort.so)
 ## Сборка
 
 ```bash
-# 1. Rust .so (нужны: rustup stable + android-таргеты, NDK r27, autoconf/automake):
-./android/build-rust.sh release     # arm64-v8a + x86_64 → android/app/src/main/jniLibs/
+# 1. libtgvoip.so — нативный VoIP (клонирует закреплённый upstream, нужен NDK r27):
+./android/build-tgvoip.sh           # arm64-v8a + x86_64 → jniLibs/libtgvoip.so
 
-# 2. APK (нужен JDK 17):
+# 2. Rust .so (нужны: rustup stable + android-таргеты, NDK r27, autoconf/automake):
+./android/build-rust.sh release     # → jniLibs/libtelecomfort.so (DT_NEEDED: libtgvoip)
+
+# 3. APK (нужен JDK 17):
 cd android && ./gradlew assembleDebug
 # app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -237,9 +240,30 @@ CI (`android.yml`) собирает всё с нуля и прикладывае
 - Проверено: `cargo test` 136 passed, clippy без ошибок, android-таргеты
   собираются, `assembleDebug` ставится и запускается на эмуляторе Pixel 5 API 33.
 
+## Что закрыто в четырнадцатом заходе: нативный VoIP
+
+- **libtgvoip внутри APK**: `android/build-tgvoip.sh` клонирует закреплённый
+  `telegramdesktop/libtgvoip`, патчит Android.mk (`TGVOIP_USE_CUSTOM_CRYPTO`,
+  `TGVOIP_USE_CALLBACK_AUDIO_IO`, `TGVOIP_NO_DSP`), собирает `libtgvoip.so`
+  под arm64-v8a и x86_64 в `jniLibs`. `Core` грузит его до `libtelecomfort`.
+- **Сигналинг `phone.*`** в Rust: `requestCall`/`acceptCall`/`confirmCall`/
+  `discardCall`, DH 2048 бит, `key_fingerprint`, SHA-256(auth_key), разбор
+  `PhoneConnection` и `updatePhoneCall` (Requested/Accepted/Call/Discarded).
+  `LiveUpdate` несёт `call_info`; `next_live_update` сам доводит звонок до
+  active и поднимает медиа.
+- **Медиа**: `src/media/voip_native.rs` (FFI, крипто-callback'и AES-IGE/CTR,
+  SHA-1/256, rand) + `voip_audio.rs` (cpal/AAudio 48 кГц моно, ring-буферы,
+  mute) — PCM-колбэки libtgvoip, Opus/jitter/obfuscated UDP внутри libtgvoip.
+- **UI**: `CallScreen` (входящий/исходящий/активный, таймер, mute, динамик,
+  завершение, трафик), кнопка 📞 в чатах, глобальный подъём экрана по
+  `call_state`; уведомление «Принять/Отклонить» через live-сервис.
+- **Сборка**: `./android/build-tgvoip.sh` → `./android/build-rust.sh` →
+  Gradle. `build.rs` добавляет `-ltgvoip`, APK содержит обе `.so`.
+- Ограничения: `TGVOIP_NO_DSP` — без WebRTC AEC/NS/AGC (эхо может быть
+  слышно в громкой связи); десктопная сборка медиа не запускает (нет
+  libtgvoip под macOS/Windows в этом репозитории).
+
 ## Осталось (честно)
 
-- Медиа-поток звонков (VoIP/WebRTC) — нужен нативный стек; клиент умеет
-  уведомлять и отклонять входящий вызов.
 - Публикация в Google Play — нужен аккаунт разработчика (код релиза готов:
   подпись + GitHub Release по тегу).

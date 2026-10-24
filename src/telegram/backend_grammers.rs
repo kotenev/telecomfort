@@ -37,6 +37,24 @@ pub struct GrammersBackend {
     >,
     /// Живой поток обновлений (создаётся лениво после авторизации).
     update_stream: tokio::sync::Mutex<Option<grammers_client::client::UpdateStream>>,
+    /// DH-контекст текущего/последнего звонка.
+    call_dh: std::sync::Mutex<std::collections::HashMap<i64, CallDh>>,
+    /// Текущий звонок (ringing/waiting/active/ended) для UI.
+    current_call: std::sync::Mutex<Option<super::CallInfo>>,
+    /// Нативный медиапоток (libtgvoip).
+    call_media: std::sync::Mutex<Option<crate::media::voip_native::NativeCall>>,
+}
+
+/// Секрет DH и параметры звонка (для confirmCall и медиа-ключа).
+#[derive(Clone)]
+struct CallDh {
+    secret: num_bigint::BigUint,
+    g_a: Vec<u8>,
+    p: num_bigint::BigUint,
+    g: num_bigint::BigUint,
+    access_hash: i64,
+    outgoing: bool,
+    video: bool,
 }
 
 // Grammers Client клонируемый и потокобезопасный (внутри Arc).
@@ -94,6 +112,9 @@ impl GrammersBackend {
             pending_pw: std::sync::Mutex::new(std::collections::HashMap::new()),
             updates_rx: tokio::sync::Mutex::new(Some(updates)),
             update_stream: tokio::sync::Mutex::new(None),
+            call_dh: std::sync::Mutex::new(std::collections::HashMap::new()),
+            current_call: std::sync::Mutex::new(None),
+            call_media: std::sync::Mutex::new(None),
         })
     }
 
@@ -385,6 +406,351 @@ impl GrammersBackend {
         })
     }
 
+    /// Позвонить пользователю (1:1). DH — как в secret chats (2048 бит).
+    async fn start_call(&self, chat_id: i64, video: bool) -> Result<super::CallInfo> {
+        use grammers_client::tl;
+        let user = self.dialog_user(chat_id).await?;
+        let (p_bytes, g) = self.dh_config().await?;
+        let p = num_bigint::BigUint::from_bytes_le(&p_bytes);
+        let g = num_bigint::BigUint::from(g.max(2) as u32);
+        let secret = random_biguint();
+        let g_a = bn_to_256(&g.modpow(&secret, &p));
+        let g_a_hash = sha256_vec(&g_a);
+        let req = tl::functions::phone::RequestCall {
+            video,
+            user_id: tl::enums::InputUser::User(tl::types::InputUser {
+                user_id: user.id,
+                access_hash: user.access_hash.context("user access_hash")?,
+            }),
+            random_id: random_i32(),
+            g_a_hash,
+            protocol: call_protocol(),
+        };
+        let res = self
+            .client
+            .invoke(&req)
+            .await
+            .context("phone.requestCall")?;
+        let res = match res {
+            tl::enums::phone::PhoneCall::Call(c) => c,
+        };
+        let (id, access_hash) = match res.phone_call {
+            tl::enums::PhoneCall::Waiting(w) => (w.id, w.access_hash),
+            other => anyhow::bail!("неожиданный ответ requestCall: {other:?}"),
+        };
+        self.call_dh.lock().unwrap().insert(
+            id,
+            CallDh {
+                secret,
+                g_a,
+                p,
+                g,
+                access_hash,
+                outgoing: true,
+                video,
+            },
+        );
+        let info = super::CallInfo {
+            call_id: id,
+            access_hash,
+            peer_id: chat_id,
+            video,
+            state: "waiting".into(),
+            outgoing: true,
+            ..Default::default()
+        };
+        *self.current_call.lock().unwrap() = Some(info.clone());
+        Ok(info)
+    }
+
+    /// Принять входящий звонок: отправляем g_b, получаем g_a и эндпойнты.
+    async fn accept_call(&self, call_id: i64, access_hash: i64) -> Result<super::CallInfo> {
+        use grammers_client::tl;
+        let (p_bytes, g) = self.dh_config().await?;
+        let p = num_bigint::BigUint::from_bytes_le(&p_bytes);
+        let g = num_bigint::BigUint::from(g.max(2) as u32);
+        let secret = random_biguint();
+        let g_b = bn_to_256(&g.modpow(&secret, &p));
+        let req = tl::functions::phone::AcceptCall {
+            peer: input_phone_call(call_id, access_hash),
+            g_b: g_b.clone(),
+            protocol: call_protocol(),
+        };
+        let res = self.client.invoke(&req).await.context("phone.acceptCall")?;
+        let res = match res {
+            tl::enums::phone::PhoneCall::Call(c) => c,
+        };
+        let call = match res.phone_call {
+            tl::enums::PhoneCall::Call(c) => c,
+            other => anyhow::bail!("неожиданный ответ acceptCall: {other:?}"),
+        };
+        let g_a = call.g_a_or_b.clone();
+        let auth = num_bigint::BigUint::from_bytes_le(&g_a).modpow(&secret, &p);
+        let auth_bytes = bn_to_256(&auth);
+        let fp = key_fingerprint(&auth_bytes);
+        if fp != call.key_fingerprint {
+            anyhow::bail!("отпечаток ключа не совпал");
+        }
+        let key = crate::media::voip_native::call_key_from_auth_key(&auth_bytes);
+        self.call_dh.lock().unwrap().insert(
+            call_id,
+            CallDh {
+                secret,
+                g_a: g_b,
+                p,
+                g,
+                access_hash,
+                outgoing: false,
+                video: call.video,
+            },
+        );
+        let mut info = super::CallInfo {
+            call_id,
+            access_hash,
+            peer_id: call.admin_id,
+            video: call.video,
+            state: "active".into(),
+            key_hex: Some(hex(&key)),
+            key_fingerprint: Some(call.key_fingerprint),
+            connections: parse_connections(&call.connections),
+            outgoing: false,
+            error: None,
+        };
+        self.begin_media(&mut info, key, false);
+        *self.current_call.lock().unwrap() = Some(info.clone());
+        Ok(info)
+    }
+
+    fn call_state(&self) -> Option<super::CallInfo> {
+        self.current_call.lock().unwrap().clone()
+    }
+
+    /// Завершить текущий звонок.
+    async fn hangup_call(&self) -> Result<()> {
+        let info = self.current_call.lock().unwrap().clone();
+        let Some(info) = info else {
+            return Ok(());
+        };
+        if let Some(media) = self.call_media.lock().unwrap().take() {
+            media.stop();
+        }
+        let res = self
+            .client
+            .invoke(&grammers_tl_types::functions::phone::DiscardCall {
+                video: info.video,
+                peer: input_phone_call(info.call_id, info.access_hash),
+                duration: 0,
+                reason: grammers_tl_types::enums::PhoneCallDiscardReason::Hangup,
+                connection_id: 0,
+            })
+            .await;
+        if let Ok(mut cur) = self.current_call.lock() {
+            if let Some(mut c) = cur.take() {
+                c.state = "ended".into();
+                *cur = Some(c);
+            }
+        }
+        res.context("phone.discardCall")?;
+        Ok(())
+    }
+
+    fn call_mute(&self, muted: bool) {
+        if let Some(m) = self.call_media.lock().unwrap().as_ref() {
+            m.set_muted(muted);
+        }
+    }
+
+    fn call_stats(&self) -> (u64, u64) {
+        self.call_media
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|m| m.stats())
+            .unwrap_or((0, 0))
+    }
+
+    async fn dh_config(&self) -> Result<(Vec<u8>, i32)> {
+        use grammers_client::tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetDhConfig {
+                version: 0,
+                random_length: 256,
+            })
+            .await
+            .context("messages.getDhConfig")?;
+        match res {
+            tl::enums::messages::DhConfig::Config(c) => Ok((c.p, c.g)),
+            tl::enums::messages::DhConfig::NotModified(_) => {
+                anyhow::bail!("DH config not modified без сохранённого p")
+            }
+        }
+    }
+
+    fn begin_media(&self, info: &mut super::CallInfo, key: [u8; 32], outgoing: bool) {
+        let mut guard = self.call_media.lock().unwrap();
+        if let Some(old) = guard.take() {
+            old.stop();
+        }
+        match crate::media::voip_native::NativeCall::start(
+            &info.connections,
+            key,
+            outgoing,
+            false,
+            true,
+        ) {
+            Ok(call) => *guard = Some(call),
+            Err(e) => info.error = Some(e.to_string()),
+        }
+    }
+
+    /// Обработать `updatePhoneCall` (сигналинг + старт медиа).
+    async fn handle_phone_call(
+        &self,
+        call: grammers_tl_types::enums::PhoneCall,
+    ) -> Option<super::LiveUpdate> {
+        use grammers_client::tl;
+        match call {
+            tl::enums::PhoneCall::Requested(r) => {
+                let info = super::CallInfo {
+                    call_id: r.id,
+                    access_hash: r.access_hash,
+                    peer_id: r.admin_id,
+                    video: r.video,
+                    state: "ringing".into(),
+                    outgoing: false,
+                    ..Default::default()
+                };
+                *self.current_call.lock().unwrap() = Some(info.clone());
+                Some(super::LiveUpdate {
+                    kind: "call".into(),
+                    chat_id: r.admin_id,
+                    call_id: Some(r.id),
+                    call_access_hash: Some(r.access_hash),
+                    video: r.video,
+                    call_info: Some(info),
+                    ..Default::default()
+                })
+            }
+            tl::enums::PhoneCall::Accepted(a) => {
+                let dh = self.call_dh.lock().unwrap().get(&a.id).cloned()?;
+                if !dh.outgoing {
+                    return None;
+                }
+                let auth = num_bigint::BigUint::from_bytes_le(&a.g_b).modpow(&dh.secret, &dh.p);
+                let auth_bytes = bn_to_256(&auth);
+                let fp = key_fingerprint(&auth_bytes);
+                let key = crate::media::voip_native::call_key_from_auth_key(&auth_bytes);
+                let res = self
+                    .client
+                    .invoke(&tl::functions::phone::ConfirmCall {
+                        peer: input_phone_call(a.id, dh.access_hash),
+                        g_a: dh.g_a.clone(),
+                        key_fingerprint: fp,
+                        protocol: call_protocol(),
+                    })
+                    .await;
+                let Ok(res) = res else {
+                    return Some(super::LiveUpdate {
+                        kind: "call_ended".into(),
+                        call_id: Some(a.id),
+                        text: "confirmCall failed".into(),
+                        ..Default::default()
+                    });
+                };
+                let res = match res {
+                    tl::enums::phone::PhoneCall::Call(c) => c,
+                };
+                let tl::enums::PhoneCall::Call(c) = res.phone_call else {
+                    return None;
+                };
+                let mut info = super::CallInfo {
+                    call_id: a.id,
+                    access_hash: dh.access_hash,
+                    peer_id: c.admin_id,
+                    video: dh.video,
+                    state: "active".into(),
+                    key_hex: Some(hex(&key)),
+                    key_fingerprint: Some(fp),
+                    connections: parse_connections(&c.connections),
+                    outgoing: true,
+                    error: None,
+                };
+                self.begin_media(&mut info, key, true);
+                *self.current_call.lock().unwrap() = Some(info.clone());
+                Some(super::LiveUpdate {
+                    kind: "call_active".into(),
+                    chat_id: c.admin_id,
+                    call_id: Some(a.id),
+                    video: dh.video,
+                    call_info: Some(info),
+                    ..Default::default()
+                })
+            }
+            tl::enums::PhoneCall::Call(c) => {
+                let Some(dh) = self.call_dh.lock().unwrap().get(&c.id).cloned() else {
+                    return None;
+                };
+                if dh.outgoing {
+                    return None;
+                }
+                let auth =
+                    num_bigint::BigUint::from_bytes_le(&c.g_a_or_b).modpow(&dh.secret, &dh.p);
+                let auth_bytes = bn_to_256(&auth);
+                let fp = key_fingerprint(&auth_bytes);
+                let key = crate::media::voip_native::call_key_from_auth_key(&auth_bytes);
+                let mut info = super::CallInfo {
+                    call_id: c.id,
+                    access_hash: dh.access_hash,
+                    peer_id: c.admin_id,
+                    video: c.video,
+                    state: "active".into(),
+                    key_hex: Some(hex(&key)),
+                    key_fingerprint: Some(c.key_fingerprint),
+                    connections: parse_connections(&c.connections),
+                    outgoing: false,
+                    error: if fp == c.key_fingerprint {
+                        None
+                    } else {
+                        Some("отпечаток ключа не совпал".into())
+                    },
+                };
+                if fp == c.key_fingerprint {
+                    self.begin_media(&mut info, key, false);
+                }
+                *self.current_call.lock().unwrap() = Some(info.clone());
+                Some(super::LiveUpdate {
+                    kind: "call_active".into(),
+                    chat_id: c.admin_id,
+                    call_id: Some(c.id),
+                    video: c.video,
+                    call_info: Some(info),
+                    ..Default::default()
+                })
+            }
+            tl::enums::PhoneCall::Discarded(d) => {
+                if let Some(media) = self.call_media.lock().unwrap().take() {
+                    media.stop();
+                }
+                let missed = matches!(d.reason, Some(tl::enums::PhoneCallDiscardReason::Missed));
+                if let Ok(mut cur) = self.current_call.lock() {
+                    if let Some(mut c) = cur.take() {
+                        c.state = "ended".into();
+                        *cur = Some(c);
+                    }
+                }
+                Some(super::LiveUpdate {
+                    kind: "call_ended".into(),
+                    call_id: Some(d.id),
+                    video: d.video,
+                    missed,
+                    ..Default::default()
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Следующее live-обновление (long-poll). Поток создаётся лениво после входа.
     async fn next_live_update(&self, timeout_ms: u64) -> Result<Option<super::LiveUpdate>> {
         let mut st = self.update_stream.lock().await;
@@ -414,7 +780,14 @@ impl GrammersBackend {
         {
             Err(_) => Ok(None),
             Ok(Err(e)) => anyhow::bail!("updates: {e}"),
-            Ok(Ok(u)) => Ok(parse_live_update(u)),
+            Ok(Ok(u)) => {
+                if let grammers_client::update::Update::Raw(ref raw) = u {
+                    if let grammers_tl_types::enums::Update::PhoneCall(pc) = &raw.raw {
+                        return Ok(self.handle_phone_call(pc.phone_call.clone()).await);
+                    }
+                }
+                Ok(parse_live_update(u))
+            }
         }
     }
 
@@ -4446,6 +4819,76 @@ impl GrammersBackend {
     }
 }
 
+fn bn_to_256(n: &num_bigint::BigUint) -> Vec<u8> {
+    let mut v = n.to_bytes_le();
+    v.resize(256, 0);
+    v
+}
+
+fn random_biguint() -> num_bigint::BigUint {
+    let mut b = [0u8; 256];
+    if getrandom::fill(&mut b).is_err() {
+        b[0] = 1;
+    }
+    num_bigint::BigUint::from_bytes_le(&b)
+}
+
+fn random_i32() -> i32 {
+    let mut b = [0u8; 4];
+    let _ = getrandom::fill(&mut b);
+    i32::from_le_bytes(b) & i32::MAX
+}
+
+fn sha256_vec(data: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data).to_vec()
+}
+
+fn key_fingerprint(auth_key: &[u8]) -> i64 {
+    use sha1::{Digest, Sha1};
+    let h = Sha1::digest(auth_key);
+    i64::from_le_bytes(h[..8].try_into().unwrap())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn call_protocol() -> grammers_tl_types::enums::PhoneCallProtocol {
+    use grammers_tl_types as tl;
+    tl::enums::PhoneCallProtocol::Protocol(tl::types::PhoneCallProtocol {
+        udp_p2p: true,
+        udp_reflector: true,
+        min_layer: 65,
+        max_layer: 92,
+        library_versions: vec!["2.4.4".into()],
+    })
+}
+
+fn input_phone_call(id: i64, access_hash: i64) -> grammers_tl_types::enums::InputPhoneCall {
+    use grammers_tl_types as tl;
+    tl::enums::InputPhoneCall::Call(tl::types::InputPhoneCall { id, access_hash })
+}
+
+fn parse_connections(
+    list: &[grammers_tl_types::enums::PhoneConnection],
+) -> Vec<super::CallConnection> {
+    use grammers_tl_types as tl;
+    list.iter()
+        .filter_map(|c| match c {
+            tl::enums::PhoneConnection::Connection(c) => Some(super::CallConnection {
+                id: c.id,
+                ip: c.ip.clone(),
+                ipv6: c.ipv6.clone(),
+                port: c.port,
+                peer_tag: c.peer_tag.clone(),
+                tcp: c.tcp,
+            }),
+            tl::enums::PhoneConnection::Webrtc(_) => None,
+        })
+        .collect()
+}
+
 /// Разобрать обновление grammers в сериализуемый `LiveUpdate`.
 fn parse_live_update(u: grammers_client::update::Update) -> Option<super::LiveUpdate> {
     use grammers_client::update::Update as U;
@@ -4538,6 +4981,32 @@ impl crate::telegram::TelegramService for GrammersBackend {
     }
     async fn decline_call(&self, call_id: i64, access_hash: i64) -> anyhow::Result<()> {
         GrammersBackend::decline_call(self, call_id, access_hash).await
+    }
+    async fn start_call(
+        &self,
+        chat_id: i64,
+        video: bool,
+    ) -> anyhow::Result<crate::telegram::CallInfo> {
+        GrammersBackend::start_call(self, chat_id, video).await
+    }
+    async fn accept_call(
+        &self,
+        call_id: i64,
+        access_hash: i64,
+    ) -> anyhow::Result<crate::telegram::CallInfo> {
+        GrammersBackend::accept_call(self, call_id, access_hash).await
+    }
+    fn call_state(&self) -> Option<crate::telegram::CallInfo> {
+        GrammersBackend::call_state(self)
+    }
+    async fn hangup_call(&self) -> anyhow::Result<()> {
+        GrammersBackend::hangup_call(self).await
+    }
+    fn call_mute(&self, muted: bool) {
+        GrammersBackend::call_mute(self, muted)
+    }
+    fn call_stats(&self) -> (u64, u64) {
+        GrammersBackend::call_stats(self)
     }
     async fn send_text(
         &self,

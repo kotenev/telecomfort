@@ -1,9 +1,9 @@
 //! Офлайн mock: позволяет открыть UI без API-ключей и показать все фичи.
 
 use super::{
-    AccountInfo, ChatFullInfo, ChatInfo, GifInfo, MessageInfo, NearbyPeer, PeerFullInfo,
-    ReactionVoter, SavedGiftInfo, StarGiftFull, StarGiftOption, StarTxInfo, StickerInfo, StoryInfo,
-    TelegramService,
+    AccountInfo, CallConnection, CallInfo, ChatFullInfo, ChatInfo, GifInfo, MessageInfo,
+    NearbyPeer, PeerFullInfo, ReactionVoter, SavedGiftInfo, StarGiftFull, StarGiftOption,
+    StarTxInfo, StickerInfo, StoryInfo, TelegramService,
 };
 use async_trait::async_trait;
 
@@ -834,7 +834,60 @@ impl TelegramService for MockTelegram {
     }
 
     async fn decline_call(&self, _call_id: i64, _access_hash: i64) -> anyhow::Result<()> {
+        set_mock_call(None);
         Ok(())
+    }
+
+    async fn start_call(&self, chat_id: i64, video: bool) -> anyhow::Result<CallInfo> {
+        let info = CallInfo {
+            call_id: 1,
+            access_hash: 2,
+            peer_id: chat_id,
+            video,
+            state: "waiting".into(),
+            outgoing: true,
+            ..Default::default()
+        };
+        set_mock_call(Some(info.clone()));
+        Ok(info)
+    }
+
+    async fn accept_call(&self, call_id: i64, access_hash: i64) -> anyhow::Result<CallInfo> {
+        let info = CallInfo {
+            call_id,
+            access_hash,
+            peer_id: 2001,
+            video: false,
+            state: "active".into(),
+            key_hex: Some("00".repeat(32)),
+            key_fingerprint: Some(7),
+            connections: vec![CallConnection {
+                id: 1,
+                ip: "127.0.0.1".into(),
+                port: 1234,
+                peer_tag: vec![0u8; 16],
+                ..Default::default()
+            }],
+            outgoing: false,
+            error: None,
+        };
+        set_mock_call(Some(info.clone()));
+        Ok(info)
+    }
+
+    fn call_state(&self) -> Option<CallInfo> {
+        mock_call()
+    }
+
+    async fn hangup_call(&self) -> anyhow::Result<()> {
+        set_mock_call(None);
+        Ok(())
+    }
+
+    fn call_mute(&self, _muted: bool) {}
+
+    fn call_stats(&self) -> (u64, u64) {
+        (100, 200)
     }
 
     async fn unpin_message(&self, _chat_id: i64, _message_id: i32) -> anyhow::Result<()> {
@@ -1902,4 +1955,18 @@ mod tests {
         );
         assert!(m.change_password("old", "123", "", "").await.is_err());
     }
+}
+
+fn mock_call_cell() -> &'static std::sync::Mutex<Option<CallInfo>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<Option<CallInfo>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn set_mock_call(v: Option<CallInfo>) {
+    *mock_call_cell().lock().unwrap() = v;
+}
+
+fn mock_call() -> Option<CallInfo> {
+    mock_call_cell().lock().unwrap().clone()
 }

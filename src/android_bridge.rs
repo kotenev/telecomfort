@@ -1177,6 +1177,34 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
                 .await?;
             Ok(json!({}))
         }
+        "call_start" => {
+            let tg = core().tg()?;
+            let video = v.get("video").and_then(|x| x.as_bool()).unwrap_or(false);
+            Ok(json!({"call": tg.start_call(i64f(v, "chat")?, video).await?}))
+        }
+        "call_accept" => {
+            let tg = core().tg()?;
+            Ok(json!({"call": tg.accept_call(i64f(v, "call_id")?, i64f(v, "access_hash")?).await?}))
+        }
+        "call_state" => {
+            let tg = core().tg()?;
+            Ok(json!({"call": tg.call_state()}))
+        }
+        "call_hangup" => {
+            let tg = core().tg()?;
+            tg.hangup_call().await?;
+            Ok(json!({}))
+        }
+        "call_mute" => {
+            let tg = core().tg()?;
+            tg.call_mute(v.get("muted").and_then(|x| x.as_bool()).unwrap_or(false));
+            Ok(json!({}))
+        }
+        "call_stats" => {
+            let tg = core().tg()?;
+            let (sent, received) = tg.call_stats();
+            Ok(json!({"sent": sent, "received": received}))
+        }
         "is_authorized" => {
             let tg = core().tg()?;
             // is_authorized — inherent-метод бэкенда: пробуем через downcast.
@@ -1483,6 +1511,12 @@ mod tests {
             json!({"op": "is_authorized"}),
             json!({"op": "poll_updates", "timeout_ms": 1}),
             json!({"op": "decline_call", "call_id": 1, "access_hash": 2}),
+            json!({"op": "call_start", "chat": 2001, "video": false}),
+            json!({"op": "call_state"}),
+            json!({"op": "call_mute", "muted": true}),
+            json!({"op": "call_stats"}),
+            json!({"op": "call_accept", "call_id": 1, "access_hash": 2}),
+            json!({"op": "call_hangup"}),
         ] {
             let r = call(op);
             assert_eq!(r["ok"], true, "{r}");

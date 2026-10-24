@@ -396,6 +396,34 @@ pub struct StoryInfo {
     pub preview_path: Option<String>,
 }
 
+/// UDP/TCP-эндпойнт звонка (`PhoneConnection`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CallConnection {
+    pub id: i64,
+    pub ip: String,
+    pub ipv6: String,
+    pub port: i32,
+    pub peer_tag: Vec<u8>,
+    pub tcp: bool,
+}
+
+/// Состояние звонка (`phone.*`) для UI/медиа.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CallInfo {
+    pub call_id: i64,
+    pub access_hash: i64,
+    pub peer_id: i64,
+    pub video: bool,
+    /// waiting | accepted | active | ended
+    pub state: String,
+    /// SHA-256(auth_key) — ключ медиа (hex), когда известен.
+    pub key_hex: Option<String>,
+    pub key_fingerprint: Option<i64>,
+    pub connections: Vec<CallConnection>,
+    pub outgoing: bool,
+    pub error: Option<String>,
+}
+
 /// Live-обновление для пуш-канала Android (без FCM): новое сообщение,
 /// правка/удаление или событие звонка. Чистый serde-JSON для JNI.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -413,6 +441,8 @@ pub struct LiveUpdate {
     pub missed: bool,
     /// Исходящее сообщение (своё) — не показывать пуш.
     pub outgoing: bool,
+    /// Детали звонка для UI (если kind = call*).
+    pub call_info: Option<CallInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -516,6 +546,24 @@ pub trait TelegramService: Send + Sync {
     /// Отклонить входящий звонок. Дефолт: не поддерживается.
     async fn decline_call(&self, _call_id: i64, _access_hash: i64) -> anyhow::Result<()> {
         anyhow::bail!("calls are not implemented for this backend")
+    }
+    /// Позвонить пользователю (1:1, audio/video).
+    async fn start_call(&self, _chat_id: i64, _video: bool) -> anyhow::Result<CallInfo> {
+        anyhow::bail!("calls are not implemented for this backend")
+    }
+    /// Принять входящий звонок (DH + старт медиа).
+    async fn accept_call(&self, _call_id: i64, _access_hash: i64) -> anyhow::Result<CallInfo> {
+        anyhow::bail!("calls are not implemented for this backend")
+    }
+    fn call_state(&self) -> Option<CallInfo> {
+        None
+    }
+    async fn hangup_call(&self) -> anyhow::Result<()> {
+        anyhow::bail!("calls are not implemented for this backend")
+    }
+    fn call_mute(&self, _muted: bool) {}
+    fn call_stats(&self) -> (u64, u64) {
+        (0, 0)
     }
     /// Отправить текст (возвращает id отправленного). `reply_to` — ответ на сообщение.
     /// Дефолт: не поддерживается (mock переопределяет для демо).

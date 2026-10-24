@@ -47,6 +47,13 @@ for ARCH in aarch64 x86_64; do
   UPPER=$(echo "$ARCH" | tr 'a-z' 'A-Z')
   export "CARGO_TARGET_${UPPER}_LINUX_ANDROID_LINKER=$TC/${ARCH}-linux-android26-clang"
   export "CARGO_TARGET_${UPPER}_LINUX_ANDROID_AR=$TC/llvm-ar"
+  # libtgvoip.so (нативный VoIP) — DT_NEEDED; соберите ./build-tgvoip.sh заранее.
+  if [ -f "$ROOT/android/app/src/main/jniLibs/$ARCH/libtgvoip.so" ]; then
+    export RUSTFLAGS="-L native=$ROOT/android/app/src/main/jniLibs/$ARCH -l dylib=tgvoip"
+  else
+    echo "предупреждение: нет libtgvoip.so для $ARCH (./build-tgvoip.sh)" >&2
+    export RUSTFLAGS=""
+  fi
   echo "== libtelecomfort $TARGET ($MODE) =="
   SHORT="$ARCH"; [ "$ARCH" = "aarch64" ] && SHORT="arm64"
   CCENV="CC_${ARCH}_linux_android"

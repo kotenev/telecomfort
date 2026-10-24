@@ -33,6 +33,7 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: |
+          ./android/build-tgvoip.sh
           ./android/build-rust.sh release
           cd android && ./gradlew assembleDebug
       - name: Upload APK

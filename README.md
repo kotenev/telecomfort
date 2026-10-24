@@ -138,12 +138,13 @@
 под будущий энкодер: сэмплы уже нормализованы к 48 кГц моно (`media::voice_rec::VoiceTake`).
 
 Принципиально невозможное в рамках grammers (детальный разбор):
-1. Звонки (VoIP). Нужны phone.requestCall/acceptCall + DH-обмен + аудиотранспорт libtgvoip
-   (C++, WebRTC-наследие, UDP с обфускацией, эхоподавление). В Rust VoIP-стека под MTProto нет,
-   grammers не оборачивает phone.*. Мостик к C++ libtgvoip через FFI — огромный unsafe-контур
-   и платформенный аудиокод. Вывод: только через upstream VoIP-стек, вне скоупа клиента.
-   Android-клиент при этом получает `updatePhoneCall` из live-потока, показывает входящий
-   звонок и умеет отклонить его (`phone.discardCall`) — без медиапотока.
+1. Звонки (VoIP). **Android: реализовано.** Сигналинг `phone.*` (requestCall/acceptCall/confirmCall/
+   discardCall) + DH-обмен 2048 бит (num-bigint) + ключ SHA-256(auth_key) + нативный медиатранспорт
+   libtgvoip (C++, upstream Telegram): UDP с обфускацией, Opus, jitter buffer, эхоподавление (DSP
+   отключён — см. docs/ANDROID.md). Аудио — cpal/AAudio 48 кГц моно через callback-I/O libtgvoip;
+   крипто-callback'и (SHA-1/256, AES-IGE/CTR, rand) — на Rust. Сборка: `android/build-tgvoip.sh`
+   (клонирует закреплённый libtgvoip) → `android/build-rust.sh`. Десктоп: сигналинг/уведомления,
+   медиа-поток только в Android-сборке (libtgvoip статически линкуется в `libtgvoip.so`).
 2. Секретные чаты (E2E). Нужны messages.requestEncryption + DH (E2E-вариант MTProto 2.0 KDF) +
    слой encryptedMessage/decryptedMessage (random_id, ttl, fingerprint ключа, PFS-перешифрование,
    сверка ключа по QR/эмодзи) + отдельные апдейты (updateEncryption, updateEncryptedChatTyping).
