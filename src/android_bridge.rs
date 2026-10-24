@@ -1421,4 +1421,23 @@ mod tests {
         assert!(path.exists());
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn bridge_export_with_media_html() {
+        call(json!({"op": "use_mock"}));
+        let dir = std::env::temp_dir().join("telecomfort_bridge_export");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("h.html");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(dir.join("h.files"));
+        let r = call(
+            json!({"op": "export_history", "chat": -1001, "format": "html",
+            "with_media": true, "path": path.to_string_lossy()}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("<table"), "{text:.200}");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(dir.join("h.files"));
+    }
 }

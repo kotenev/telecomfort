@@ -40,11 +40,16 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 val unread = c.optInt("unread_count", 0)
                 val was = prev.getInt("unread_$id", 0)
                 if (unread > was && unread > 0) {
+                    val openApp = android.app.PendingIntent.getActivity(
+                        applicationContext, 0,
+                        android.content.Intent(applicationContext, Class.forName("com.telecomfort.MainActivity")),
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                    )
                     val n = NotificationCompat.Builder(applicationContext, "msgs")
+                        .setContentIntent(openApp).setAutoCancel(true)
                         .setSmallIcon(android.R.drawable.sym_action_chat)
                         .setContentTitle(c.optString("title", "?"))
                         .setContentText("Новых сообщений: ${unread - was}")
-                        .setAutoCancel(true)
                         .build()
                     nm.notify(nid++, n)
                 }
