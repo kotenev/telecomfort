@@ -16,34 +16,44 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             app.contacts_loaded = false;
             app.load_contacts();
         }
-        if ui.small_button("＋ Добавить").on_hover_text("Добавить контакт по телефону").clicked() {
+        if ui
+            .small_button("＋ Добавить")
+            .on_hover_text("Добавить контакт по телефону")
+            .clicked()
+        {
             app.contact_add_open = true;
         }
-        if ui.small_button("🚫 Чёрный список").on_hover_text("Показать заблокированных").clicked() {
+        if ui
+            .small_button("🚫 Чёрный список")
+            .on_hover_text("Показать заблокированных")
+            .clicked()
+        {
             app.load_blocked();
         }
     });
     if app.contact_add_open {
-        egui::Window::new("＋ Новый контакт").collapsible(false).show(ui.ctx(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Телефон:");
-                ui.text_edit_singleline(&mut app.contact_add_phone);
+        egui::Window::new("＋ Новый контакт")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Телефон:");
+                    ui.text_edit_singleline(&mut app.contact_add_phone);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Имя:");
+                    ui.text_edit_singleline(&mut app.contact_add_first);
+                    ui.label("Фамилия:");
+                    ui.text_edit_singleline(&mut app.contact_add_last);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Добавить").clicked() {
+                        app.do_add_contact();
+                    }
+                    if ui.button("Отмена").clicked() {
+                        app.contact_add_open = false;
+                    }
+                });
             });
-            ui.horizontal(|ui| {
-                ui.label("Имя:");
-                ui.text_edit_singleline(&mut app.contact_add_first);
-                ui.label("Фамилия:");
-                ui.text_edit_singleline(&mut app.contact_add_last);
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Добавить").clicked() {
-                    app.do_add_contact();
-                }
-                if ui.button("Отмена").clicked() {
-                    app.contact_add_open = false;
-                }
-            });
-        });
     }
     ui.separator();
     if app.contacts.is_empty() {
@@ -63,7 +73,12 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         for c in app.contacts.clone() {
             ui.horizontal(|ui| {
-                let initials: String = c.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect();
+                let initials: String = c
+                    .name
+                    .split_whitespace()
+                    .filter_map(|w| w.chars().next())
+                    .take(2)
+                    .collect();
                 ui.label(egui::RichText::new(format!("[{initials}]")).strong());
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(&c.name).strong());
@@ -130,7 +145,10 @@ fn open_chat_with(app: &mut TelecomfortApp, c: &crate::telegram::ContactInfo) {
             app.select_chat(id);
         }
         None => {
-            app.log(format!("чат с «{}» не найден в диалогах (напишите первым)", c.name));
+            app.log(format!(
+                "чат с «{}» не найден в диалогах (напишите первым)",
+                c.name
+            ));
         }
     }
 }

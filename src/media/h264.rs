@@ -78,7 +78,11 @@ pub fn parse_avcc(data: &[u8]) -> Option<AvcConfig> {
     if pps.is_empty() {
         return None;
     }
-    Some(AvcConfig { length_size, sps, pps })
+    Some(AvcConfig {
+        length_size,
+        sps,
+        pps,
+    })
 }
 
 /// Тип NAL-юнита (младшие 5 бит заголовка).
@@ -95,7 +99,8 @@ pub fn boxes_in(data: &[u8], header_skip: usize) -> Vec<([u8; 4], &[u8])> {
     }
     let mut off = header_skip;
     while off + 8 <= data.len() {
-        let size32 = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
+        let size32 =
+            u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
         let tag: [u8; 4] = [data[off + 4], data[off + 5], data[off + 6], data[off + 7]];
         let (hdr, start) = if size32 == 1 {
             if off + 16 > data.len() {
@@ -268,7 +273,10 @@ pub fn yuv420_to_rgb(
     if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
         return None;
     }
-    if y.len() < width * height || u.len() < (width / 2) * (height / 2) || v.len() < (width / 2) * (height / 2) {
+    if y.len() < width * height
+        || u.len() < (width / 2) * (height / 2)
+        || v.len() < (width / 2) * (height / 2)
+    {
         return None;
     }
     let mut img = image::RgbImage::new(width as u32, height as u32);
@@ -465,8 +473,8 @@ mod tests {
         mdat.extend_from_slice(&length_nal(&pframe));
         mdat.extend_from_slice(&length_nal(&idr2)); // второй IDR — стоп
         let payloads = vec![mdat.as_slice()];
-        let annexb = length_prefixed_to_annexb(&payloads, 4, &[vec![0x67]], &[vec![0x68]])
-            .expect("annexb");
+        let annexb =
+            length_prefixed_to_annexb(&payloads, 4, &[vec![0x67]], &[vec![0x68]]).expect("annexb");
         // SPS/PPS + IDR1 + P-frame, без второго IDR.
         assert!(annexb.windows(idr1.len()).any(|w| w == idr1.as_slice()));
         assert!(annexb.windows(pframe.len()).any(|w| w == pframe.as_slice()));
@@ -490,7 +498,9 @@ mod tests {
         let black = yuv420_to_rgb(4, 4, &vec![16; 16], &vec![128; 4], &vec![128; 4]).unwrap();
         assert!(black.pixels().all(|p| p[0] <= 2 && p[1] <= 2 && p[2] <= 2));
         let white = yuv420_to_rgb(4, 4, &vec![235; 16], &vec![128; 4], &vec![128; 4]).unwrap();
-        assert!(white.pixels().all(|p| p[0] >= 250 && p[1] >= 250 && p[2] >= 250));
+        assert!(white
+            .pixels()
+            .all(|p| p[0] >= 250 && p[1] >= 250 && p[2] >= 250));
         // Красный: Y~76-81, U~84-90, V~240.
         let red = yuv420_to_rgb(2, 2, &vec![81; 4], &vec![90; 1], &vec![240; 1]).unwrap();
         let p = red.get_pixel(0, 0);

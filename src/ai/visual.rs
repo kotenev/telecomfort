@@ -39,7 +39,9 @@ pub fn analyze_image(img: &DynamicImage) -> VisualSignals {
     // Контраст: считаем дисперсию яркости в окне 3x3 через разности соседей.
     let mut edge_acc = 0u64;
     let mut edge_n = 0u64;
-    let luma = |r: u8, g: u8, b: u8| -> u8 { ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8 };
+    let luma = |r: u8, g: u8, b: u8| -> u8 {
+        ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+    };
 
     let mut top_band_dark = 0u32;
     let mut top_total = 0u32;

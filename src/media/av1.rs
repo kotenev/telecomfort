@@ -229,9 +229,12 @@ fn try_strip_lengths(sample: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut units = 0usize;
     while off + 4 <= sample.len() {
-        let len =
-            u32::from_be_bytes([sample[off], sample[off + 1], sample[off + 2], sample[off + 3]])
-                as usize;
+        let len = u32::from_be_bytes([
+            sample[off],
+            sample[off + 1],
+            sample[off + 2],
+            sample[off + 3],
+        ]) as usize;
         if len == 0 || len > sample.len() - off - 4 || len < 2 {
             return None;
         }
@@ -600,7 +603,9 @@ pub fn yuv_to_rgb_pixel(y: u8, u: u8, v: u8, full_range: bool) -> [u8; 3] {
         let vf = v as f32 - 128.0;
         [
             (yf + 1.402 * vf).round().clamp(0.0, 255.0) as u8,
-            (yf - 0.344136 * uf - 0.714136 * vf).round().clamp(0.0, 255.0) as u8,
+            (yf - 0.344136 * uf - 0.714136 * vf)
+                .round()
+                .clamp(0.0, 255.0) as u8,
             (yf + 1.772 * uf).round().clamp(0.0, 255.0) as u8,
         ]
     } else {
@@ -691,7 +696,10 @@ pub fn picture_to_rgb(pic: &rusty_av1d::Picture) -> Option<image::RgbImage> {
         for col in 0..w {
             let yy = y[row * w + col];
             let (uu, vv) = if has_chroma {
-                (u[(row >> ss_y) * cw + (col >> ss_x)], v[(row >> ss_y) * cw + (col >> ss_x)])
+                (
+                    u[(row >> ss_y) * cw + (col >> ss_x)],
+                    v[(row >> ss_y) * cw + (col >> ss_x)],
+                )
             } else {
                 (128, 128)
             };
@@ -817,8 +825,13 @@ pub fn poster_from_video(video: &Path, poster: &Path) -> Option<PathBuf> {
     let f = std::fs::File::create(poster).ok()?;
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(f, 80);
     let rgb = small.to_rgb8();
-    enc.encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-        .ok()?;
+    enc.encode(
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .ok()?;
     let meta = std::fs::metadata(poster).ok()?;
     if meta.len() < 1024 {
         return None;
@@ -830,7 +843,8 @@ pub fn poster_from_video(video: &Path, poster: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    fn boxed(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {        let mut v = Vec::new();
+    fn boxed(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
         v.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
         v.extend_from_slice(tag);
         v.extend_from_slice(payload);
@@ -1034,7 +1048,10 @@ mod tests {
         assert_eq!(ebml_read_vint(&[0x40, 0x2C], 0), Some((0x2C, 2)));
         assert_eq!(ebml_read_vint(&[0xFF], 0), Some((u64::MAX, 1))); // unknown
         assert_eq!(ebml_read_vint(&[], 0), None);
-        assert_eq!(ebml_read_id(&[0x1A, 0x45, 0xDF, 0xA3], 0), Some((0x1A45DFA3, 4)));
+        assert_eq!(
+            ebml_read_id(&[0x1A, 0x45, 0xDF, 0xA3], 0),
+            Some((0x1A45DFA3, 4))
+        );
     }
 
     #[test]
@@ -1076,12 +1093,10 @@ mod tests {
     #[test]
     fn poster_missing_file_is_none() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(
-            poster_from_video(
-                dir.path().join("no.mp4").as_path(),
-                dir.path().join("no.poster.jpg").as_path()
-            )
-            .is_none()
-        );
+        assert!(poster_from_video(
+            dir.path().join("no.mp4").as_path(),
+            dir.path().join("no.poster.jpg").as_path()
+        )
+        .is_none());
     }
 }

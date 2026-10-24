@@ -18,11 +18,41 @@ const DIM: usize = 32;
 /// Группы промо-лексики (по 1 dim на группу).
 const TOKEN_GROUPS: &[&[&str]] = &[
     &["скидк", "распродаж", "sale", "-50", "%", "дешев"],
-    &["подпишись", "подписывайся", "переходи", "жми", "swipe", "свайп"],
+    &[
+        "подпишись",
+        "подписывайся",
+        "переходи",
+        "жми",
+        "swipe",
+        "свайп",
+    ],
     &["розыгрыш", "giveaway", "подарок", "🎁", "приз"],
-    &["казино", "casino", "ставк", "бонус", "фриспин", "🎰", "promocode"],
-    &["заработок", "доход", "трейдинг", "крипт", "forex", "форекс", "инвест", "💰"],
-    &["только сегодня", "успей", "ограничен", "срочно", "последний"],
+    &[
+        "казино",
+        "casino",
+        "ставк",
+        "бонус",
+        "фриспин",
+        "🎰",
+        "promocode",
+    ],
+    &[
+        "заработок",
+        "доход",
+        "трейдинг",
+        "крипт",
+        "forex",
+        "форекс",
+        "инвест",
+        "💰",
+    ],
+    &[
+        "только сегодня",
+        "успей",
+        "ограничен",
+        "срочно",
+        "последний",
+    ],
     &["бесплатно", "free", "даром"],
     &["заказ", "доставка", "под ключ", "каталог", "🍔", "🚀"],
     &["промокод", "promo"],
@@ -52,8 +82,7 @@ pub fn embed_text(caption: &str) -> [f32; DIM] {
     v[16] = flag(&lower, &["http", "t.me", "bit.ly", "taplink"]);
     v[17] = if lower.contains('@') { 1.0 } else { 0.0 };
     v[18] = flag(&lower, &["промокод", "promo"]);
-    v[19] = flag(&lower, &["+", "8-9", "8 (9"]) * 0.5
-        + emoji_caps_flag(caption);
+    v[19] = flag(&lower, &["+", "8-9", "8 (9"]) * 0.5 + emoji_caps_flag(caption);
     // 20..26 заполняет embed_image_part, 26..32 резерв.
     v
 }
@@ -67,7 +96,9 @@ fn flag(lower: &str, toks: &[&str]) -> f32 {
 }
 
 fn emoji_caps_flag(caption: &str) -> f32 {
-    const EMOJI: &[char] = &['🔥', '💰', '🎁', '💸', '🤑', '⚡', '🚀', '💯', '🎉', '🏆', '🎰'];
+    const EMOJI: &[char] = &[
+        '🔥', '💰', '🎁', '💸', '🤑', '⚡', '🚀', '💯', '🎉', '🏆', '🎰',
+    ];
     let e: usize = caption.chars().filter(|c| EMOJI.contains(c)).count();
     let letters: Vec<char> = caption.chars().filter(|c| c.is_alphabetic()).collect();
     let caps = if letters.len() >= 12 {
@@ -117,7 +148,10 @@ pub fn clip_lite_boost(caption: &str, sig: &VisualSignals) -> (f32, Vec<String>)
     let boost = ((sim - 0.35) * 0.55).clamp(0.0, 0.25);
     let mut reasons = Vec::new();
     if boost >= 0.12 {
-        reasons.push(format!("CLIP-лайт: близко к прототипу рекламы ({:.0}%)", sim * 100.0));
+        reasons.push(format!(
+            "CLIP-лайт: близко к прототипу рекламы ({:.0}%)",
+            sim * 100.0
+        ));
     }
     (boost, reasons)
 }

@@ -54,10 +54,7 @@ fn main() -> anyhow::Result<()> {
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(ui::app::TelecomfortApp::new(
-                cc,
-                cfg_clone,
-                db_clone,
-                rt_handle,
+                cc, cfg_clone, db_clone, rt_handle,
             )) as Box<dyn eframe::App>)
         }),
     )
@@ -122,5 +119,9 @@ fn app_icon() -> egui::IconData {
             img.put_pixel(x, y, image::Rgba(px));
         }
     }
-    egui::IconData { rgba: img.into_raw(), width: S, height: S }
+    egui::IconData {
+        rgba: img.into_raw(),
+        width: S,
+        height: S,
+    }
 }

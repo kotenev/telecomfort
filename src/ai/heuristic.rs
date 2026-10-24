@@ -22,7 +22,10 @@ static USERNAME_RE: OnceLock<Regex> = OnceLock::new();
 
 fn url_re() -> &'static Regex {
     URL_RE.get_or_init(|| {
-        Regex::new(r"(?i)(https?://|t\.me/|telegram\.me/|bit\.ly|tinyurl|taplink|linktr\.ee|wa\.me)").unwrap()
+        Regex::new(
+            r"(?i)(https?://|t\.me/|telegram\.me/|bit\.ly|tinyurl|taplink|linktr\.ee|wa\.me)",
+        )
+        .unwrap()
     })
 }
 fn phone_re() -> &'static Regex {
@@ -30,7 +33,8 @@ fn phone_re() -> &'static Regex {
 }
 fn price_re() -> &'static Regex {
     PRICE_RE.get_or_init(|| {
-        Regex::new(r"(?i)(\d+\s?(₽|руб|usd|\$|€|₸|сом)|скидк|распродаж|sale|-?\d{1,3}\s?%)").unwrap()
+        Regex::new(r"(?i)(\d+\s?(₽|руб|usd|\$|€|₸|сом)|скидк|распродаж|sale|-?\d{1,3}\s?%)")
+            .unwrap()
     })
 }
 fn username_re() -> &'static Regex {
@@ -73,7 +77,9 @@ const CTA_PHRASES: &[(&str, f32, &str)] = &[
     ("официальный дилер", 0.25, "фраза «официальный дилер»"),
 ];
 
-const EMOJI_SPAM: &[char] = &['🔥', '💰', '🎁', '💸', '💵', '🤑', '⚡', '🚀', '💯', '🎉', '🏆'];
+const EMOJI_SPAM: &[char] = &[
+    '🔥', '💰', '🎁', '💸', '💵', '🤑', '⚡', '🚀', '💯', '🎉', '🏆',
+];
 
 pub struct HeuristicAdDetector;
 

@@ -459,7 +459,11 @@ mod tests {
         assert!((parsed.stories.ad_threshold - 0.77).abs() < 1e-6);
         assert!(parsed.stories.clip_enabled);
         assert_eq!(parsed.stories.onnx_provider, "coreml");
-        assert!(parsed.downloader.rules.iter().any(|r| r.chat == "test-chat"));
+        assert!(parsed
+            .downloader
+            .rules
+            .iter()
+            .any(|r| r.chat == "test-chat"));
     }
 
     #[test]

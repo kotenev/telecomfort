@@ -12,8 +12,8 @@ use grammers_client::media::{Downloadable, Media};
 use grammers_client::{Client, InvocationError};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -75,7 +75,9 @@ pub struct DcAffinity {
 
 impl DcAffinity {
     pub fn new(home_dc: i32) -> Self {
-        Self { current: Arc::new(AtomicI32::new(home_dc)) }
+        Self {
+            current: Arc::new(AtomicI32::new(home_dc)),
+        }
     }
 
     pub fn get(&self) -> i32 {
@@ -105,8 +107,7 @@ async fn ensure_auth_in_dc(
     let exported = client
         .invoke(&grammers_client::tl::functions::auth::ExportAuthorization { dc_id: dc })
         .await?;
-    let grammers_client::tl::enums::auth::ExportedAuthorization::Authorization(auth) =
-        exported;
+    let grammers_client::tl::enums::auth::ExportedAuthorization::Authorization(auth) = exported;
     client
         .invoke_in_dc(
             dc,
@@ -143,7 +144,10 @@ pub async fn download_parallel(
     };
     // Малый файл без недокачанного хвоста — штатно, быстро.
     let part = part_path_for(dest);
-    let existing_raw = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+    let existing_raw = tokio::fs::metadata(&part)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
     if total < PARALLEL_THRESHOLD && existing_raw == 0 && !dest.exists() {
         client
             .download_media(media, dest)
@@ -306,14 +310,19 @@ pub async fn download_parallel(
     drop(tx);
 
     // Writer: чанки могут приходить не по порядку — seek по offset.
-    let mut file = tokio::fs::OpenOptions::new().write(true).open(&part).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&part)
+        .await?;
     let mut writer_done: u64 = start;
     let mut task_error: Option<InvocationError> = None;
     // Позиция курсора для оптимизации последовательной записи.
     let mut pos = start;
     while let Some((offset, data)) = rx.recv().await {
         if offset != pos {
-            file.seek(std::io::SeekFrom::Start(offset)).await.map_err(InvocationError::Io)?;
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(InvocationError::Io)?;
         }
         file.write_all(&data).await.map_err(InvocationError::Io)?;
         pos = offset + data.len() as u64;
@@ -343,7 +352,9 @@ pub async fn download_parallel(
 
     let got = tokio::fs::metadata(&part).await?.len();
     if got != total {
-        anyhow::bail!("неполный файл: {got}/{total} байт (part сохранён, докачайте повторным запуском)");
+        anyhow::bail!(
+            "неполный файл: {got}/{total} байт (part сохранён, докачайте повторным запуском)"
+        );
     }
     tokio::fs::rename(&part, dest).await?;
     on_progress(total, total);

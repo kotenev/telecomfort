@@ -23,7 +23,9 @@ pub async fn import_book(
     delete_after: bool,
 ) -> Result<ImportOutcome> {
     if library_path.is_empty() {
-        return Ok(ImportOutcome::Skipped("не указан путь к библиотеке Calibre".into()));
+        return Ok(ImportOutcome::Skipped(
+            "не указан путь к библиотеке Calibre".into(),
+        ));
     }
     if !Path::new(library_path).exists() {
         return Ok(ImportOutcome::Skipped(format!(

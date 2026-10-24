@@ -224,7 +224,9 @@ impl TelegramService for MockTelegram {
         let _ = workers;
         // Имитируем чанки, чтобы прогресс-бар было видно и в демо.
         on_progress(0, 3);
-        let path = self.download_message_media(chat_id, message_id, dest_dir).await?;
+        let path = self
+            .download_message_media(chat_id, message_id, dest_dir)
+            .await?;
         on_progress(2, 3);
         on_progress(3, 3);
         Ok(path)
@@ -430,6 +432,7 @@ impl TelegramService for MockTelegram {
         &self,
         path: &std::path::Path,
         _caption: &str,
+        _music: Option<std::path::PathBuf>,
     ) -> anyhow::Result<i32> {
         let mut h: i32 = 700;
         for b in path.as_os_str().as_encoded_bytes() {
@@ -444,8 +447,14 @@ impl TelegramService for MockTelegram {
 
     async fn forum_topics(&self, _chat_id: i64) -> anyhow::Result<Vec<crate::telegram::TopicInfo>> {
         Ok(vec![
-            crate::telegram::TopicInfo { id: 1, title: "Общее".into() },
-            crate::telegram::TopicInfo { id: 2, title: "Оффтопик".into() },
+            crate::telegram::TopicInfo {
+                id: 1,
+                title: "Общее".into(),
+            },
+            crate::telegram::TopicInfo {
+                id: 2,
+                title: "Оффтопик".into(),
+            },
         ])
     }
 
@@ -482,7 +491,13 @@ impl TelegramService for MockTelegram {
         }])
     }
 
-    async fn send_to_topic(&self, _chat_id: i64, _topic_id: i32, text: &str, _silent: bool) -> anyhow::Result<i32> {
+    async fn send_to_topic(
+        &self,
+        _chat_id: i64,
+        _topic_id: i32,
+        text: &str,
+        _silent: bool,
+    ) -> anyhow::Result<i32> {
         let mut h: i32 = 9600;
         for b in text.bytes() {
             h = h.wrapping_add(b as i32);
@@ -589,12 +604,7 @@ impl TelegramService for MockTelegram {
         Ok(9100)
     }
 
-    async fn story_reply(
-        &self,
-        _peer_id: i64,
-        _story_id: i32,
-        text: &str,
-    ) -> anyhow::Result<i32> {
+    async fn story_reply(&self, _peer_id: i64, _story_id: i32, text: &str) -> anyhow::Result<i32> {
         let mut h: i32 = 9200;
         for b in text.bytes() {
             h = h.wrapping_add(b as i32);
@@ -626,8 +636,12 @@ impl TelegramService for MockTelegram {
         Ok((
             42,
             vec![
-                crate::telegram::StoryViewer { name: "Анна".into() },
-                crate::telegram::StoryViewer { name: "Лектор".into() },
+                crate::telegram::StoryViewer {
+                    name: "Анна".into(),
+                },
+                crate::telegram::StoryViewer {
+                    name: "Лектор".into(),
+                },
             ],
         ))
     }
@@ -661,7 +675,11 @@ impl TelegramService for MockTelegram {
         _caption: &str,
         _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<Vec<i32>> {
-        Ok(paths.iter().enumerate().map(|(i, _)| 9400 + i as i32).collect())
+        Ok(paths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| 9400 + i as i32)
+            .collect())
     }
 
     async fn archived_stories(&self) -> anyhow::Result<Vec<crate::telegram::StoryInfo>> {
@@ -673,7 +691,8 @@ impl TelegramService for MockTelegram {
             has_url: false,
             date: 1_600_000_000,
             preview_path: None,
-        }])}
+        }])
+    }
 
     async fn upload_avatar(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         Ok(())
@@ -684,7 +703,10 @@ impl TelegramService for MockTelegram {
     }
 
     async fn blocked_list(&self) -> anyhow::Result<Vec<crate::telegram::BlockedInfo>> {
-        Ok(vec![crate::telegram::BlockedInfo { id: 2003, name: "Спаммер".into() }])
+        Ok(vec![crate::telegram::BlockedInfo {
+            id: 2003,
+            name: "Спаммер".into(),
+        }])
     }
 
     async fn share_contact(
@@ -719,8 +741,18 @@ impl TelegramService for MockTelegram {
         _limit: usize,
     ) -> anyhow::Result<Vec<crate::telegram::ParticipantInfo>> {
         Ok(vec![
-            crate::telegram::ParticipantInfo { id: 2001, name: "Анна".into(), admin: false, access_hash: 111 },
-            crate::telegram::ParticipantInfo { id: 2002, name: "Лектор".into(), admin: true, access_hash: 222 },
+            crate::telegram::ParticipantInfo {
+                id: 2001,
+                name: "Анна".into(),
+                admin: false,
+                access_hash: 111,
+            },
+            crate::telegram::ParticipantInfo {
+                id: 2002,
+                name: "Лектор".into(),
+                admin: true,
+                access_hash: 222,
+            },
         ])
     }
 
@@ -737,7 +769,11 @@ impl TelegramService for MockTelegram {
     }
 
     async fn story_albums(&self) -> anyhow::Result<Vec<crate::telegram::StoryAlbumInfo>> {
-        Ok(vec![crate::telegram::StoryAlbumInfo { album_id: 1, title: "Лучшее".into(), story_count: 3 }])
+        Ok(vec![crate::telegram::StoryAlbumInfo {
+            album_id: 1,
+            title: "Лучшее".into(),
+            story_count: 3,
+        }])
     }
 
     async fn create_album(&self, _title: &str, _story_ids: &[i32]) -> anyhow::Result<i32> {
@@ -757,7 +793,12 @@ impl TelegramService for MockTelegram {
         Ok((7, vec!["Анна".into(), "Лектор".into()]))
     }
 
-    async fn create_folder(&self, _title: &str, _peer_ids: &[i64], _emoticon: Option<String>) -> anyhow::Result<i32> {
+    async fn create_folder(
+        &self,
+        _title: &str,
+        _peer_ids: &[i64],
+        _emoticon: Option<String>,
+    ) -> anyhow::Result<i32> {
         Ok(7)
     }
 
@@ -769,7 +810,14 @@ impl TelegramService for MockTelegram {
         Ok(())
     }
 
-    async fn set_admin(&self, _chat_id: i64, _user_id: i64, _access_hash: i64, _rights: crate::telegram::AdminRights, _title: &str) -> anyhow::Result<()> {
+    async fn set_admin(
+        &self,
+        _chat_id: i64,
+        _user_id: i64,
+        _access_hash: i64,
+        _rights: crate::telegram::AdminRights,
+        _title: &str,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -812,12 +860,7 @@ impl TelegramService for MockTelegram {
         }))
     }
 
-    async fn vote(
-        &self,
-        _chat_id: i64,
-        _message_id: i32,
-        _option: Vec<u8>,
-    ) -> anyhow::Result<()> {
+    async fn vote(&self, _chat_id: i64, _message_id: i32, _option: Vec<u8>) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -872,7 +915,10 @@ impl TelegramService for MockTelegram {
         ])
     }
 
-    async fn album_stories(&self, _album_id: i32) -> anyhow::Result<Vec<crate::telegram::StoryInfo>> {
+    async fn album_stories(
+        &self,
+        _album_id: i32,
+    ) -> anyhow::Result<Vec<crate::telegram::StoryInfo>> {
         Ok(vec![crate::telegram::StoryInfo {
             peer_id: 0,
             peer_title: "Я".into(),
@@ -897,11 +943,23 @@ impl TelegramService for MockTelegram {
         })
     }
 
-    async fn translate_message(&self, _chat_id: i64, _message_id: i32, to_lang: &str) -> anyhow::Result<String> {
-        Ok(format!("[mock перевод на {to_lang}] Hello from the other side"))
+    async fn translate_message(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+        to_lang: &str,
+    ) -> anyhow::Result<String> {
+        Ok(format!(
+            "[mock перевод на {to_lang}] Hello from the other side"
+        ))
     }
 
-    async fn forward_story(&self, _peer_id: i64, _story_id: i32, _caption: &str) -> anyhow::Result<i32> {
+    async fn forward_story(
+        &self,
+        _peer_id: i64,
+        _story_id: i32,
+        _caption: &str,
+    ) -> anyhow::Result<i32> {
         Ok(4007)
     }
 
@@ -911,6 +969,35 @@ impl TelegramService for MockTelegram {
 
     async fn default_emoji_statuses(&self) -> anyhow::Result<Vec<i64>> {
         Ok(vec![1001, 1002, 1003])
+    }
+
+    async fn channel_graph(
+        &self,
+        _chat_id: i64,
+        kind: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<f64>)> {
+        // Демо-ряд: 14 дней, вид зависит от типа метрики.
+        let base: f64 = match kind {
+            "views" => 500.0,
+            _ => 100.0,
+        };
+        let labels: Vec<String> = (1..=14).map(|d| format!("{d:02}.10")).collect();
+        let values: Vec<f64> = (0..14)
+            .map(|i| base + (i as f64) * 7.0 + ((i * 37) % 23) as f64)
+            .collect();
+        Ok((labels, values))
+    }
+
+    async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
+        Ok((vec![7u8; 16], 9_999_999_999))
+    }
+
+    async fn qr_login_poll(&self, _token: &[u8]) -> anyhow::Result<Option<i64>> {
+        Ok(Some(123456789))
+    }
+
+    async fn stars_balance(&self) -> anyhow::Result<(i64, i32)> {
+        Ok((150, 0))
     }
 
     fn is_connected(&self) -> bool {
@@ -927,14 +1014,29 @@ mod tests {
     #[tokio::test]
     async fn mock_messaging_contract() {
         let m = MockTelegram;
-        let id = m.send_text(-1001, "привет", None, false).await.expect("send");
+        let id = m
+            .send_text(-1001, "привет", None, false)
+            .await
+            .expect("send");
         assert!(id >= 9000);
-        let id2 = m.send_text(-1001, "ответ", Some(id), true).await.expect("reply");
+        let id2 = m
+            .send_text(-1001, "ответ", Some(id), true)
+            .await
+            .expect("reply");
         assert_ne!(id, id2);
         m.edit_text(-1001, id, "привет!").await.expect("edit");
         m.delete_messages(-1001, &[id]).await.expect("delete");
         m.react(-1001, id, "👍").await.expect("react");
-        let fid = m.send_file(-1001, std::path::Path::new("doc.pdf"), "caption", false, None).await.expect("file");
+        let fid = m
+            .send_file(
+                -1001,
+                std::path::Path::new("doc.pdf"),
+                "caption",
+                false,
+                None,
+            )
+            .await
+            .expect("file");
         assert!(fid >= 9500);
         m.mark_read(-1001).await.expect("mark_read");
         assert!(m.avatar_path(-1001).await.expect("avatar").is_none());
@@ -952,7 +1054,9 @@ mod tests {
         assert!(items.iter().any(|x| x.edited));
         assert!(items.iter().any(|x| x.views == Some(1204)));
         assert!(items.iter().any(|x| x.forwards == Some(37)));
-        assert!(items.iter().any(|x| x.poll.as_ref().map(|p| p.answers.len()) == Some(2)));
+        assert!(items
+            .iter()
+            .any(|x| x.poll.as_ref().map(|p| p.answers.len()) == Some(2)));
         assert!(items.iter().any(|x| x.geo.is_some()));
         assert!(items.iter().any(|x| x.contact.is_some()));
     }
@@ -963,10 +1067,17 @@ mod tests {
         let m = MockTelegram;
         m.pin_message(-1001, 5).await.expect("pin");
         m.unpin_message(-1001, 5).await.expect("unpin");
-        let pinned = m.pinned_message(-1001).await.expect("pinned").expect("some");
+        let pinned = m
+            .pinned_message(-1001)
+            .await
+            .expect("pinned")
+            .expect("some");
         assert_eq!(pinned.id, 1);
         m.vote(-1001, 102, vec![0]).await.expect("vote");
-        assert_eq!(m.forward(-1001, &[101, 102], 2001).await.expect("forward"), 2);
+        assert_eq!(
+            m.forward(-1001, &[101, 102], 2001).await.expect("forward"),
+            2
+        );
         m.mute(-1001, true).await.expect("mute");
         m.archive(-1001, true).await.expect("archive");
         let filters = m.dialog_filters().await.expect("filters");
@@ -974,7 +1085,9 @@ mod tests {
         assert!(filters.iter().any(|f| f.title == "Учёба"));
         let contacts = m.contacts().await.expect("contacts");
         assert_eq!(contacts.len(), 2);
-        assert!(contacts.iter().any(|c| c.username.as_deref() == Some("anna")));
+        assert!(contacts
+            .iter()
+            .any(|c| c.username.as_deref() == Some("anna")));
         let dialogs = m.dialogs().await.expect("dialogs");
         assert!(dialogs.iter().any(|d| d.muted));
         assert!(dialogs.iter().any(|d| d.archived));
@@ -990,16 +1103,22 @@ mod tests {
             .expect("scheduled");
         assert!(id >= 9800);
         m.save_draft(-1001, "черновик", None).await.expect("draft");
-        m.save_draft(-1001, "ответ", Some(5)).await.expect("draft reply");
+        m.save_draft(-1001, "ответ", Some(5))
+            .await
+            .expect("draft reply");
         let sessions = m.sessions().await.expect("sessions");
         assert_eq!(sessions.len(), 2);
         assert!(sessions.iter().any(|s| s.current));
         m.terminate_others().await.expect("terminate");
         let p = m.get_profile().await.expect("profile");
         assert_eq!(p.first_name, "Демо");
-        m.update_profile("A", "B", "bio").await.expect("update profile");
-        let sid =
-            m.publish_story(std::path::Path::new("photo.jpg"), "привет").await.expect("story");
+        m.update_profile("A", "B", "bio")
+            .await
+            .expect("update profile");
+        let sid = m
+            .publish_story(std::path::Path::new("photo.jpg"), "привет", None)
+            .await
+            .expect("story");
         assert!(sid >= 700);
     }
 
@@ -1011,23 +1130,42 @@ mod tests {
         m.delete_stories(&[7]).await.expect("delete stories");
         let topics = m.forum_topics(-1002).await.expect("topics");
         assert_eq!(topics.len(), 2);
-        assert_eq!(m.create_topic(-1002, "Новинки").await.expect("create topic"), 3);
+        assert_eq!(
+            m.create_topic(-1002, "Новинки")
+                .await
+                .expect("create topic"),
+            3
+        );
         let th = m.topic_history(-1002, 2, 10).await.expect("topic history");
         assert_eq!(th.len(), 1);
         assert_eq!(th[0].topic_id, Some(2));
-        assert!(m.send_to_topic(-1002, 2, "в топик", false).await.expect("send topic") >= 9600);
+        assert!(
+            m.send_to_topic(-1002, 2, "в топик", false)
+                .await
+                .expect("send topic")
+                >= 9600
+        );
         let gs = m.global_search("лекция", 10).await.expect("global search");
         assert!(!gs.is_empty());
         let sch = m.scheduled_history(-1001).await.expect("scheduled");
         assert_eq!(sch.len(), 1);
         m.cancel_scheduled(-1001, 301).await.expect("cancel");
-        let cid = m.create_channel("Новости", "о нас", true).await.expect("create");
+        let cid = m
+            .create_channel("Новости", "о нас", true)
+            .await
+            .expect("create");
         assert!(cid < -1_000_000_000_000);
-        assert!(m.invite_link(-1001).await.expect("invite").starts_with("https://t.me/"));
+        assert!(m
+            .invite_link(-1001)
+            .await
+            .expect("invite")
+            .starts_with("https://t.me/"));
         m.block_user(2001, true).await.expect("block");
         m.clear_history(-1001, false).await.expect("clear");
         m.leave_channel(-1002).await.expect("leave");
-        m.add_contact("+7 900 000-00-02", "Иван", "").await.expect("add contact");
+        m.add_contact("+7 900 000-00-02", "Иван", "")
+            .await
+            .expect("add contact");
     }
 
     /// Контракт пятого parity-пакета: опросы, гео, сторис-интерактив.
@@ -1035,7 +1173,15 @@ mod tests {
     async fn mock_management_contract_4() {
         let m = MockTelegram;
         let pid = m
-            .create_poll(-1002, "Когда?", &["Завтра".into(), "Сегодня".into()], false, None, true, false)
+            .create_poll(
+                -1002,
+                "Когда?",
+                &["Завтра".into(), "Сегодня".into()],
+                false,
+                None,
+                true,
+                false,
+            )
             .await
             .expect("create poll");
         assert!(pid >= 9002);
@@ -1049,14 +1195,28 @@ mod tests {
     #[tokio::test]
     async fn mock_management_contract_10() {
         let m = MockTelegram;
-        let t = m.translate_message(-1001, 321, "en").await.expect("translate");
+        let t = m
+            .translate_message(-1001, 321, "en")
+            .await
+            .expect("translate");
         assert!(t.contains("mock"));
         assert_eq!(m.forward_story(-1002, 77, "").await.expect("repost"), 4007);
         let em = m.default_emoji_statuses().await.expect("emoji list");
         assert_eq!(em, vec![1001, 1002, 1003]);
         m.set_emoji_status(Some(1001)).await.expect("set emoji");
         m.set_emoji_status(None).await.expect("clear emoji");
-        let all = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap", Some(std::time::SystemTime::now())).await.expect("scheduled album");
+        let all = m
+            .send_album(
+                -1001,
+                &[
+                    std::path::PathBuf::from("a.jpg"),
+                    std::path::PathBuf::from("b.mp4"),
+                ],
+                "cap",
+                Some(std::time::SystemTime::now()),
+            )
+            .await
+            .expect("scheduled album");
         assert_eq!(all.len(), 2);
     }
 
@@ -1064,12 +1224,36 @@ mod tests {
     async fn mock_management_contract_9() {
         let m = MockTelegram;
         // Markdown не ломает контракт отправки; silent принимается.
-        let id = m.send_text(-1001, "**жирно** и *курсив* `код`", None, true).await.expect("md send");
+        let id = m
+            .send_text(-1001, "**жирно** и *курсив* `код`", None, true)
+            .await
+            .expect("md send");
         assert!(id >= 9000);
-        m.send_scheduled(-1001, "потом *важно*", None, std::time::SystemTime::now(), false).await.expect("md scheduled");
-        m.send_file(-1001, std::path::Path::new("a.png"), "_подпись_", true, None).await.expect("md file");
-        m.send_to_topic(-1002, 2, "в топик **жирно**", false).await.expect("md topic");
-        let fid = m.create_folder("Работа", &[-1001], Some("💼".into())).await.expect("folder emoji");
+        m.send_scheduled(
+            -1001,
+            "потом *важно*",
+            None,
+            std::time::SystemTime::now(),
+            false,
+        )
+        .await
+        .expect("md scheduled");
+        m.send_file(
+            -1001,
+            std::path::Path::new("a.png"),
+            "_подпись_",
+            true,
+            None,
+        )
+        .await
+        .expect("md file");
+        m.send_to_topic(-1002, 2, "в топик **жирно**", false)
+            .await
+            .expect("md topic");
+        let fid = m
+            .create_folder("Работа", &[-1001], Some("💼".into()))
+            .await
+            .expect("folder emoji");
         assert!(fid >= 0);
     }
 
@@ -1078,11 +1262,18 @@ mod tests {
     #[tokio::test]
     async fn mock_management_contract_6() {
         let m = MockTelegram;
-        assert_eq!(m.share_contact(-1001, "+7", "Иван", "").await.expect("share"), 9300);
+        assert_eq!(
+            m.share_contact(-1001, "+7", "Иван", "")
+                .await
+                .expect("share"),
+            9300
+        );
         m.stop_poll(-1001, 102).await.expect("stop poll");
         let pins = m.pinned_list(-1001, 5).await.expect("pins");
         assert_eq!(pins.len(), 1);
-        m.revoke_invite(-1001, "https://t.me/x").await.expect("revoke");
+        m.revoke_invite(-1001, "https://t.me/x")
+            .await
+            .expect("revoke");
         let parts = m.participants(-1002, 100).await.expect("participants");
         assert_eq!(parts.len(), 2);
         assert!(parts.iter().any(|p| p.admin));
@@ -1097,9 +1288,21 @@ mod tests {
         let st = m.channel_stats(-1001).await.expect("stats");
         assert_eq!(st.followers, 1204);
         assert!(st.notifications_pct > 0.0);
-        m.edit_story_caption(7, "новый текст").await.expect("edit story");
-        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::full(), "модератор").await.expect("promote");
-        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "").await.expect("demote");
+        m.edit_story_caption(7, "новый текст")
+            .await
+            .expect("edit story");
+        m.set_admin(
+            -1002,
+            2001,
+            111,
+            crate::telegram::AdminRights::full(),
+            "модератор",
+        )
+        .await
+        .expect("promote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "")
+            .await
+            .expect("demote");
         m.set_slowmode(-1002, 30).await.expect("slowmode");
         m.set_slowmode(-1002, 0).await.expect("slowmode off");
     }
@@ -1109,16 +1312,33 @@ mod tests {
     #[tokio::test]
     async fn mock_management_contract_8() {
         let m = MockTelegram;
-        assert_eq!(m.share_contact(-1001, "+7", "Иван", "И").await.expect("share"), 9300);
+        assert_eq!(
+            m.share_contact(-1001, "+7", "Иван", "И")
+                .await
+                .expect("share"),
+            9300
+        );
         m.stop_poll(-1001, 102).await.expect("stop poll");
         let pins = m.pinned_list(-1001, 5).await.expect("pins");
         assert_eq!(pins.len(), 1);
-        m.revoke_invite(-1001, "https://t.me/x").await.expect("revoke");
+        m.revoke_invite(-1001, "https://t.me/x")
+            .await
+            .expect("revoke");
         let parts = m.participants(-1002, 100).await.expect("participants");
         assert!(parts.iter().any(|p| p.admin));
         m.kick_participant(-1002, 2001).await.expect("kick");
-        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::full(), "модератор").await.expect("promote");
-        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "").await.expect("demote");
+        m.set_admin(
+            -1002,
+            2001,
+            111,
+            crate::telegram::AdminRights::full(),
+            "модератор",
+        )
+        .await
+        .expect("promote");
+        m.set_admin(-1002, 2001, 111, crate::telegram::AdminRights::none(), "")
+            .await
+            .expect("demote");
         m.set_slowmode(-1002, 30).await.expect("slowmode");
         m.hide_peer_stories(2001, true).await.expect("hide");
         let alb = m.story_albums().await.expect("albums");
@@ -1130,7 +1350,9 @@ mod tests {
         let st = m.channel_stats(-1001).await.expect("stats");
         assert_eq!(st.followers, 1204);
         assert!(st.notifications_pct > 0.0);
-        m.edit_story_caption(7, "новый текст").await.expect("edit story");
+        m.edit_story_caption(7, "новый текст")
+            .await
+            .expect("edit story");
         let albums = m.story_albums().await.expect("albums");
         assert_eq!(albums.len(), 1);
     }
@@ -1142,12 +1364,22 @@ mod tests {
         let albums = m.story_albums().await.expect("albums");
         assert_eq!(albums.len(), 1);
         assert_eq!(albums[0].story_count, 3);
-        assert_eq!(m.create_album("Избранное", &[7, 8]).await.expect("create album"), 10);
+        assert_eq!(
+            m.create_album("Избранное", &[7, 8])
+                .await
+                .expect("create album"),
+            10
+        );
         m.delete_album(10).await.expect("delete album");
         let (count, voters) = m.poll_voters(-1002, 103, None).await.expect("voters");
         assert_eq!(count, 7);
         assert_eq!(voters.len(), 2);
-        assert_eq!(m.create_folder("Работа", &[-1001], None).await.expect("create folder"), 7);
+        assert_eq!(
+            m.create_folder("Работа", &[-1001], None)
+                .await
+                .expect("create folder"),
+            7
+        );
         m.rename_folder(7, "Офис").await.expect("rename");
         m.delete_folder(7).await.expect("delete folder");
     }
@@ -1162,17 +1394,33 @@ mod tests {
         let (count, viewers) = m.story_viewers(7, 20).await.expect("viewers");
         assert_eq!(count, 42);
         assert_eq!(viewers.len(), 2);
-        let media = m.search_media(-1001, "photo", 50).await.expect("search media");
+        let media = m
+            .search_media(-1001, "photo", 50)
+            .await
+            .expect("search media");
         assert!(media.iter().all(|x| x.has_media));
         m.update_username("demo_user").await.expect("username");
         assert!(m.check_username("free_name").await.expect("check"));
         assert!(!m.check_username("taken").await.expect("check taken"));
         m.toggle_dialog_pin(-1001, true).await.expect("pin dialog");
-        let album = m.send_album(-1001, &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")], "cap", None).await.expect("album");
+        let album = m
+            .send_album(
+                -1001,
+                &[
+                    std::path::PathBuf::from("a.jpg"),
+                    std::path::PathBuf::from("b.mp4"),
+                ],
+                "cap",
+                None,
+            )
+            .await
+            .expect("album");
         assert_eq!(album.len(), 2);
         let arch = m.archived_stories().await.expect("archive");
         assert_eq!(arch.len(), 1);
-        m.upload_avatar(std::path::Path::new("ava.jpg")).await.expect("avatar");
+        m.upload_avatar(std::path::Path::new("ava.jpg"))
+            .await
+            .expect("avatar");
         m.delete_contact(2002, 222).await.expect("delete contact");
         let blocked = m.blocked_list().await.expect("blocked");
         assert_eq!(blocked.len(), 1);
@@ -1184,7 +1432,9 @@ mod tests {
     #[tokio::test]
     async fn mock_management_contract_11() {
         let m = MockTelegram;
-        m.save_draft(-1001, "черновик", Some(7)).await.expect("draft reply");
+        m.save_draft(-1001, "черновик", Some(7))
+            .await
+            .expect("draft reply");
         let albums = m.story_albums().await.expect("albums");
         assert!(!albums.is_empty());
         let stats = m.channel_stats(-1001).await.expect("stats");
@@ -1195,7 +1445,10 @@ mod tests {
     #[tokio::test]
     async fn mock_management_contract_12() {
         let m = MockTelegram;
-        let t = m.translate_message(-1001, 321, "en").await.expect("translate");
+        let t = m
+            .translate_message(-1001, 321, "en")
+            .await
+            .expect("translate");
         assert!(t.contains("mock"));
         assert_eq!(m.forward_story(-1002, 77, "").await.expect("repost"), 4007);
         let em = m.default_emoji_statuses().await.expect("emoji list");
@@ -1205,15 +1458,92 @@ mod tests {
         let all = m
             .send_album(
                 -1001,
-                &[std::path::PathBuf::from("a.jpg"), std::path::PathBuf::from("b.mp4")],
+                &[
+                    std::path::PathBuf::from("a.jpg"),
+                    std::path::PathBuf::from("b.mp4"),
+                ],
                 "cap",
                 Some(std::time::SystemTime::now()),
             )
             .await
             .expect("scheduled album");
         assert_eq!(all.len(), 2);
-        m.set_admin(2001, 2002, 333, crate::telegram::AdminRights::full(), "Модератор").await.expect("rights");
-        let one = m.send_file(-1001, std::path::Path::new("a.png"), "cap", false, Some(std::time::SystemTime::now())).await.expect("scheduled file");
+        m.set_admin(
+            2001,
+            2002,
+            333,
+            crate::telegram::AdminRights::full(),
+            "Модератор",
+        )
+        .await
+        .expect("rights");
+        let one = m
+            .send_file(
+                -1001,
+                std::path::Path::new("a.png"),
+                "cap",
+                false,
+                Some(std::time::SystemTime::now()),
+            )
+            .await
+            .expect("scheduled file");
         assert!(one != 0);
+    }
+
+    /// Контракт: QR-вход (токен+опрос), баланс звёзд, графики статистики.
+    #[tokio::test]
+    async fn mock_management_contract_13() {
+        let m = MockTelegram;
+        let (token, expires) = m.qr_login_start().await.expect("qr start");
+        assert!(!token.is_empty() && expires > 0);
+        assert_eq!(
+            m.qr_login_poll(&token).await.expect("qr poll"),
+            Some(123456789)
+        );
+        let (stars, _nanos) = m.stars_balance().await.expect("stars");
+        assert!(stars > 0);
+        let (labels, values) = m.channel_graph(-1001, "followers").await.expect("graph");
+        assert_eq!(labels.len(), 14);
+        assert_eq!(labels.len(), values.len());
+    }
+
+    #[tokio::test]
+    async fn mock_management_contract_14() {
+        use crate::telegram::TelegramService;
+        let m = MockTelegram;
+        // Сторис с музыкой: mock принимает music без ошибки, id детерминирован путём.
+        let a = m
+            .publish_story(
+                std::path::Path::new("clip.mp4"),
+                "подпись",
+                Some(std::path::PathBuf::from("track.mp3")),
+            )
+            .await
+            .expect("story+music");
+        let b = m
+            .publish_story(std::path::Path::new("clip.mp4"), "подпись", None)
+            .await
+            .expect("story");
+        assert_eq!(a, b);
+        // Графики: неизвестный вид даёт базовый ряд, "views" — свой масштаб.
+        let (_, followers) = m.channel_graph(-1001, "growth").await.expect("growth");
+        let (_, views) = m.channel_graph(-1001, "views").await.expect("views");
+        assert_eq!(followers.len(), 14);
+        assert!(views[0] > followers[0]);
+        // Альбом из трёх путей — три id, очередь UI складывает пути 1:1.
+        let ids = m
+            .send_album(
+                -1001,
+                &[
+                    std::path::PathBuf::from("a.jpg"),
+                    std::path::PathBuf::from("b.jpg"),
+                    std::path::PathBuf::from("c.jpg"),
+                ],
+                "подпись",
+                None,
+            )
+            .await
+            .expect("album");
+        assert_eq!(ids.len(), 3);
     }
 }

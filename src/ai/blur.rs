@@ -95,7 +95,11 @@ pub fn looks_like_qr(img: &DynamicImage) -> bool {
         return false;
     }
     // Проверяем контрастные углы 32x32: в QR finder-паттерны дают плотные тёмные рамки.
-    let corner_density = [corner_dark(&small, 0, 0), corner_dark(&small, 96, 0), corner_dark(&small, 0, 96)];
+    let corner_density = [
+        corner_dark(&small, 0, 0),
+        corner_dark(&small, 96, 0),
+        corner_dark(&small, 0, 96),
+    ];
     corner_density.iter().filter(|d| **d > 0.25).count() >= 2
 }
 

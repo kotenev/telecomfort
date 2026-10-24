@@ -28,7 +28,12 @@ use std::time::Duration;
 pub fn is_video_path(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_lowercase().as_str(), "mp4" | "mov" | "webm" | "mkv" | "avi"))
+        .map(|e| {
+            matches!(
+                e.to_lowercase().as_str(),
+                "mp4" | "mov" | "webm" | "mkv" | "avi"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -99,7 +104,8 @@ fn parse_boxes(full: &[u8], in_covr: bool) -> Option<&[u8]> {
     // Обход боксов верхнего уровня, в контейнеры заходим рекурсией.
     let mut off = 0usize;
     while off + 8 <= full.len() {
-        let size32 = u32::from_be_bytes([full[off], full[off + 1], full[off + 2], full[off + 3]]) as u64;
+        let size32 =
+            u32::from_be_bytes([full[off], full[off + 1], full[off + 2], full[off + 3]]) as u64;
         let tag = &full[off + 4..off + 8];
         let (hdr, payload_start) = if size32 == 1 {
             if off + 16 > full.len() {
@@ -112,7 +118,9 @@ fn parse_boxes(full: &[u8], in_covr: bool) -> Option<&[u8]> {
         } else {
             (size32, off + 8)
         };
-        if hdr < 8 || payload_start + (hdr as usize).saturating_sub(payload_start - off) > full.len() {
+        if hdr < 8
+            || payload_start + (hdr as usize).saturating_sub(payload_start - off) > full.len()
+        {
             break;
         }
         let end = off + hdr as usize;
@@ -128,16 +136,16 @@ fn parse_boxes(full: &[u8], in_covr: bool) -> Option<&[u8]> {
             let img = &payload[8..];
             if img.len() > 16
                 && ((img[0] == 0xFF && img[1] == 0xD8)
-                    || (img[0] == 0x89
-                        && img[1] == b'P'
-                        && img[2] == b'N'
-                        && img[3] == b'G'))
+                    || (img[0] == 0x89 && img[1] == b'P' && img[2] == b'N' && img[3] == b'G'))
             {
                 return Some(img);
             }
         }
         let child_covr = in_covr || tag == b"covr";
-        if matches!(tag, b"moov" | b"trak" | b"mdia" | b"minf" | b"udta" | b"meta" | b"ilst" | b"covr") {
+        if matches!(
+            tag,
+            b"moov" | b"trak" | b"mdia" | b"minf" | b"udta" | b"meta" | b"ilst" | b"covr"
+        ) {
             if let Some(found) = parse_boxes(payload, child_covr) {
                 return Some(found);
             }
@@ -196,12 +204,19 @@ pub fn save_poster_jpeg(frame: &image::DynamicImage, poster: &Path) -> bool {
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(f, 80);
     let rgb = small.to_rgb8();
     if enc
-        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
         .is_err()
     {
         return false;
     }
-    std::fs::metadata(poster).map(|m| m.len() >= 1024).unwrap_or(false)
+    std::fs::metadata(poster)
+        .map(|m| m.len() >= 1024)
+        .unwrap_or(false)
 }
 
 /// Извлечь первый кадр. Возвращает путь к постеру.
@@ -253,7 +268,14 @@ pub async fn extract_poster(video: &Path, poster: &Path) -> anyhow::Result<PathB
     let out = tokio::time::timeout(Duration::from_secs(20), cmd.output()).await??;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("ffmpeg: {}", if err.is_empty() { "non-zero exit".into() } else { err });
+        anyhow::bail!(
+            "ffmpeg: {}",
+            if err.is_empty() {
+                "non-zero exit".into()
+            } else {
+                err
+            }
+        );
     }
     // Проверяем, что постер реально записался и это валидный JPEG.
     let data = tokio::fs::read(poster).await?;
@@ -278,7 +300,10 @@ mod tests {
     #[test]
     fn poster_path_naming() {
         let v = Path::new("/tmp/story_1_2.mp4");
-        assert_eq!(poster_path_for(v), PathBuf::from("/tmp/story_1_2.poster.jpg"));
+        assert_eq!(
+            poster_path_for(v),
+            PathBuf::from("/tmp/story_1_2.poster.jpg")
+        );
     }
 
     #[test]
@@ -292,7 +317,10 @@ mod tests {
     #[test]
     fn stale_poster_is_not_fresh() {
         // Несуществующие файлы — не fresh, без паники.
-        assert!(!poster_fresh(Path::new("/nope/v.mp4"), Path::new("/nope/p.jpg")));
+        assert!(!poster_fresh(
+            Path::new("/nope/v.mp4"),
+            Path::new("/nope/p.jpg")
+        ));
     }
 
     #[test]
@@ -370,7 +398,9 @@ mod tests {
         assert!(find_covr_image(&file).is_none());
         // data-бокс без covr-родителя игнорируется.
         let mut payload = vec![0u8; 8];
-        payload.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        payload.extend_from_slice(&[
+            0xFF, 0xD8, 0xFF, 0xE0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ]);
         let file2 = boxed(b"data", &payload);
         assert!(find_covr_image(&file2).is_none());
     }

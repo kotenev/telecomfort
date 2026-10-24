@@ -54,7 +54,11 @@ impl<P> BkTree<P> {
         let mut node = match self.root.as_mut() {
             Some(n) => n,
             None => {
-                self.root = Some(Node { hash, payloads: vec![payload], children: vec![] });
+                self.root = Some(Node {
+                    hash,
+                    payloads: vec![payload],
+                    children: vec![],
+                });
                 return;
             }
         };
@@ -72,7 +76,11 @@ impl<P> BkTree<P> {
                 None => {
                     node.children.push((
                         d,
-                        Box::new(Node { hash, payloads: vec![payload], children: vec![] }),
+                        Box::new(Node {
+                            hash,
+                            payloads: vec![payload],
+                            children: vec![],
+                        }),
                     ));
                     return;
                 }
@@ -123,8 +131,11 @@ impl<P> BkTree<P> {
 impl<P: Clone> BkTree<P> {
     /// Клонирующий поиск (удобно, когда дерево временное).
     pub fn query_cloned(&self, hash: u64, max_dist: u32) -> Vec<(P, u32)> {
-        let mut out: Vec<(P, u32)> =
-            self.query(hash, max_dist).into_iter().map(|(p, d)| (p.clone(), d)).collect();
+        let mut out: Vec<(P, u32)> = self
+            .query(hash, max_dist)
+            .into_iter()
+            .map(|(p, d)| (p.clone(), d))
+            .collect();
         out.sort_by_key(|(_, d)| *d);
         out
     }
@@ -226,7 +237,10 @@ mod tests {
         let base = 0x0F0F_0F0F_0F0F_0F0Fu64;
         for i in 0..64u64 {
             // Меняем младшие биты — расстояние ≤ 6.
-            tree.insert(base ^ ((1u64 << (i % 6)) - 1).wrapping_mul(0x0101), i as usize);
+            tree.insert(
+                base ^ ((1u64 << (i % 6)) - 1).wrapping_mul(0x0101),
+                i as usize,
+            );
         }
         let hits = tree.query(base, 6);
         assert!(!hits.is_empty());

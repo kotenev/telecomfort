@@ -1,6 +1,6 @@
 //! Вход MTProto + мультиаккаунты + экспорт/импорт сессии.
 
-use crate::config::{TelegramSettings, session_path_for};
+use crate::config::{session_path_for, TelegramSettings};
 use crate::ui::app::{BgEvent, TelecomfortApp};
 
 pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
@@ -17,11 +17,7 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             .selected_text(app.active_profile.clone())
             .show_ui(ui, |ui| {
                 for p in &app.profiles {
-                    ui.selectable_value(
-                        &mut app.active_profile,
-                        p.name.clone(),
-                        &p.name,
-                    );
+                    ui.selectable_value(&mut app.active_profile, p.name.clone(), &p.name);
                 }
             });
         if ui.small_button("Переключить").clicked() {
@@ -31,7 +27,8 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.label("Новый профиль:");
         ui.text_edit_singleline(&mut app.new_profile_name);
-        if ui.small_button("+ Создать").clicked() && !app.new_profile_name.trim().is_empty() {
+        if ui.small_button("+ Создать").clicked() && !app.new_profile_name.trim().is_empty()
+        {
             let name = app.new_profile_name.trim().to_string();
             if !app.profiles.iter().any(|p| p.name == name) {
                 app.profiles.push(TelegramSettings {
@@ -91,7 +88,11 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         if ui.button("📲 Получить код").clicked() {
             start_login(app);
         }
-        ui.label(egui::RichText::new(format!("этап: {}", app.login_stage)).small().weak());
+        ui.label(
+            egui::RichText::new(format!("этап: {}", app.login_stage))
+                .small()
+                .weak(),
+        );
     });
     ui.horizontal(|ui| {
         ui.label("Код:");
@@ -107,6 +108,50 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             submit_password(app);
         }
     });
+    ui.separator();
+    // Вход по QR-коду: телефон/код не нужны, только API ID+HASH.
+    ui.horizontal(|ui| {
+        if !app.qr_polling {
+            if ui.button("📷 Войти по QR").clicked() {
+                app.start_qr_login();
+            }
+        } else if ui.button("✕ Отменить QR").clicked() {
+            app.cancel_qr_login();
+        }
+        // Баланс звёзд (загружается после входа).
+        match app.stars {
+            Some((amount, _)) => {
+                ui.label(format!("⭐ {amount}"));
+            }
+            None => {
+                if app.login_stage == "done"
+                    && ui
+                        .small_button("⭐")
+                        .on_hover_text("Баланс звёзд")
+                        .clicked()
+                {
+                    app.load_stars();
+                }
+            }
+        }
+    });
+    if let Some((token, expires)) = app.qr_token.clone() {
+        let now = chrono::Local::now().timestamp();
+        let left = (expires - now).max(0);
+        ui.label(format!(
+            "Отсканируйте в Telegram на телефоне (Настройки → Устройства). Осталось ~{left} с."
+        ));
+        let payload = format!(
+            "tg://login?token={}",
+            super::super::app::qr_login_payload(&token)
+        );
+        // Текстура строится один раз по токену (кэш в app.qr_tex).
+        let tex = app.qr_texture(ui.ctx(), &payload);
+        if let Some(t) = tex {
+            ui.image((t.id(), egui::Vec2::new(232.0, 232.0)));
+        }
+        ui.label(egui::RichText::new(payload).small().weak().monospace());
+    }
     ui.separator();
     ui.horizontal(|ui| {
         if ui.small_button("💾 Экспорт сессии…").clicked() {
@@ -137,8 +182,17 @@ fn current_session_path(app: &TelecomfortApp) -> std::path::PathBuf {
 }
 
 fn switch_profile(app: &mut TelecomfortApp) {
-    if let Some(p) = app.profiles.iter().find(|p| p.name == app.active_profile).cloned() {
-        app.api_id = if p.api_id == 0 { String::new() } else { p.api_id.to_string() };
+    if let Some(p) = app
+        .profiles
+        .iter()
+        .find(|p| p.name == app.active_profile)
+        .cloned()
+    {
+        app.api_id = if p.api_id == 0 {
+            String::new()
+        } else {
+            p.api_id.to_string()
+        };
         app.api_hash = p.api_hash.clone();
         app.phone = p.phone.clone();
         app.login_stage = "api".into();
@@ -286,7 +340,9 @@ fn submit_code(app: &mut TelecomfortApp) {
             }
             Err(grammers_client::SignInError::PasswordRequired(pw)) => {
                 set_pending_backend_pw(backend, pw);
-                let _ = tx.send(BgEvent::Log("нужен пароль 2FA — введите и нажмите «Войти с паролем»".into()));
+                let _ = tx.send(BgEvent::Log(
+                    "нужен пароль 2FA — введите и нажмите «Войти с паролем»".into(),
+                ));
             }
             Err(e) => {
                 set_pending_backend(backend, None);
@@ -364,24 +420,24 @@ fn take_pending_backend_pw() -> Option<PendingPw> {
     pending_pw_lock().lock().unwrap().take()
 }
 
-async fn swap_backend(
+pub(crate) async fn swap_backend(
     tx: &std::sync::mpsc::Sender<BgEvent>,
     backend: crate::telegram::backend_grammers::GrammersBackend,
 ) {
-    *SWAP_BACKEND.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *SWAP_BACKEND
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap() =
         Some(std::sync::Arc::new(backend) as std::sync::Arc<dyn crate::telegram::TelegramService>);
     let _ = tx.send(BgEvent::Connected {
         backend_desc: "grammers live".into(),
     });
 }
 
-static SWAP_BACKEND: OnceLock<
-    Mutex<Option<std::sync::Arc<dyn crate::telegram::TelegramService>>>,
-> = OnceLock::new();
+static SWAP_BACKEND: OnceLock<Mutex<Option<std::sync::Arc<dyn crate::telegram::TelegramService>>>> =
+    OnceLock::new();
 
 #[allow(dead_code)]
 pub fn take_swap_backend() -> Option<std::sync::Arc<dyn crate::telegram::TelegramService>> {
-    SWAP_BACKEND
-        .get()
-        .and_then(|m| m.lock().unwrap().take())
+    SWAP_BACKEND.get().and_then(|m| m.lock().unwrap().take())
 }

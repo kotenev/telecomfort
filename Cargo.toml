@@ -79,6 +79,7 @@ rusty_h265 = "0.6"
 # остаётся только Rust-фолбэк: медленнее dav1d с SIMD, но для одного
 # постера 270x480 достаточно, а сборка не требует nasm/nightly.
 rusty_av1d = { version = "1.2", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+qrcode = { version = "0.14.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
