@@ -214,6 +214,15 @@ fun StoriesScreen(nav: NavController) {
                                 TextButton(onClick = {
                                     scope.launch {
                                         runCatching {
+                                            Core.call("hide_peer_stories", mapOf("peer" to s.optLong("peer_id"), "hidden" to true))
+                                            status = "Сторис автора скрыты"
+                                            reload()
+                                        }.onFailure { status = "Ошибка: ${it.message}" }
+                                    }
+                                }) { Text("🚫 Скрыть") }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        runCatching {
                                             val r = Core.call("story_viewers", mapOf("story" to s.optInt("id"), "limit" to 100))
                                             viewersJson = r
                                             showViewers = true

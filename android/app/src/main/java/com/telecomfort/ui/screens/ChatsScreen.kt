@@ -31,6 +31,8 @@ fun ChatsScreen(nav: NavController) {
     var gsearch by remember { mutableStateOf<List<Pair<Long, org.json.JSONObject?>>>(emptyList()) }
     var showSearch by remember { mutableStateOf(false) }
     var showFolders by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var renameTitle by remember { mutableStateOf("") }
     var folders by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var newFolder by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -164,7 +166,23 @@ fun ChatsScreen(nav: NavController) {
                 }
             }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Закрыть") } })
         }
-        if (showFolders) {
+        renameTarget?.let { rf ->
+        AlertDialog(onDismissRequest = { renameTarget = null }, title = { Text("✏️ Переименовать") }, text = {
+            OutlinedTextField(renameTitle, { renameTitle = it }, label = { Text("Новое название") })
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("rename_folder", mapOf("id" to rf.optInt("id"), "title" to renameTitle))
+                        renameTarget = null
+                        val r = Core.call("dialog_filters", emptyMap())
+                        folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Сохранить") }
+        }, dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Отмена") } })
+    }
+    if (showFolders) {
             var title by remember { mutableStateOf("") }
             AlertDialog(onDismissRequest = { showFolders = false }, title = { Text("📁 Папки") }, text = {
                 Column {
@@ -172,15 +190,16 @@ fun ChatsScreen(nav: NavController) {
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Text("• ${f.optString("title", "?")}", modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = {
-                                scope.launch {
-                                    runCatching {
-                                        Core.call("delete_folder", mapOf("id" to f.optInt("id")))
-                                        val r = Core.call("dialog_filters", emptyMap())
-                                        folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
-                                    }.onFailure { status = "Ошибка: ${it.message}" }
-                                }
-                            }) { Text("✕") }
+                        TextButton(onClick = { renameTarget = f; renameTitle = f.optString("title", "") }) { Text("✏️") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("delete_folder", mapOf("id" to f.optInt("id")))
+                                    val r = Core.call("dialog_filters", emptyMap())
+                                    folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("✕") }
                         }
                     }
                     OutlinedTextField(title, { title = it }, label = { Text("Новая папка") })
