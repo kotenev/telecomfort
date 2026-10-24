@@ -8,7 +8,7 @@
 ```mermaid
 flowchart LR
     U([Пользователь]) -->|GUI eframe/egui| APP[Telecomfort<br/>десктоп-клиент]
-    APP -->|MTProto TCP + opt SOCKS5<br/>grammers 0.11| TG[(Telegram MTProto API<br/>DC 1-5)]
+    APP -->|MTProto TCP + opt SOCKS5/MTProxy<br/>grammers 0.11| TG[(Telegram MTProto API<br/>DC 1-5)]
     APP -->|HTTPS OAuth<br/>streaming upload| YD[(Yandex Disk)]
     APP -->|файлы книг| CAL[(Calibre<br/>локальная библиотека)]
     APP -->|запись WAV 48кГц<br/>воспроизведение| OS([ОС: микрофон/аудио<br/>cpal / rodio])

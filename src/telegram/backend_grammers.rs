@@ -68,8 +68,11 @@ impl GrammersBackend {
         Self::connect_with_proxy(session_path, api_id, api_hash, None).await
     }
 
-    /// Подключение с опциональным SOCKS5-прокси (только socks5://…; MTProto-прокси
-    /// grammers не поддерживает — задокументировано в README).
+    /// Подключение с опциональным прокси:
+    /// - `socks5://host:port` — обычный SOCKS5;
+    /// - `tg://proxy?...`, `t.me/proxy?...`, `mtproto://...` — MTProxy
+    ///   (obfuscated2 + intermediate/padded-intermediate) через локальный
+    ///   SOCKS5-мост [`crate::telegram::mtproxy`].
     pub async fn connect_with_proxy(
         session_path: &Path,
         api_id: i32,
@@ -79,6 +82,14 @@ impl GrammersBackend {
         if let Some(parent) = session_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
+        let proxy_url = match proxy_url.filter(|u| !u.trim().is_empty()) {
+            Some(url) if crate::telegram::mtproxy::MtProxyConfig::is_mtproxy_url(&url) => {
+                let config = crate::telegram::mtproxy::parse_proxy_url(&url)?;
+                let tunnel = crate::telegram::mtproxy::start(config).await?;
+                Some(format!("socks5://{}", tunnel.socks_addr))
+            }
+            other => other,
+        };
         let session =
             Arc::new(SqliteSession::open(session_path.to_string_lossy().to_string()).await?);
         let SenderPool {
@@ -86,7 +97,7 @@ impl GrammersBackend {
             handle,
             updates,
             ..
-        } = match proxy_url.filter(|u| !u.trim().is_empty()) {
+        } = match proxy_url {
             Some(url) => {
                 use grammers_mtsender::ConnectionParams;
                 SenderPool::with_configuration(

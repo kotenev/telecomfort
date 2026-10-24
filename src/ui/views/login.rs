@@ -82,9 +82,12 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         ui.text_edit_singleline(&mut app.api_hash);
     });
     ui.horizontal(|ui| {
-        ui.label("SOCKS5:");
+        ui.label("Прокси:");
         ui.text_edit_singleline(&mut app.proxy_url).on_hover_text(
-            "socks5://user:pass@host:port — пусто = напрямую. MTProto-прокси не поддерживаются.",
+            "socks5://user:pass@host:port — SOCKS5.\n\
+             tg://proxy?server=…&port=…&secret=… или mtproto://host:port?secret=… — MTProxy \
+             (obfuscated2 + padded-intermediate, локальный SOCKS5-мост).\n\
+             Пусто = напрямую.",
         );
     });
     ui.horizontal(|ui| {
