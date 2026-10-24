@@ -28,6 +28,8 @@ fun ChatsScreen(nav: NavController) {
     var nearby by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var showNearby by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
+    var gsearch by remember { mutableStateOf<List<Pair<Long, org.json.JSONObject?>>>(emptyList()) }
+    var showSearch by remember { mutableStateOf(false) }
     var showFolders by remember { mutableStateOf(false) }
     var folders by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var newFolder by remember { mutableStateOf("") }
@@ -93,7 +95,18 @@ fun ChatsScreen(nav: NavController) {
             query = it
             scope.launch {
                 // Глобальный поиск сервера от 3 символов (результат — в Журнале/статусе).
-                runCatching { if (it.length >= 3) Core.call("global_search", mapOf("query" to it, "limit" to 20)) }
+                runCatching {
+                    if (it.length >= 3) {
+                        val r = Core.call("global_search", mapOf("query" to it, "limit" to 20))
+                        val arr = r.getJSONArray("result")
+                        gsearch = (0 until arr.length()).map { k ->
+                            val el = arr.get(k)
+                            if (el is org.json.JSONArray) Pair(el.optLong(0), el.optJSONObject(1))
+                            else { val o = el as org.json.JSONObject; Pair(o.optLong("chat"), o.optJSONObject("message")) }
+                        }
+                        if (gsearch.isNotEmpty()) showSearch = true
+                    }
+                }
             }
         }, label = { Text("Поиск (сервер от 3 символов)") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
         if (showNearby) {
@@ -134,6 +147,23 @@ fun ChatsScreen(nav: NavController) {
             }
         }
         if (status.isNotEmpty()) Text(status, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+        if (showSearch) {
+            AlertDialog(onDismissRequest = { showSearch = false }, title = { Text("Глобальный поиск") }, text = {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(gsearch.size) { i ->
+                        val (chatId, msg) = gsearch[i]
+                        Column(Modifier.clickable {
+                            if (chatId != 0L) nav.navigate("chat/$chatId")
+                            showSearch = false
+                        }) {
+                            Text("chat $chatId", style = MaterialTheme.typography.bodySmall)
+                            if (msg != null) Text(msg.optString("text", "").take(100), style = MaterialTheme.typography.bodySmall)
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Закрыть") } })
+        }
         if (showFolders) {
             var title by remember { mutableStateOf("") }
             AlertDialog(onDismissRequest = { showFolders = false }, title = { Text("📁 Папки") }, text = {

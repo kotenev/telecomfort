@@ -1337,6 +1337,38 @@ mod tests {
     }
 
     #[test]
+    fn bridge_round4_ops() {
+        call(json!({"op": "use_mock"}));
+        for op in [
+            json!({"op": "download_web_photo", "photo": {"photo_id": 1, "access_hash": 2, "file_reference": [], "dc_id": 2}, "chat": 1}),
+            json!({"op": "send_to_topic", "chat": -1001, "topic": 1, "text": "t"}),
+            json!({"op": "topic_history", "chat": -1001, "topic": 1, "limit": 5}),
+            json!({"op": "unpin_message", "chat": -1001, "id": 1}),
+            json!({"op": "forum_topics", "chat": -1001}),
+            json!({"op": "create_topic", "chat": -1001, "title": "t"}),
+            json!({"op": "create_channel", "title": "c", "about": "", "broadcast": false}),
+            json!({"op": "delete_album", "album": 1}),
+            json!({"op": "kick_participant", "chat": -1001, "user": 1}),
+            json!({"op": "share_contact", "chat": -1001, "phone": "+7", "first": "A"}),
+            json!({"op": "enable_stealth"}),
+            json!({"op": "create_poll", "chat": -1001, "question": "q?", "options": ["a"], "quiz": true, "correct": 0}),
+        ] {
+            let r = call(op);
+            assert_eq!(r["ok"], true, "{r}");
+        }
+    }
+
+    /// Ручной тест прокси: требует сеть, поэтому ignored (запуск: -- --ignored).
+    /// Проверяет, что connect_with_proxy не паникует и возвращает JSON-ошибку,
+    /// а не роняет процесс (libsql threading в мультитред-рантайме).
+    #[test]
+    #[ignore]
+    fn bridge_test_proxy_manual() {
+        let r = call(json!({"op": "test_proxy", "api_id": 0, "api_hash": "x"}));
+        assert!(r.get("ok").is_some(), "{r}");
+    }
+
+    #[test]
     fn bridge_unknown_op_errors() {
         let r = call(json!({"op": "nope"}));
         assert_eq!(r["ok"], false);

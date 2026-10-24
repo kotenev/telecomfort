@@ -47,6 +47,16 @@ fun DownloadsScreen(nav: NavController) {
                     supportingContent = { Text("${f.length() / 1024} КБ · ${f.parentFile?.name}") },
                     trailingContent = {
                         TextButton(onClick = {
+                            try {
+                                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
+                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, ctx.contentResolver.getType(uri) ?: "*/*")
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                ctx.startActivity(android.content.Intent.createChooser(intent, "Открыть"))
+                            } catch (e: Exception) { status = "Нечем открыть: ${e.message}" }
+                        }) { Text("↗") }
+                        TextButton(onClick = {
                             if (f.delete()) reload() else status = "Не удалён: ${f.name}"
                         }) { Text("🗑") }
                     },
