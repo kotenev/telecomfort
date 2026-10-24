@@ -36,6 +36,16 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
     var status by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    var avatarPath by remember { mutableStateOf<String?>(null) }
+    val pickAvatar = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        val dst = java.io.File(ctx.cacheDir, "avatar_${System.currentTimeMillis()}.jpg")
+        ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+        avatarPath = dst.absolutePath
+        status = "Файл выбран: ${dst.name} — нажмите «📷 Загрузить аватар»"
+    }
 
     fun reloadSessions() {
         scope.launch {
@@ -68,11 +78,65 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     }.onFailure { status = "Ошибка: ${it.message}" }
                 }
             }) { Text("Сохранить профиль") }
+            var uname by remember { mutableStateOf("") }
+            var unameMsg by remember { mutableStateOf("") }
+            OutlinedTextField(uname, { uname = it }, label = { Text("username (без @)") }, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    scope.launch {
+                        runCatching {
+                            val r = Core.call("check_username", mapOf("username" to uname))
+                            unameMsg = if (r.optBoolean("free")) "свободен ✓" else "занят"
+                        }.onFailure { unameMsg = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Проверить") }
+                Button(onClick = {
+                    scope.launch {
+                        runCatching {
+                            Core.call("update_username", mapOf("username" to uname))
+                            unameMsg = "username обновлён"
+                        }.onFailure { unameMsg = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("Занять") }
+            }
+            if (unameMsg.isNotEmpty()) Text(unameMsg, style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    if (avatarPath == null) pickAvatar.launch("image/*")
+                    else scope.launch {
+                        runCatching {
+                            Core.call("upload_avatar", mapOf("path" to (avatarPath ?: "")))
+                            avatarPath = null
+                            status = "Аватар загружен"
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text(if (avatarPath == null) "📷 Выбрать файл" else "📷 Загрузить аватар") }
+                Button(onClick = {
+                    scope.launch {
+                        runCatching {
+                            Core.call("set_emoji_status", mapOf("doc" to JSONObject.NULL))
+                            status = "Эмодзи-статус снят (установка паком — TODO)"
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }) { Text("😀 Статус: снять") }
+            }
+            Text("Аватар: выберите файл ниже (jpg/png).", style = MaterialTheme.typography.bodySmall)
         }
         item {
             Text("SOCKS5-прокси", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(proxy, { proxy = it }, label = { Text("socks5://…") }, modifier = Modifier.fillMaxWidth())
-            Text("Проверка — отдельным соединением:", style = MaterialTheme.typography.bodySmall)
+            Row {
+                TextButton(onClick = {
+                    scope.launch {
+                        runCatching {
+                            val r = Core.call("test_proxy", mapOf("api_id" to (store?.apiId?.toLongOrNull() ?: 0), "api_hash" to (store?.apiHash ?: ""), "proxy" to proxy))
+                            status = "Прокси: соединение OK"
+                        }.onFailure { status = "Прокси: ${it.message}" }
+                    }
+                }) { Text("🔌 Проверить") }
+                Text("отдельным соединением", style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.CenterVertically))
+            }
         }
         item {
             Text("🔒 PIN-блокировка", style = MaterialTheme.typography.titleSmall)
@@ -155,6 +219,15 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
                     SyncWorker.schedule(ctx)
                     status = "Автосинк каждые 15 мин включён"
                 }) { Text("Автосинк") }
+            }
+        }
+        item {
+            var showAbout by remember { mutableStateOf(false) }
+            TextButton(onClick = { showAbout = true }) { Text("ℹ️ О приложении") }
+            if (showAbout) {
+                AlertDialog(onDismissRequest = { showAbout = false }, title = { Text("Telecomfort") }, text = {
+                    Text("Нативный Telegram-клиент: общий Rust-core (MTProto, медиа, AI-детект) + Kotlin/Compose UI.\nВерсия 0.1.0 (debug).\n\nКопирование из защищённых чатов работает: флаг noforwards — клиентский, сервер отдаёт данные.")
+                }, confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Закрыть") } })
             }
         }
         item { if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall) }

@@ -50,6 +50,31 @@ fun ChatsScreen(nav: NavController) {
             IconButton(onClick = { nav.navigate("stars") }) { Text("⭐") }
             IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Default.Settings, "Настройки") }
             IconButton(onClick = { nav.navigate("contacts") }) { Icon(Icons.Default.Person, "Контакты") }
+            var showCreate by remember { mutableStateOf(false) }
+            IconButton(onClick = { showCreate = true }) { Text("＋") }
+            if (showCreate) {
+                var title by remember { mutableStateOf("") }
+                var isChannel by remember { mutableStateOf(true) }
+                AlertDialog(onDismissRequest = { showCreate = false }, title = { Text("＋ Создать") }, text = {
+                    Column {
+                        OutlinedTextField(title, { title = it }, label = { Text("Название") })
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Checkbox(isChannel, { isChannel = it })
+                            Text(if (isChannel) "Канал" else "Группа")
+                        }
+                    }
+                }, confirmButton = {
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("create_channel", mapOf("title" to title, "about" to "", "broadcast" to isChannel))
+                                showCreate = false
+                                reload()
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("Создать") }
+                }, dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Отмена") } })
+            }
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
@@ -114,7 +139,19 @@ fun ChatsScreen(nav: NavController) {
             AlertDialog(onDismissRequest = { showFolders = false }, title = { Text("📁 Папки") }, text = {
                 Column {
                     folders.forEach { f ->
-                        Text("• ${f.optString("title", "?")}", style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text("• ${f.optString("title", "?")}", modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("delete_folder", mapOf("id" to f.optInt("id")))
+                                        val r = Core.call("dialog_filters", emptyMap())
+                                        folders = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("✕") }
+                        }
                     }
                     OutlinedTextField(title, { title = it }, label = { Text("Новая папка") })
                 }

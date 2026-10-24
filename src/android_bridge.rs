@@ -1060,6 +1060,28 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
             let (count, viewers) = tg.story_viewers(i32f(v, "story")?, limit(v)).await?;
             Ok(json!({"count": count, "viewers": viewers}))
         }
+        "test_proxy" => {
+            // Проверка SOCKS5 отдельным соединением (сессия-проба в tmp, drop после).
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let probe =
+                std::env::temp_dir().join(format!("telecomfort_proxy_probe_{nanos}.session"));
+            let api_id: i32 = v.get("api_id").and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+            let proxy = s_opt(v, "proxy").filter(|p| !p.is_empty());
+            let backend = crate::telegram::backend_grammers::GrammersBackend::connect_with_proxy(
+                &probe,
+                api_id,
+                &s(v, "api_hash")?,
+                proxy,
+            )
+            .await?;
+            let authed = backend.is_authorized().await.unwrap_or(false);
+            let _ = std::fs::remove_file(&probe);
+            Ok(json!({"ok_proxy": true, "authorized": authed}))
+        }
         _ => anyhow::bail!("unknown op: {op}"),
     }
 }
