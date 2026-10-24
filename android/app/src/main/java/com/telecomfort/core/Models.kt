@@ -4,7 +4,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class Chat(val id: Long, val title: String, val username: String? = null,
-               val unread: Int = 0, val muted: Boolean = false, val isChannel: Boolean = false)
+               val unread: Int = 0, val muted: Boolean = false, val isChannel: Boolean = false,
+               val archived: Boolean = false)
 
 data class Message(val id: Int, val chatId: Long, val text: String, val date: Long,
                    val outgoing: Boolean, val sender: String?, val hasMedia: Boolean,
@@ -24,6 +25,7 @@ fun parseChat(o: JSONObject) = Chat(
     username = o.optStr("username"),
     unread = o.optInt("unread_count", 0),
     muted = o.optBoolean("muted", false),
+    archived = o.optBoolean("archived", false),
     isChannel = o.optBoolean("is_channel", false) || o.optLong("id") < 0,
 )
 

@@ -45,11 +45,47 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var status by remember { mutableStateOf("") }
     var showInfo by remember { mutableStateOf(false) }
     var showParticipants by remember { mutableStateOf(false) }
+    var statsJson by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var graphGrowth by remember { mutableStateOf<Pair<List<String>, List<Double>>?>(null) }
+    var graphInter by remember { mutableStateOf<Pair<List<String>, List<Double>>?>(null) }
+    var showGraphs by remember { mutableStateOf(false) }
     var participants by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var showScheduled by remember { mutableStateOf(false) }
     var showTopics by remember { mutableStateOf(false) }
     var topics by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var topicId by remember { mutableStateOf<Int?>(null) }
+    var votersTitle by remember { mutableStateOf<String?>(null) }
+    var recording by remember { mutableStateOf<com.telecomfort.core.PcmRecorder?>(null) }
+    var recLevel by remember { mutableStateOf(0f) }
+    LaunchedEffect(recording) {
+        while (recording != null) {
+            recLevel = recording?.level ?: 0f
+            kotlinx.coroutines.delay(120)
+        }
+    }
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    var showShareContact by remember { mutableStateOf(false) }
+    var shareName by remember { mutableStateOf("") }
+    var sharePhone by remember { mutableStateOf("") }
+    val pickContact = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickContact()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val nameIdx = c.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                        val phoneIdx = c.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                        if (nameIdx >= 0) shareName = c.getString(nameIdx) ?: ""
+                        if (phoneIdx >= 0) sharePhone = c.getString(phoneIdx) ?: ""
+                    }
+                }
+                showShareContact = true
+            } catch (e: Exception) { status = "Контакт не прочитан: ${e.message}" }
+        }
+    }
+    var voters by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
     var scheduled by remember { mutableStateOf<List<Message>>(emptyList()) }
     var showPinned by remember { mutableStateOf(false) }
     var pinned by remember { mutableStateOf<List<Message>>(emptyList()) }
@@ -69,16 +105,6 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var stickers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var gifs by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var jumpDate by remember { mutableStateOf("") }
-    var recording by remember { mutableStateOf<com.telecomfort.core.PcmRecorder?>(null) }
-    var recLevel by remember { mutableStateOf(0f) }
-    LaunchedEffect(recording) {
-        while (recording != null) {
-            recLevel = recording?.level ?: 0f
-            kotlinx.coroutines.delay(120)
-        }
-    }
-    val scope = rememberCoroutineScope()
-    val ctx = LocalContext.current
     val listState = rememberLazyListState()
 
     fun reload(limit: Int = 100) {
@@ -154,14 +180,29 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 if (editMsg != null) {
                     Core.call("edit_text", mapOf("chat" to chatId, "id" to editMsg!!.id, "text" to text))
                     editMsg = null
-                } else {
-                    val params = mutableMapOf<String, Any>("chat" to chatId, "text" to text)
-                    replyTo?.let { params["reply_to"] = it.first }
-                    Core.call("send_text", params)
-                    replyTo = null
-                }
+                } else if (topicId != null) {
+                    Core.call("send_to_topic", mapOf("chat" to chatId, "topic" to topicId!!, "text" to text))
+                    } else {
+                        val params = mutableMapOf<String, Any>("chat" to chatId, "text" to text)
+                        replyTo?.let { params["reply_to"] = it.first }
+                        Core.call("send_text", params)
+                        replyTo = null
+                    }
                 text = ""
                 reload()
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
+
+    fun showPollVoters(title: String, msg: Int) {
+        scope.launch {
+            runCatching {
+                val r = Core.call("poll_voters", mapOf("chat" to chatId, "id" to msg))
+                votersTitle = title + " (" + r.optInt("count") + ")"
+                val arr = r.optJSONArray("names") ?: org.json.JSONArray()
+                voters = (0 until arr.length()).map { i ->
+                    org.json.JSONObject().put("name", arr.getString(i))
+                }
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
@@ -421,6 +462,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                             }.onFailure { status = "Ошибка: ${it.message}" }
                                         }
                                     }) { Text("■ Закрыть опрос") }
+                        TextButton(onClick = { showPollVoters("Опрос: " + (poll?.optString("question", "") ?: ""), m.id) }) { Text("👥 Кто") }
                                 }
                             }
                         }
@@ -465,10 +507,18 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 TextButton(onClick = { editMsg = null; text = "" }) { Text("✕") }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        topicId?.let { tid ->
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("🗂 Топик #$tid — отправка идёт туда", modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { topicId = null; reload() }) { Text("✕") }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (editMsg != null) "Новый текст…" else "Сообщение…") })
             IconButton(onClick = { sendText() }) { Icon(Icons.Default.Send, "Отправить") }
             IconButton(onClick = { pickFiles.launch("*/*") }) { Text("📎") }
+            IconButton(onClick = { pickContact.launch(null) }) { Text("👤") }
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
@@ -548,6 +598,28 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                     ).filter { it.second != null && it.second.toString() != "null" }
                         .forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.bodySmall) }
                     if (j.optBoolean("antispam", false)) Text("🛡 антиспам вкл", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                statsJson = Core.call("channel_stats", mapOf("chat" to chatId))
+                                val g = Core.call("channel_graph", mapOf("chat" to chatId, "kind" to "growth"))
+                                graphGrowth = parseSeries(g)
+                                val gi = Core.call("channel_graph", mapOf("chat" to chatId, "kind" to "interactions"))
+                                graphInter = parseSeries(gi)
+                                showGraphs = true
+                            }.onFailure { status = "Статистика недоступна: ${it.message}" }
+                        }
+                    }) { Text("📊 Статистика и графики") }
+                    if (showGraphs) {
+                        statsJson?.let { st ->
+                            Text("Подписчики: ${st.optInt("followers")} · Просмотры/пост: ${"%.0f".format(st.optDouble("views_per_post"))}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("📈 Рост", style = MaterialTheme.typography.bodySmall)
+                        graphGrowth?.let { (l, v) -> MiniChart(l, v) }
+                        Text("💬 Вовлечённость", style = MaterialTheme.typography.bodySmall)
+                        graphInter?.let { (l, v) -> MiniChart(l, v) }
+                        TextButton(onClick = { showGraphs = false }) { Text("Скрыть графики") }
+                    }
                     var peerInfo by remember { mutableStateOf<org.json.JSONObject?>(null) }
                     var invite by remember { mutableStateOf<String?>(null) }
                     var slowmode by remember { mutableStateOf("0") }
@@ -866,6 +938,34 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }
         }, confirmButton = { TextButton(onClick = { showTopics = false }) { Text("Закрыть") } })
+    }
+    votersTitle?.let { title ->
+        AlertDialog(onDismissRequest = { votersTitle = null }, title = { Text("👥 $title") }, text = {
+            LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                items(voters.size) { i ->
+                    Text("• ${voters[i].optString("name", "?")}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { votersTitle = null }) { Text("Закрыть") } })
+    }
+    if (showShareContact) {
+        AlertDialog(onDismissRequest = { showShareContact = false }, title = { Text("👤 Поделиться контактом") }, text = {
+            Column {
+                OutlinedTextField(shareName, { shareName = it }, label = { Text("Имя") })
+                OutlinedTextField(sharePhone, { sharePhone = it }, label = { Text("Телефон") })
+            }
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("share_contact", mapOf("chat" to chatId, "phone" to sharePhone, "first" to shareName, "last" to ""))
+                        showShareContact = false
+                        reload()
+                        status = "Контакт отправлен"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Отправить") }
+        }, dismissButton = { TextButton(onClick = { showShareContact = false }) { Text("Отмена") } })
     }
     if (showTtl) {
         var secs by remember { mutableStateOf("86400") }

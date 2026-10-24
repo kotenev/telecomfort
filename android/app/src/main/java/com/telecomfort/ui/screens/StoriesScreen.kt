@@ -35,6 +35,10 @@ fun StoriesScreen(nav: NavController) {
     var status by remember { mutableStateOf("") }
     var showArchived by remember { mutableStateOf(false) }
     var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var myId by remember { mutableStateOf<Long?>(null) }
+    var editStory by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var editCaption by remember { mutableStateOf("") }
+    var deleteStory by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var showAlbums by remember { mutableStateOf(false) }
     var albums by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var albumStories by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
@@ -44,6 +48,11 @@ fun StoriesScreen(nav: NavController) {
     var yandexToken by remember { mutableStateOf("") }
     var showPublish by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        scope.launch {
+            runCatching { myId = Core.call("me", emptyMap()).optLong("id", 0).takeIf { it != 0L } }
+        }
+    }
     val ctx = LocalContext.current
 
     fun reload() {
@@ -54,11 +63,11 @@ fun StoriesScreen(nav: NavController) {
                 // Скоринг каждой сторис.
                 val m = mutableMapOf<Int, JSONObject>()
                 for (s in items) {
-                    val sc = Core.call("ad_score", mapOf(
-                        "caption" to s.optString("caption", ""),
-                        "has_url" to s.optBoolean("has_url", false),
-                        "has_qr" to false,
-                    ))
+                    val cap = s.optString("caption", "")
+                    // URL-детект на клиенте: ссылка в тексте/кнопке сторис.
+                    val hasUrl = cap.contains("http", ignoreCase = true) || cap.contains("www.", ignoreCase = true) ||
+                        cap.contains("t.me", ignoreCase = true) || s.optBoolean("has_url", false)
+                    val sc = Core.call("ad_score", mapOf("caption" to cap, "has_url" to hasUrl, "has_qr" to false))
                     m[s.optInt("id")] = sc
                 }
                 scores = m
@@ -220,6 +229,45 @@ fun StoriesScreen(nav: NavController) {
                                         }.onFailure { status = "Ошибка: ${it.message}" }
                                     }
                                 }) { Text("🚫 Скрыть") }
+                                if (myId != null && s.optLong("peer_id") == myId) {
+                                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("story_react", mapOf("peer" to s.optLong("peer_id"), "story" to s.optInt("id"), "emoji" to "❤"))
+                                status = "Реакция отправлена"
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("❤️") }
+                    var replyText by remember { mutableStateOf("") }
+                    var showReply by remember { mutableStateOf(false) }
+                    TextButton(onClick = { showReply = true }) { Text("💬") }
+                    if (showReply) {
+                        AlertDialog(onDismissRequest = { showReply = false }, title = { Text("Ответ на сторис") }, text = {
+                            OutlinedTextField(replyText, { replyText = it }, label = { Text("Текст") })
+                        }, confirmButton = {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("story_reply", mapOf("peer" to s.optLong("peer_id"), "story" to s.optInt("id"), "text" to replyText))
+                                        replyText = ""
+                                        showReply = false
+                                        status = "Ответ отправлен"
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("Отправить") }
+                        }, dismissButton = { TextButton(onClick = { showReply = false }) { Text("Отмена") } })
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("toggle_story_pin", mapOf("story" to s.optInt("id"), "pinned" to true))
+                                status = "Сторис закреплена в профиле"
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("📌") }
+                    TextButton(onClick = { editStory = s; editCaption = s.optString("caption", "") }) { Text("✏️") }
+                                    TextButton(onClick = { deleteStory = s }) { Text("🗑") }
+                                }
                                 TextButton(onClick = {
                                     scope.launch {
                                         runCatching {
@@ -298,6 +346,40 @@ fun StoriesScreen(nav: NavController) {
                 }
             }) { Text("Создать") }
         }, dismissButton = { TextButton(onClick = { showAlbums = false }) { Text("Закрыть") } })
+    }
+    if (editStory != null) {
+        val st = editStory!!
+        AlertDialog(onDismissRequest = { editStory = null }, title = { Text("✏️ Подпись сторис") }, text = {
+            OutlinedTextField(editCaption, { editCaption = it }, label = { Text("Новая подпись") })
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("edit_story_caption", mapOf("story" to st.optInt("id"), "caption" to editCaption))
+                        editStory = null
+                        reload()
+                        status = "Подпись обновлена"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Сохранить") }
+        }, dismissButton = { TextButton(onClick = { editStory = null }) { Text("Отмена") } })
+    }
+    if (deleteStory != null) {
+        val st = deleteStory!!
+        AlertDialog(onDismissRequest = { deleteStory = null }, title = { Text("🗑 Удалить сторис?") }, text = {
+            Text("Своя сторис #${st.optInt("id")} будет удалена безвозвратно.")
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("delete_stories", mapOf("ids" to listOf(st.optInt("id"))))
+                        deleteStory = null
+                        reload()
+                        status = "Сторис удалена"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Удалить", color = MaterialTheme.colorScheme.error) }
+        }, dismissButton = { TextButton(onClick = { deleteStory = null }) { Text("Отмена") } })
     }
     if (showPublish) {
         AlertDialog(onDismissRequest = { showPublish = false }, title = { Text("Новая сторис") }, text = {
