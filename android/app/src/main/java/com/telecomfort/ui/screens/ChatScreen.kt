@@ -137,15 +137,28 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("ℹ️") }
             IconButton(onClick = { showTtl = true }) { Text("⏳") }
-            IconButton(onClick = {
-                jumpDate = ""
-                scope.launch {
-                    runCatching {
-                        // Прыжок: дата вводится в диалог ниже — здесь заглушка на сегодня.
-                        status = "Введите дату в диалоге 📅 (ГГГГ-ММ-ДД)"
-                    }
-                }
-            }) { Text("📅") }
+            var showJump by remember { mutableStateOf(false) }
+            IconButton(onClick = { jumpDate = ""; showJump = true }) { Text("📅") }
+            if (showJump) {
+                AlertDialog(onDismissRequest = { showJump = false }, title = { Text("📅 Перейти к дате") }, text = {
+                    OutlinedTextField(jumpDate, { jumpDate = it }, label = { Text("ГГГГ-ММ-ДД") })
+                }, confirmButton = {
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                val parts = jumpDate.trim().split("-")
+                                require(parts.size == 3)
+                                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+                                cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt(), 12, 0, 0)
+                                val r = Core.call("history_at_date", mapOf("chat" to chatId, "date" to cal.timeInMillis / 1000, "limit" to 100))
+                                items = (0 until r.getJSONArray("items").length()).map { parseMessage(r.getJSONArray("items").getJSONObject(it)) }
+                                status = "Прыжок: показано ${items.size}"
+                                showJump = false
+                            }.onFailure { status = "Дата — ГГГГ-ММ-ДД" }
+                        }
+                    }) { Text("Перейти") }
+                }, dismissButton = { TextButton(onClick = { showJump = false }) { Text("Отмена") } })
+            }
             IconButton(onClick = { showExport = true }) { Text("⤵") }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }

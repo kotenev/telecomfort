@@ -48,9 +48,12 @@ for ARCH in aarch64 x86_64; do
   export "CARGO_TARGET_${UPPER}_LINUX_ANDROID_LINKER=$TC/${ARCH}-linux-android26-clang"
   export "CARGO_TARGET_${UPPER}_LINUX_ANDROID_AR=$TC/llvm-ar"
   echo "== libtelecomfort $TARGET ($MODE) =="
-  OPUS_STATIC=1 OPUS_LIB_DIR="/tmp/opus-android-$ARCH/prefix/lib" \
-    "CC_${ARCH}_linux_android"="$TC/${ARCH}-linux-android26-clang" \
-    "AR_${ARCH}_linux_android"="$TC/llvm-ar" \
+  SHORT="$ARCH"; [ "$ARCH" = "aarch64" ] && SHORT="arm64"
+  CCENV="CC_${ARCH}_linux_android"
+  ARENV="AR_${ARCH}_linux_android"
+  env OPUS_STATIC=1 OPUS_LIB_DIR="/tmp/opus-android-$SHORT/prefix/lib" \
+    "$CCENV=$TC/${ARCH}-linux-android26-clang" \
+    "$ARENV=$TC/llvm-ar" \
     cargo build --lib --target "$TARGET" $CARGO_MODE
   SO="$ROOT/target/$TARGET/${MODE}/libtelecomfort.so"
   "$TC/llvm-strip" "$SO" 2>/dev/null || true

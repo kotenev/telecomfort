@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -45,11 +46,18 @@ fun ChatsScreen(nav: NavController) {
             IconButton(onClick = { nav.navigate("stories") }) { Icon(Icons.Default.Star, "Сторис") }
             IconButton(onClick = { nav.navigate("stars") }) { Text("⭐") }
             IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Default.Settings, "Настройки") }
+            IconButton(onClick = { nav.navigate("contacts") }) { Icon(Icons.Default.Person, "Контакты") }
             IconButton(onClick = { showNearby = !showNearby }) { Text("📍") }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
-        OutlinedTextField(query, { query = it }, label = { Text("Поиск") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+        OutlinedTextField(query, {
+            query = it
+            scope.launch {
+                // Глобальный поиск сервера от 3 символов (результат — в Журнале/статусе).
+                runCatching { if (it.length >= 3) Core.call("global_search", mapOf("query" to it, "limit" to 20)) }
+            }
+        }, label = { Text("Поиск (сервер от 3 символов)") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
         if (showNearby) {
             Card(Modifier.fillMaxWidth().padding(8.dp)) {
                 Column(Modifier.padding(8.dp)) {
@@ -72,7 +80,7 @@ fun ChatsScreen(nav: NavController) {
             }
         }
         LazyColumn(Modifier.weight(1f)) {
-            items(chats.filter { query.isEmpty() || it.title.contains(query, true) }, key = { it.id }) { c ->
+            itemsIndexed(chats.filter { query.isEmpty() || it.title.contains(query, true) }, key = { i, c -> "chat-$i-${c.id}" }) { _, c ->
                 ListItem(
                     headlineContent = { Text(c.title) },
                     supportingContent = { Text("unread=${c.unread}${if (c.muted) " · muted" else ""}") },

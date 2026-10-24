@@ -969,6 +969,97 @@ async fn dispatch(op: &str, v: &Value) -> Result<Value> {
             let tg = core().tg()?;
             Ok(json!(tg.saved_gifs().await?))
         }
+        "avatar_path" => {
+            let tg = core().tg()?;
+            Ok(
+                json!({"path": tg.avatar_path(i64f(v, "chat")?).await?.map(|p| p.to_string_lossy().to_string())}),
+            )
+        }
+        "create_channel" => {
+            let tg = core().tg()?;
+            let id = tg
+                .create_channel(
+                    &s(v, "title")?,
+                    &s_opt(v, "about").unwrap_or_default(),
+                    v.get("broadcast")
+                        .and_then(|x| x.as_bool())
+                        .unwrap_or(false),
+                )
+                .await?;
+            Ok(json!({"id": id}))
+        }
+        "create_topic" => {
+            let tg = core().tg()?;
+            let id = tg.create_topic(i64f(v, "chat")?, &s(v, "title")?).await?;
+            Ok(json!({"id": id}))
+        }
+        "forum_topics" => {
+            let tg = core().tg()?;
+            Ok(json!(tg.forum_topics(i64f(v, "chat")?).await?))
+        }
+        "send_to_topic" => {
+            let tg = core().tg()?;
+            let id = tg
+                .send_to_topic(
+                    i64f(v, "chat")?,
+                    i32f(v, "topic")?,
+                    &s(v, "text")?,
+                    v.get("silent").and_then(|x| x.as_bool()).unwrap_or(false),
+                )
+                .await?;
+            Ok(json!({"id": id}))
+        }
+        "delete_album" => {
+            let tg = core().tg()?;
+            tg.delete_album(i32f(v, "album")?).await?;
+            Ok(json!({}))
+        }
+        "delete_contact" => {
+            let tg = core().tg()?;
+            tg.delete_contact(i64f(v, "user")?, i64f(v, "hash")?)
+                .await?;
+            Ok(json!({}))
+        }
+        "download_web_photo" => {
+            let tg = core().tg()?;
+            let photo: crate::telegram::WebPreviewPhoto =
+                serde_json::from_value(v.get("photo").cloned().context("нет photo")?)?;
+            let dir = core().dir.join("downloads");
+            let path = tg.download_web_photo(&photo, &dir).await?;
+            Ok(json!({"path": path.to_string_lossy()}))
+        }
+        "get_profile" => {
+            let tg = core().tg()?;
+            Ok(json!(tg.get_profile().await?))
+        }
+        "kick_participant" => {
+            let tg = core().tg()?;
+            tg.kick_participant(i64f(v, "chat")?, i64f(v, "user")?)
+                .await?;
+            Ok(json!({}))
+        }
+        "share_contact" => {
+            let tg = core().tg()?;
+            let id = tg
+                .share_contact(
+                    i64f(v, "chat")?,
+                    &s(v, "phone")?,
+                    &s(v, "first")?,
+                    &s_opt(v, "last").unwrap_or_default(),
+                )
+                .await?;
+            Ok(json!({"id": id}))
+        }
+        "unpin_message" => {
+            let tg = core().tg()?;
+            tg.unpin_message(i64f(v, "chat")?, i32f(v, "id")?).await?;
+            Ok(json!({}))
+        }
+        "story_viewers" => {
+            let tg = core().tg()?;
+            let (count, viewers) = tg.story_viewers(i32f(v, "story")?, limit(v)).await?;
+            Ok(json!({"count": count, "viewers": viewers}))
+        }
         _ => anyhow::bail!("unknown op: {op}"),
     }
 }
@@ -1149,6 +1240,27 @@ mod tests {
         let r =
             call(json!({"op": "sign_in_password", "key": "mock-login-key", "password": "demo"}));
         assert_eq!(r["status"], "ok");
+    }
+
+    #[test]
+    fn bridge_new_ops_smoke() {
+        call(json!({"op": "use_mock"}));
+        for op in [
+            json!({"op": "get_profile"}),
+            json!({"op": "forum_topics", "chat": -1001}),
+            json!({"op": "create_topic", "chat": -1001, "title": "t"}),
+            json!({"op": "create_channel", "title": "c", "about": "", "broadcast": true}),
+            json!({"op": "delete_album", "album": 1}),
+            json!({"op": "delete_contact", "user": 1, "hash": 0}),
+            json!({"op": "get_profile"}),
+            json!({"op": "kick_participant", "chat": -1001, "user": 1}),
+            json!({"op": "share_contact", "chat": -1001, "phone": "+7", "first": "A"}),
+            json!({"op": "unpin_message", "chat": -1001, "id": 1}),
+            json!({"op": "send_to_topic", "chat": -1001, "topic": 1, "text": "hi"}),
+        ] {
+            let r = call(op);
+            assert_eq!(r["ok"], true, "{r}");
+        }
     }
 
     #[test]

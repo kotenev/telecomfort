@@ -19,11 +19,11 @@ import kotlinx.coroutines.launch
  * Поля сохраняются в EncryptedSharedPreferences (TODO) — пока in-memory.
  */
 @Composable
-fun LoginScreen(onDone: () -> Unit) {
-    var apiId by remember { mutableStateOf("") }
-    var apiHash by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var proxy by remember { mutableStateOf("") }
+fun LoginScreen(onDone: () -> Unit, store: com.telecomfort.core.SecureStore? = null) {
+    var apiId by remember { mutableStateOf(store?.apiId ?: "") }
+    var apiHash by remember { mutableStateOf(store?.apiHash ?: "") }
+    var phone by remember { mutableStateOf(store?.phone ?: "") }
+    var proxy by remember { mutableStateOf(store?.proxy ?: "") }
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var hint by remember { mutableStateOf<String?>(null) }
@@ -32,8 +32,16 @@ fun LoginScreen(onDone: () -> Unit) {
     var qrPng by remember { mutableStateOf<ByteArray?>(null) }
     var status by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
 
     fun err(e: Throwable) { status = "Ошибка: ${e.message}" }
+    fun persistAndGo() {
+        store?.let {
+            it.apiId = apiId; it.apiHash = apiHash; it.phone = phone; it.proxy = proxy
+        }
+        com.telecomfort.core.LockManager.touch()
+        onDone()
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("Telecomfort — вход", style = MaterialTheme.typography.headlineSmall)
@@ -48,7 +56,7 @@ fun LoginScreen(onDone: () -> Unit) {
             Button(onClick = {
                 scope.launch {
                     runCatching {
-                        Core.call("init", mapOf("dir" to "", "api_id" to (apiId.toLongOrNull() ?: 0), "api_hash" to apiHash, "proxy" to proxy))
+                        Core.call("init", mapOf("dir" to ctx.filesDir.absolutePath, "api_id" to (apiId.toLongOrNull() ?: 0), "api_hash" to apiHash, "proxy" to proxy))
                         val r = Core.call("request_code", mapOf("phone" to phone))
                         loginKey = r.getString("key")
                         stage = "code"
@@ -59,13 +67,22 @@ fun LoginScreen(onDone: () -> Unit) {
             Button(onClick = {
                 scope.launch {
                     runCatching {
-                        Core.call("init", mapOf("dir" to "", "api_id" to (apiId.toLongOrNull() ?: 0), "api_hash" to apiHash, "proxy" to proxy))
+                        Core.call("init", mapOf("dir" to ctx.filesDir.absolutePath, "api_id" to (apiId.toLongOrNull() ?: 0), "api_hash" to apiHash, "proxy" to proxy))
                         val r = Core.call("qr_login_start", emptyMap())
+                            loginKey = r.getString("token_b64")
                         val cfg = mapOf("payload" to ("tg://login?token=" + r.getString("token_b64")))
                         val bmp = Core.call("qr_bitmap", cfg)
                         qrPng = Base64.decode(bmp.getString("png_b64"), Base64.DEFAULT)
                         stage = "qr"
-                        status = "Отсканируйте код телефоном"
+                        status = "Отсканируйте код телефоном — проверка идёт автоматически"
+                        // Автопроверка каждые 3с (как десктопный опрос 2.5с).
+                        while (stage == "qr") {
+                            kotlinx.coroutines.delay(3000)
+                            runCatching {
+                                val pl = Core.call("qr_poll", mapOf("token_b64" to (loginKey ?: "")))
+                                if (pl.optString("status") == "ok") { stage = "done"; persistAndGo() }
+                            }
+                        }
                     }.onFailure(::err)
                 }
             }) { Text("📷 QR-вход") }
@@ -92,7 +109,7 @@ fun LoginScreen(onDone: () -> Unit) {
                             stage = "password"
                             hint = runCatching { Core.call("password_hint").optString("hint", null) }.getOrNull()
                             status = "Нужен пароль 2FA"
-                        } else onDone()
+                        } else persistAndGo()
                     }.onFailure(::err)
                 }
             }, modifier = Modifier.padding(top = 8.dp)) { Text("Войти по коду") }
@@ -104,7 +121,7 @@ fun LoginScreen(onDone: () -> Unit) {
                 scope.launch {
                     runCatching {
                         Core.call("sign_in_password", mapOf("key" to (loginKey ?: ""), "password" to password))
-                        onDone()
+                        persistAndGo()
                     }.onFailure(::err)
                 }
             }, modifier = Modifier.padding(top = 8.dp)) { Text("Войти с паролем") }
@@ -127,6 +144,6 @@ fun LoginScreen(onDone: () -> Unit) {
             Text(status, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onDone) { Text("Продолжить в демо-режиме →") }
+        TextButton(onClick = { com.telecomfort.core.LockManager.touch(); onDone() }) { Text("Продолжить в демо-режиме →") }
     }
 }
