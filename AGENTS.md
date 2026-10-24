@@ -19,6 +19,9 @@ brew cargo can't see rustup targets). UI deps are
 `cfg(not(target_os = "android"))`-gated; `BgEvent` lives in `src/events.rs`
 so background code never touches `ui::`. New JNI op = arm in
 `android_bridge::dispatch` + Kotlin call in `Core`/screen + host test.
+AGP 9 uses **built-in Kotlin**: never apply `org.jetbrains.kotlin.android`
+(it calls the obsolete variant API); only `org.jetbrains.kotlin.plugin.compose`,
+and set `jvmTarget` via `compileOptions` (defaults for Kotlin).
 
 ## Offline cargo — hard constraint
 
