@@ -143,6 +143,55 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 );
             });
 
+            ui.collapsing("🔑 Смена пароля 2FA", |ui| {
+                ui.label(
+                    egui::RichText::new("Опасно: при ошибке можно потерять доступ. Новый пароль сразу проверяется.")
+                        .small()
+                        .weak(),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Текущий:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.pw_current)
+                            .password(true)
+                            .desired_width(140.0),
+                    );
+                    ui.label("(пусто — если пароля не было)");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Новый:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.pw_new)
+                            .password(true)
+                            .desired_width(140.0),
+                    );
+                    ui.label("Повтор:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.pw_new2)
+                            .password(true)
+                            .desired_width(140.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Подсказка:");
+                    ui.text_edit_singleline(&mut app.pw_hint);
+                    ui.label("Email:");
+                    ui.text_edit_singleline(&mut app.pw_email);
+                });
+                let label = if app.pw_armed {
+                    "⚠ Подтвердить смену!"
+                } else {
+                    "Сменить пароль"
+                };
+                if ui.button(label).clicked() {
+                    app.change_password();
+                }
+                if app.pw_armed && ui.small_button("отмена").clicked() {
+                    app.pw_armed = false;
+                    app.status = "смена пароля отменена".into();
+                }
+            });
+
             ui.collapsing("📱 Активные сессии", |ui| {
                 if !app.sessions_loaded {
                     app.load_sessions();

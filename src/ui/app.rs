@@ -320,6 +320,8 @@ pub enum BgEvent {
         chat_id: i64,
         options: Vec<crate::telegram::StarGiftOption>,
     },
+    /// Каталог подарков для отправки.
+    GiftCatalogLoaded(Vec<crate::telegram::StarGiftFull>),
     /// Прыжок к дате: окно истории + достигнуто ли начало.
     JumpLoaded {
         chat_id: i64,
@@ -640,9 +642,21 @@ pub struct TelecomfortApp {
     pub nearby_long: String,
     pub star_gifts: std::collections::HashMap<i64, Vec<crate::telegram::StarGiftOption>>,
     pub star_gifts_open: Option<i64>,
+    pub gift_catalog: Vec<crate::telegram::StarGiftFull>,
+    pub gift_armed: Option<i64>,
+    pub gift_hide_name: bool,
+    pub gift_message: String,
     pub jump_date: String,
     pub jump_open: Option<i64>,
     pub ttl_custom: String,
+    pub pw_current: String,
+    pub pw_new: String,
+    pub pw_new2: String,
+    pub pw_hint: String,
+    pub pw_email: String,
+    pub pw_armed: bool,
+    pub voice_rec: Option<crate::media::voice_rec::Recorder>,
+    pub voice_chat: Option<i64>,
     pub ttl_open: Option<i64>,
     pub theme: String,
     pub locked: bool,
@@ -863,9 +877,21 @@ impl TelecomfortApp {
             nearby_long: "37.61".into(),
             star_gifts: std::collections::HashMap::new(),
             star_gifts_open: None,
+            gift_catalog: Vec::new(),
+            gift_armed: None,
+            gift_hide_name: false,
+            gift_message: String::new(),
             jump_date: String::new(),
             jump_open: None,
             ttl_custom: String::new(),
+            pw_current: String::new(),
+            pw_new: String::new(),
+            pw_new2: String::new(),
+            pw_hint: String::new(),
+            pw_email: String::new(),
+            pw_armed: false,
+            voice_rec: None,
+            voice_chat: None,
             ttl_open: None,
             theme: cfg.ui.theme.clone(),
             locked: !cfg.ui.passcode_sha256.is_empty(),
@@ -1665,6 +1691,9 @@ impl TelecomfortApp {
                 BgEvent::StarGiftsLoaded { chat_id, options } => {
                     self.star_gifts.insert(chat_id, options);
                 }
+                BgEvent::GiftCatalogLoaded(list) => {
+                    self.gift_catalog = list;
+                }
                 BgEvent::JumpLoaded {
                     chat_id,
                     items,
@@ -2424,6 +2453,173 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("прыжок: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Смена пароля 2FA: двойное подтверждение (опасная операция).
+    /// Первый клик ставит на взвод, второй — выполняет.
+    pub fn change_password(&mut self) {
+        if !self.pw_armed {
+            if self.pw_new != self.pw_new2 {
+                self.status = "новые пароли не совпадают".into();
+                return;
+            }
+            if self.pw_new.trim().len() < 4 {
+                self.status = "новый пароль — минимум 4 символа".into();
+                return;
+            }
+            self.pw_armed = true;
+            self.status = "⚠ нажмите «Сменить пароль» ЕЩЁ РАЗ для подтверждения".into();
+            return;
+        }
+        self.pw_armed = false;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let cur = self.pw_current.clone();
+        let new = self.pw_new.clone();
+        let hint = self.pw_hint.trim().to_string();
+        let email = self.pw_email.trim().to_string();
+        self.pw_current.clear();
+        self.pw_new.clear();
+        self.pw_new2.clear();
+        self.status = "меняю пароль 2FA…".into();
+        self.log("смена пароля 2FA: запрос…");
+        self.rt.spawn(async move {
+            match tg.change_password(&cur, &new, &hint, &email).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log("пароль 2FA сменён и проверен".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("пароль 2FA: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Загрузить каталог Stars-подарков (один на сессию).
+    pub fn load_gift_catalog(&mut self) {
+        if !self.gift_catalog.is_empty() {
+            return;
+        }
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.gift_catalog().await {
+                Ok(list) => {
+                    let _ = tx.send(BgEvent::GiftCatalogLoaded(list));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("каталог подарков: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Отправить Stars-подарок: первый клик — взвод, второй — отправка.
+    pub fn send_gift(&mut self, chat_id: i64, gift_id: i64) {
+        if self.gift_armed != Some(gift_id) {
+            self.gift_armed = Some(gift_id);
+            self.status = "⚠ нажмите «Подарить» ЕЩЁ РАЗ — спишутся звёзды".into();
+            return;
+        }
+        self.gift_armed = None;
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let hide = self.gift_hide_name;
+        let msg = self.gift_message.trim().to_string();
+        self.rt.spawn(async move {
+            match tg.send_star_gift(chat_id, gift_id, hide, &msg).await {
+                Ok(summary) => {
+                    let _ = tx.send(BgEvent::Log(summary));
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("подарок: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Переключить запись голосовой заметки: старт/стоп+отправка WAV как аудио.
+    pub fn toggle_voice_record(&mut self, chat_id: i64) {
+        if self.voice_rec.is_some() {
+            let rec = self.voice_rec.take();
+            self.voice_chat = None;
+            let Some(rec) = rec else {
+                return;
+            };
+            let take = rec.stop();
+            if take.secs < 0.5 {
+                self.status = "слишком короткая запись — выброшена".into();
+                return;
+            }
+            let path = std::env::temp_dir()
+                .join("telecomfort")
+                .join(format!("voice_{}.wav", chrono::Local::now().timestamp()));
+            if let Err(e) = crate::media::voice_rec::write_wav_16(&path, &take.samples) {
+                self.status = format!("запись не сохранена: {e:#}");
+                return;
+            }
+            let caption = self.composer_current.trim().to_string();
+            let tg = Arc::clone(&self.tg);
+            let tx = self.tx.clone();
+            let silent = self.silent_send;
+            let schedule_at = self.attach_scheduled_at();
+            self.log(format!("запись {:.1}с → отправка…", take.secs));
+            self.rt.spawn(async move {
+                match tg
+                    .send_file(chat_id, &path, &caption, silent, schedule_at)
+                    .await
+                {
+                    Ok(id) => {
+                        let _ = tx.send(BgEvent::Log(format!("запись отправлена (msg {id})")));
+                        let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BgEvent::Error(format!("запись: {e:#}")));
+                    }
+                }
+            });
+            return;
+        }
+        match crate::media::voice_rec::Recorder::start() {
+            Ok(rec) => {
+                self.voice_rec = Some(rec);
+                self.voice_chat = Some(chat_id);
+                self.status = "● идёт запись… нажмите ■ для отправки".into();
+            }
+            Err(e) => {
+                self.status = format!("микрофон: {e:#}");
+            }
+        }
+    }
+
+    /// Выбрать видеофайл и отправить как «кружок» (round_message).
+    pub fn send_round_pick(&mut self, chat_id: i64) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("video", &["mp4", "mov", "webm"])
+            .pick_file()
+        else {
+            return;
+        };
+        let caption = self.composer_current.trim().to_string();
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        let silent = self.silent_send;
+        let schedule_at = self.attach_scheduled_at();
+        self.log(format!("кружок: заливка {}…", path.display()));
+        self.rt.spawn(async move {
+            match tg
+                .send_round_video(chat_id, &path, &caption, silent, schedule_at)
+                .await
+            {
+                Ok(id) => {
+                    let _ = tx.send(BgEvent::Log(format!("кружок отправлен (msg {id})")));
+                    let _ = tx.send(BgEvent::ReloadHistory { chat_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("кружок: {e:#}")));
                 }
             }
         });
@@ -5455,7 +5651,9 @@ impl eframe::App for TelecomfortApp {
         // Адаптивный тикер для ноутбука: быстрый repaint только когда есть
         // живая анимация (прогресс передач, догружающиеся превью сторис),
         // в покое — редкий (события фона всё равно разбудят через SyncTick).
-        let busy = !self.uploads.is_empty() || self.stories.iter().any(|c| c.preview_loading);
+        let busy = !self.uploads.is_empty()
+            || self.voice_rec.is_some()
+            || self.stories.iter().any(|c| c.preview_loading);
         let every = if busy {
             std::time::Duration::from_millis(400)
         } else {
