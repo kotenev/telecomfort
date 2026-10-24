@@ -51,8 +51,13 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var showPinned by remember { mutableStateOf(false) }
     var pinned by remember { mutableStateOf<List<Message>>(emptyList()) }
     var showPoll by remember { mutableStateOf(false) }
+    var showSchedule by remember { mutableStateOf(false) }
+    var schedDate by remember { mutableStateOf("") }
+    var schedTime by remember { mutableStateOf("") }
     var pollQ by remember { mutableStateOf("") }
     var pollOpts by remember { mutableStateOf("") }
+    var pollQuiz by remember { mutableStateOf(false) }
+    var pollCorrect by remember { mutableStateOf("0") }
     var infoJson by remember { mutableStateOf<JSONObject?>(null) }
     var showTtl by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -85,6 +90,27 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
                 val r = Core.call("send_round", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text))
                 status = "Кружок отправлен (msg ${r.optInt("id")})"
+                text = ""
+                reload()
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                val paths = uris.mapIndexed { i, uri ->
+                    val dst = File(ctx.cacheDir, "attach_${System.currentTimeMillis()}_$i")
+                    ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+                    dst.absolutePath
+                }
+                if (paths.size == 1) {
+                    val r = Core.call("send_file", mapOf("chat" to chatId, "path" to paths[0], "caption" to text))
+                    status = "Отправлено (msg ${r.optInt("id")})"
+                } else {
+                    val r = Core.call("send_album", mapOf("chat" to chatId, "paths" to paths, "caption" to text))
+                    status = "Альбом отправлен"
+                }
                 text = ""
                 reload()
             }.onFailure { status = "Ошибка: ${it.message}" }
@@ -303,6 +329,11 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                     }.onFailure { status = "Ошибка перевода (нужен Premium?): ${it.message}" }
                                 }
                             }) { Text("🌐") }
+                    TextButton(onClick = {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("telecomfort", m.text))
+                        status = "Текст скопирован"
+                    }) { Text("📋") }
                         TextButton(onClick = {
                             replyTo = m.id to m.text.take(80)
                             editMsg = null
@@ -412,7 +443,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
         Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (editMsg != null) "Новый текст…" else "Сообщение…") })
             IconButton(onClick = { sendText() }) { Icon(Icons.Default.Send, "Отправить") }
-            IconButton(onClick = { pickFile.launch("*/*") }) { Text("📎") }
+            IconButton(onClick = { pickFiles.launch("*/*") }) { Text("📎") }
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
@@ -424,12 +455,27 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             IconButton(onClick = {
                 scope.launch {
                     runCatching {
-                        // Геопозиция: центр Москвы по умолчанию; TODO: GPS.
-                        Core.call("send_geo", mapOf("chat" to chatId, "lat" to 55.75, "long" to 37.61))
+                        val loc = try {
+                            val client = com.google.android.gms.location.LocationServices
+                                .getFusedLocationProviderClient(ctx)
+                            var res: android.location.Location? = null
+                            val task = client.lastLocation
+                            var done = false
+                            task.addOnSuccessListener { res = it; done = true }
+                            task.addOnFailureListener { done = true }
+                            val t0 = System.currentTimeMillis()
+                            while (!done && System.currentTimeMillis() - t0 < 3000) kotlinx.coroutines.delay(100)
+                            res
+                        } catch (_: SecurityException) { null }
+                        val lat = loc?.latitude ?: 55.75
+                        val lon = loc?.longitude ?: 37.61
+                        Core.call("send_geo", mapOf("chat" to chatId, "lat" to lat, "long" to lon))
+                        status = "📍 ${"%.4f".format(lat)}, ${"%.4f".format(lon)}"
                         reload()
-                    }.onFailure { status = "Ошибка: ${it.message}" }
+                    }.onFailure { status = "Гео недоступно (нужно разрешение): ${it.message}" }
                 }
             }) { Text("📍") }
+            IconButton(onClick = { showSchedule = true }) { Text("⏰") }
             IconButton(onClick = { toggleRecord() }) { Text(if (recording != null) "■" else "🎙") }
             IconButton(onClick = { pickRound.launch("video/*") }) { Text("◉") }
             IconButton(onClick = {
@@ -454,6 +500,8 @@ fun ChatScreen(chatId: Long, nav: NavController) {
         if (status.isNotEmpty()) Text(status, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
     }
 
+    var showClear by remember { mutableStateOf(false) }
+    var isBlocked by remember { mutableStateOf(false) }
     if (showInfo) {
         AlertDialog(onDismissRequest = { showInfo = false }, title = { Text("ℹ️ О чате") }, text = {
             Column {
@@ -514,6 +562,16 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         })
                         Text("Антиспам (админы)", style = MaterialTheme.typography.bodySmall)
                     }
+                    TextButton(onClick = { showClear = true }) { Text("🧹 Очистить историю", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("block_user", mapOf("chat" to chatId, "blocked" to !isBlocked))
+                                isBlocked = !isBlocked
+                                status = if (isBlocked) "Заблокирован" else "Разблокирован"
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text(if (isBlocked) "✓ Разблокировать" else "🚫 Заблокировать") }
                     TextButton(onClick = {
                         scope.launch {
                             runCatching {
@@ -521,6 +579,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                 nav.popBackStack()
                             }.onFailure { status = "Ошибка: ${it.message}" }
                         }
+
                     }) { Text("🚪 Покинуть", color = MaterialTheme.colorScheme.error) }
                     j.optLong("linked_chat_id", 0).takeIf { it != 0L }?.let { linked ->
                         TextButton(onClick = { showInfo = false; nav.navigate("chat/$linked") }) {
@@ -530,6 +589,22 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }
         }, confirmButton = { TextButton(onClick = { showInfo = false }) { Text("Закрыть") } })
+    }
+    if (showClear) {
+        AlertDialog(onDismissRequest = { showClear = false }, title = { Text("Очистить историю?") }, text = {
+            Column { Text("Удаление у всех (revoke). Действие необратимо.") }
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("clear_history", mapOf("chat" to chatId, "revoke" to true))
+                        showClear = false
+                        showInfo = false
+                        reload()
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Очистить", color = MaterialTheme.colorScheme.error) }
+        }, dismissButton = { TextButton(onClick = { showClear = false }) { Text("Отмена") } })
     }
     if (showParticipants) {
         AlertDialog(onDismissRequest = { showParticipants = false }, title = { Text("👥 Участники") }, text = {
@@ -580,7 +655,19 @@ fun ChatScreen(chatId: Long, nav: NavController) {
         AlertDialog(onDismissRequest = { showPinned = false }, title = { Text("📌 Закреплённые") }, text = {
             LazyColumn(Modifier.heightIn(max = 400.dp)) {
                 items(pinned.size) { i ->
-                    Text(pinned[i].text.take(120), style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(pinned[i].text.take(120), modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("unpin_message", mapOf("chat" to chatId, "id" to pinned[i].id))
+                                    val r = Core.call("pinned_list", mapOf("chat" to chatId, "limit" to 50))
+                                    pinned = (0 until r.getJSONArray("result").length()).map { parseMessage(r.getJSONArray("result").getJSONObject(it)) }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("✕") }
+                    }
                 }
             }
         }, confirmButton = { TextButton(onClick = { showPinned = false }) { Text("Закрыть") } })
@@ -590,14 +677,23 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             Column {
                 OutlinedTextField(pollQ, { pollQ = it }, label = { Text("Вопрос") })
                 OutlinedTextField(pollOpts, { pollOpts = it }, label = { Text("Варианты через ;") })
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(pollQuiz, { pollQuiz = it })
+                    Text("Викторина", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(pollCorrect, { pollCorrect = it }, label = { Text("Правильный № (с 0)") }, modifier = Modifier.weight(1f))
+                }
             }
         }, confirmButton = {
             TextButton(onClick = {
                 scope.launch {
                     runCatching {
                         val opts = pollOpts.split(";").map { it.trim() }.filter { it.isNotEmpty() }
-                        Core.call("create_poll", mapOf("chat" to chatId, "question" to pollQ, "options" to opts, "quiz" to false))
-                        pollQ = ""; pollOpts = ""; showPoll = false
+                        val correct = if (pollQuiz) pollCorrect.toIntOrNull() else null
+                        buildMap {
+                            put("chat", chatId); put("question", pollQ); put("options", opts); put("quiz", pollQuiz)
+                            if (correct != null) put("correct", correct)
+                        }.let { Core.call("create_poll", it) }
+                        pollQ = ""; pollOpts = ""; pollCorrect = "0"; pollQuiz = false; showPoll = false
                         reload()
                         status = "Опрос создан"
                     }.onFailure { status = "Ошибка: ${it.message}" }
@@ -628,6 +724,30 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }
         }, confirmButton = {}, dismissButton = { TextButton(onClick = { forwardIds = emptyList() }) { Text("Отмена") } })
+    }
+    if (showSchedule) {
+        AlertDialog(onDismissRequest = { showSchedule = false }, title = { Text("⏰ Отложенная отправка") }, text = {
+            Column {
+                Text("Текст возьмётся из композера.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(schedDate, { schedDate = it }, label = { Text("Дата ГГГГ-ММ-ДД") })
+                OutlinedTextField(schedTime, { schedTime = it }, label = { Text("Время ЧЧ:ММ (МСК)") })
+            }
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        val dp = schedDate.trim().split("-").map { it.toInt() }
+                        val tp = schedTime.trim().split(":").map { it.toInt() }
+                        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Europe/Moscow"))
+                        cal.set(dp[0], dp[1] - 1, dp[2], tp[0], tp[1], 0)
+                        Core.call("send_scheduled", mapOf("chat" to chatId, "text" to text, "at" to cal.timeInMillis / 1000))
+                        text = ""
+                        showSchedule = false
+                        status = "Запланировано"
+                    }.onFailure { status = "Дата/время — ГГГГ-ММ-ДД и ЧЧ:ММ" }
+                }
+            }) { Text("Запланировать") }
+        }, dismissButton = { TextButton(onClick = { showSchedule = false }) { Text("Отмена") } })
     }
     if (showTtl) {
         var secs by remember { mutableStateOf("86400") }

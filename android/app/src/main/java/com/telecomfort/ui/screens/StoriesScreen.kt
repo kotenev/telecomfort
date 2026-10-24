@@ -33,6 +33,11 @@ fun StoriesScreen(nav: NavController) {
     var scores by remember { mutableStateOf<Map<Int, JSONObject>>(emptyMap()) }
     var caption by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    var showArchived by remember { mutableStateOf(false) }
+    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showAlbums by remember { mutableStateOf(false) }
+    var albums by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var albumStories by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var musicPath by remember { mutableStateOf<String?>(null) }
     var viewersJson by remember { mutableStateOf<JSONObject?>(null) }
     var showViewers by remember { mutableStateOf(false) }
@@ -69,6 +74,34 @@ fun StoriesScreen(nav: NavController) {
         musicPath = dst.absolutePath
         status = "🎵 Музыка: ${dst.name}"
     }
+    fun handleNewMedia(uri: android.net.Uri) {
+        scope.launch {
+            runCatching {
+                val dst = File(ctx.cacheDir, "story_${System.currentTimeMillis()}")
+                ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+                val params = mutableMapOf<String, Any>("path" to dst.absolutePath, "caption" to caption)
+                musicPath?.let { params["music"] = it }
+                val r = Core.call("story_publish", params)
+                status = "Сторис опубликована (id ${r.optInt("id")})"
+                caption = ""
+                musicPath = null
+                showPublish = false
+                reload()
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) cameraUri?.let { handleNewMedia(it) }
+    }
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { ok ->
+        if (ok) cameraUri?.let { handleNewMedia(it) }
+    }
+    fun launchCamera(video: Boolean) {
+        val dst = File(ctx.cacheDir, "cam_${System.currentTimeMillis()}" + if (video) ".mp4" else ".jpg")
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", dst)
+        cameraUri = uri
+        if (video) takeVideo.launch(uri) else takePhoto.launch(uri)
+    }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
@@ -91,7 +124,33 @@ fun StoriesScreen(nav: NavController) {
         Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
             Text("Сторис", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        Core.call("enable_stealth", emptyMap())
+                        status = "Стелс-режим включён (просмотры не засчитываются)"
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("🥷") }
             TextButton(onClick = { showPublish = true }) { Text("＋ Опубликовать") }
+            TextButton(onClick = {
+                showAlbums = true
+                scope.launch {
+                    runCatching {
+                        val r = Core.call("story_albums", emptyMap())
+                        albums = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("🖼") }
+            TextButton(onClick = {
+                showArchived = !showArchived
+                scope.launch {
+                    runCatching {
+                        val r = Core.call(if (showArchived) "archived_stories" else "stories", emptyMap())
+                        items = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text(if (showArchived) "Лента" else "🗄 Архив") }
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
         LazyColumn(Modifier.weight(1f)) {
@@ -181,6 +240,56 @@ fun StoriesScreen(nav: NavController) {
             }
         }, confirmButton = { TextButton(onClick = { showViewers = false }) { Text("Закрыть") } })
     }
+    if (showAlbums) {
+        var newAlbum by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = { showAlbums = false }, title = { Text("🖼 Альбомы сторис") }, text = {
+            Column {
+                albums.forEach { a ->
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text("• ${a.optString("title", "?")} (${a.optInt("count", 0)})", modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    val r = Core.call("album_stories", mapOf("album" to a.optInt("id")))
+                                    albumStories = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("👁") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("delete_album", mapOf("album" to a.optInt("id")))
+                                    val r = Core.call("story_albums", emptyMap())
+                                    albums = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("✕") }
+                    }
+                }
+                if (albumStories.isNotEmpty()) {
+                    Text("Сторис альбома:", style = MaterialTheme.typography.bodySmall)
+                    albumStories.take(10).forEach { st ->
+                        Text("– ${st.optString("caption", "?").take(60)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                OutlinedTextField(newAlbum, { newAlbum = it }, label = { Text("Название (из последних N сторис)") })
+            }
+        }, confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    runCatching {
+                        // Собираем альбом из последних 10 сторис ленты.
+                        val ids = items.take(10).map { it.optInt("id") }
+                        Core.call("create_album", mapOf("title" to newAlbum, "ids" to ids))
+                        newAlbum = ""
+                        val r = Core.call("story_albums", emptyMap())
+                        albums = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                    }.onFailure { status = "Ошибка: ${it.message}" }
+                }
+            }) { Text("Создать") }
+        }, dismissButton = { TextButton(onClick = { showAlbums = false }) { Text("Закрыть") } })
+    }
     if (showPublish) {
         AlertDialog(onDismissRequest = { showPublish = false }, title = { Text("Новая сторис") }, text = {
             Column {
@@ -190,8 +299,10 @@ fun StoriesScreen(nav: NavController) {
             }
         }, confirmButton = {
             Row {
-                TextButton(onClick = { pickMusic.launch("audio/*") }) { Text("🎵 Музыка${if (musicPath != null) " ✓" else ""}") }
-                TextButton(onClick = { pickMedia.launch("*/*") }) { Text("Выбрать файл") }
+                TextButton(onClick = { pickMusic.launch("audio/*") }) { Text("🎵${if (musicPath != null) " ✓" else ""}") }
+                TextButton(onClick = { pickMedia.launch("*/*") }) { Text("Файл") }
+                TextButton(onClick = { launchCamera(false) }) { Text("📷") }
+                TextButton(onClick = { launchCamera(true) }) { Text("🎬") }
             }
         }, dismissButton = { TextButton(onClick = { showPublish = false }) { Text("Отмена") } })
     }
