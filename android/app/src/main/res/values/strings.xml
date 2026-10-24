@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Telecomfort</string>
+    <string name="shortcut_chats">Чаты</string>
+    <string name="shortcut_chats_long">Открыть чаты</string>
+    <string name="shortcut_stories">Сторис</string>
+    <string name="shortcut_stories_long">Открыть сторис</string>
+</resources>

@@ -1,0 +1,24 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="chats"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_chats"
+        android:shortcutLongLabel="@string/shortcut_chats_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.telecomfort"
+            android:targetClass="com.telecomfort.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="stories"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_stories"
+        android:shortcutLongLabel="@string/shortcut_stories_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.telecomfort"
+            android:targetClass="com.telecomfort.MainActivity" />
+    </shortcut>
+</shortcuts>

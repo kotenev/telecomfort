@@ -70,6 +70,13 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     var gifs by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var jumpDate by remember { mutableStateOf("") }
     var recording by remember { mutableStateOf<com.telecomfort.core.PcmRecorder?>(null) }
+    var recLevel by remember { mutableStateOf(0f) }
+    LaunchedEffect(recording) {
+        while (recording != null) {
+            recLevel = recording?.level ?: 0f
+            kotlinx.coroutines.delay(120)
+        }
+    }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val listState = rememberLazyListState()
@@ -83,7 +90,13 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             }.onFailure { status = "Ошибка: ${it.message}" }
         }
     }
-    LaunchedEffect(chatId) { reload() }
+    LaunchedEffect(chatId) {
+        reload()
+        scope.launch {
+            // Помечаем прочитанным при открытии (как десктопный select_chat).
+            runCatching { Core.call("mark_read", mapOf("chat" to chatId)) }
+        }
+    }
 
     val pickRound = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
@@ -488,7 +501,11 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("📍") }
             IconButton(onClick = { showSchedule = true }) { Text("⏰") }
-            IconButton(onClick = { toggleRecord() }) { Text(if (recording != null) "■" else "🎙") }
+            if (recording != null) {
+            val bars = "▁▂▃▄▅▆▇".take(((recLevel * 7).toInt()).coerceIn(1, 7))
+            Text("● $bars", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = { toggleRecord() }) { Text(if (recording != null) "■" else "🎙") }
             IconButton(onClick = { pickRound.launch("video/*") }) { Text("◉") }
             IconButton(onClick = {
                 showStickers = !showStickers; showGifs = false
@@ -548,7 +565,14 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         if (flags.isNotEmpty()) Text(flags, style = MaterialTheme.typography.bodySmall)
                     }
                     invite?.let { link ->
-                        Text("🔗 $link", style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text("🔗 $link", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = {
+                                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("invite", link))
+                                status = "Ссылка скопирована"
+                            }) { Text("📋") }
+                        }
                     }
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         OutlinedTextField(slowmode, { slowmode = it }, label = { Text("Слоумод, сек") }, modifier = Modifier.weight(1f))
