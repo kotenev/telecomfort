@@ -244,7 +244,7 @@ CI (`android.yml`) собирает всё с нуля и прикладывае
 
 - **libtgvoip внутри APK**: `android/build-tgvoip.sh` клонирует закреплённый
   `telegramdesktop/libtgvoip`, патчит Android.mk (`TGVOIP_USE_CUSTOM_CRYPTO`,
-  `TGVOIP_USE_CALLBACK_AUDIO_IO`, `TGVOIP_NO_DSP`), собирает `libtgvoip.so`
+  `TGVOIP_USE_CALLBACK_AUDIO_IO`; DSP включён: WebRTC AEC + AGC2), собирает `libtgvoip.so`
   под arm64-v8a и x86_64 в `jniLibs`. `Core` грузит его до `libtelecomfort`.
 - **Сигналинг `phone.*`** в Rust: `requestCall`/`acceptCall`/`confirmCall`/
   `discardCall`, DH 2048 бит, `key_fingerprint`, SHA-256(auth_key), разбор
@@ -259,9 +259,10 @@ CI (`android.yml`) собирает всё с нуля и прикладывае
   `call_state`; уведомление «Принять/Отклонить» через live-сервис.
 - **Сборка**: `./android/build-tgvoip.sh` → `./android/build-rust.sh` →
   Gradle. `build.rs` добавляет `-ltgvoip`, APK содержит обе `.so`.
-- Ограничения: `TGVOIP_NO_DSP` — без WebRTC AEC/NS/AGC (эхо может быть
-  слышно в громкой связи); десктопная сборка медиа не запускает (нет
-  libtgvoip под macOS/Windows в этом репозитории).
+- DSP: включён WebRTC echo canceller (AEC) и gain_controller2; legacy NS
+  из bundled webrtc_dsp удалён в upstream API (шумодав не включается).
+- Десктопная сборка медиа не запускает: libtgvoip собирается только под
+  Android в этом репозитории.
 
 ## Осталось (честно)
 

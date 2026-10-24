@@ -1,6 +1,6 @@
 // C-ABI шим над libtgvoip (TgVoip.h) для Rust-ядра telecomfort.
 // Сборка: см. android/build-tgvoip.sh (NDK, TGVOIP_USE_CUSTOM_CRYPTO,
-// TGVOIP_USE_CALLBACK_AUDIO_IO, TGVOIP_NO_DSP).
+// TGVOIP_USE_CALLBACK_AUDIO_IO, WebRTC DSP включён).
 #include "TgVoip.h"
 #include "VoIPController.h"
 

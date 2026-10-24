@@ -1,7 +1,7 @@
 #!/bin/sh
 # Сборка нативного VoIP-стека libtgvoip (Telegram) под Android.
 # Клонирует закреплённый libtgvoip, патчит Android.mk под
-# TGVOIP_NO_DSP + TGVOIP_USE_CUSTOM_CRYPTO + TGVOIP_USE_CALLBACK_AUDIO_IO,
+# TGVOIP_USE_CUSTOM_CRYPTO + TGVOIP_USE_CALLBACK_AUDIO_IO,
 # собирает libtgvoip.so и кладёт в jniLibs.
 # Использование: ./build-tgvoip.sh   (нужны git, NDK, собранный opus от build-rust.sh)
 set -e
@@ -22,7 +22,7 @@ fi
 git -C "$SRC" fetch --depth 1 origin "$PIN" >/dev/null 2>&1 || true
 git -C "$SRC" checkout -q "$PIN" 2>/dev/null || true
 
-git -C "$SRC" checkout -q -- Android.mk
+git -C "$SRC" checkout -q -- Android.mk EchoCanceller.cpp
 # PROP_VALUE_MAX без OpenSL-заголовков
 python3 - "$SRC/audio/AudioOutput.cpp" <<'PY2'
 import sys
@@ -32,10 +32,24 @@ if not s.startswith("#include <sys/system_properties.h>"):
     s = "#include <sys/system_properties.h>\n" + s
     open(p, "w").write(s)
 PY2
+python3 - "$SRC/EchoCanceller.cpp" <<'PY3'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+start = s.find("\tconfig.high_pass_filter.enabled = enableAEC;")
+end = s.find("\taudioFrame=new webrtc::AudioFrame();")
+if start > 0 and end > start:
+    s = s[:start] + "\tconfig.high_pass_filter.enabled = enableAEC;\n\tconfig.gain_controller2.enabled = enableAGC;\n\tapm->ApplyConfig(config);\n\n" + s[end:]
+s = s.replace("apm->GetStatistics().voice_detected.value_or(false)", "true")
+open(p, "w").write(s)
+PY3
 cp "$ROOT/android/tgvoip/tgvoip_shim.cpp" "$SRC/tgvoip_shim.cpp"
+cp "$ROOT/android/tgvoip/audio_frame_proxies_impl.cc" "$SRC/audio_frame_proxies_impl.cc"
 mkdir -p "$SRC/webrtc_dsp/api"
 [ -f "$SRC/webrtc_dsp/api/scoped_refptr.h" ] || \
   printf '#pragma once\n#include "rtc_base/scoped_ref_ptr.h"\n' > "$SRC/webrtc_dsp/api/scoped_refptr.h"
+cp "$ROOT/android/tgvoip/audio_frame_proxies.h" \
+  "$SRC/webrtc_dsp/modules/audio_processing/include/audio_frame_proxies.h"
 
 python3 - "$SRC" <<'PY'
 import sys
@@ -46,19 +60,14 @@ s = open(p).read()
 s = s.replace("LOCAL_CPPFLAGS := -Wall -std=c++11", "LOCAL_CPPFLAGS := -Wall -std=c++14")
 s = s.replace(
     "-DANDROID -finline-functions",
-    "-DANDROID -DTGVOIP_NO_DSP -DTGVOIP_USE_CUSTOM_CRYPTO "
+    "-DANDROID -DTGVOIP_USE_CUSTOM_CRYPTO "
     "-DTGVOIP_USE_CALLBACK_AUDIO_IO -finline-functions",
 )
 s = s.replace("LOCAL_MODULE := voip", "LOCAL_MODULE := tgvoip")
 s = s.replace("LOCAL_EXPORT_LDLIBS := -llog -lOpenSLES", "LOCAL_LDLIBS := -llog -lOpenSLES")
-s = s.replace("./logging.cpp \\", "./logging.cpp \\\n./TgVoip.cpp \\\n./tgvoip_shim.cpp \\")
+s = s.replace("./logging.cpp \\", "./logging.cpp \\\n./TgVoip.cpp \\\n./tgvoip_shim.cpp \\\n./audio_frame_proxies_impl.cc \\")
 s = s.replace("./audio/AudioIO.cpp \\", "./audio/AudioIO.cpp \\\n./audio/AudioIOCallback.cpp \\")
 
-# Без DSP (AEC/NS/AGC отключены) webrtc_dsp не нужен.
-start = s.find("# WebRTC signal processing")
-end = s.find("include $(BUILD_STATIC_LIBRARY)")
-if start > 0 and end > start:
-    s = s[:start] + s[end:]
 
 
 s = s.replace("$(LOCAL_PATH)/../opus/include ", "$(OPUS_PREFIX)/include $(OPUS_PREFIX)/include/opus ")
