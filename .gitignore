@@ -26,3 +26,6 @@ android/.kotlin/
 
 # libtgvoip клонируется скриптом
 android/third_party/
+
+# Gradle root build dir (wrapper/IDE sync)
+android/build/
