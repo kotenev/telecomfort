@@ -67,7 +67,7 @@ ort = { version = "=2.0.0-rc.14", optional = true, default-features = false, fea
 half = { version = "2", optional = true }
 
 # Telegram MTProto (user-клиент, а не бот: умеет Сторис и скачивание из групп с запретом копирования)
-grammers-client = { version = "0.11", features = ["markdown"] }
+grammers-client = { version = "0.11", features = ["markdown", "proxy"] }
 grammers-session = "0.11"
 grammers-tl-types = "0.11"
 grammers-mtsender = "0.11"

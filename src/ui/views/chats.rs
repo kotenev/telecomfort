@@ -25,6 +25,14 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 {
                     app.create_chat_open = true;
                 }
+                if ui
+                    .small_button("📍")
+                    .on_hover_text("Люди и группы рядом (геопозиция из окон ввода)")
+                    .clicked()
+                {
+                    app.nearby_open = true;
+                    app.load_nearby();
+                }
             });
             // Глобальный поиск по всем чатам (серверный).
             ui.horizontal(|ui| {
@@ -354,6 +362,28 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 if ui.small_button("📊").on_hover_text("Статистика канала").clicked() {
                     app.load_channel_stats(chat_id);
                 }
+                if ui.small_button("ℹ️").on_hover_text("О чате: описание, числа, TTL").clicked() {
+                    app.load_chat_full(chat_id);
+                    app.load_peer_full(chat_id);
+                }
+                if ui.small_button("⏳").on_hover_text("Автоудаление истории (TTL)").clicked() {
+                    app.ttl_open = Some(chat_id);
+                }
+                if ui.small_button("📅").on_hover_text("Перейти к дате").clicked() {
+                    app.jump_open = Some(chat_id);
+                }
+                if ui.small_button("🎤").on_hover_text("Отправить аудиофайл как голосовое").clicked() {
+                    app.send_voice_pick(chat_id);
+                }
+                if ui.small_button("⭐").on_hover_text("Тарифы Stars-подарков").clicked() {
+                    app.load_star_gifts(chat_id);
+                }
+                if ui.small_button("⤵J").on_hover_text("Экспорт истории в JSON").clicked() {
+                    app.export_history(chat_id, "json");
+                }
+                if ui.small_button("⤵H").on_hover_text("Экспорт истории в HTML").clicked() {
+                    app.export_history(chat_id, "html");
+                }
                 if ui.small_button("📌×N").on_hover_text("Все закреплённые сообщения").clicked() {
                     app.load_pinned_all(chat_id);
                 }
@@ -496,6 +526,182 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     }
                     if ui.button("Закрыть").clicked() {
                         app.poll_voters_open = None;
+                    }
+                });
+            }
+            // Окно «О чате»: описание, числа, TTL, bio собеседника, подарки.
+            if let Some(cid) = app.chat_full_open {
+                let info = app.chat_full.get(&cid).cloned().unwrap_or_default();
+                egui::Window::new("ℹ️ О чате").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.set_min_width(360.0);
+                    if info.about.is_empty() {
+                        ui.label(egui::RichText::new("загружаю…").small().weak());
+                    } else {
+                        ui.label(&info.about);
+                    }
+                    let mut parts: Vec<String> = vec![];
+                    if let Some(n) = info.participants_count {
+                        parts.push(format!("участников: {n}"));
+                    }
+                    if let Some(n) = info.admins_count {
+                        parts.push(format!("админов: {n}"));
+                    }
+                    if let Some(n) = info.online_count {
+                        parts.push(format!("онлайн: {n}"));
+                    }
+                    if !parts.is_empty() {
+                        ui.label(parts.join(" · "));
+                    }
+                    if let Some(linked) = info.linked_chat_id {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("связанный чат: {linked}"));
+                            if ui.small_button("→").on_hover_text("Открыть связанный чат").clicked() {
+                                app.chat_full_open = None;
+                                app.select_chat(linked);
+                            }
+                        });
+                    }
+                    if let Some(ttl) = info.ttl_period {
+                        ui.label(if ttl == 0 {
+                            "автоудаление: выкл".into()
+                        } else {
+                            format!("автоудаление: {ttl}с")
+                        });
+                    }
+                    ui.separator();
+                    // Собеседник (для 1-1): bio + флаги.
+                    if let Some(pf) = app.peer_full.get(&cid).cloned() {
+                        if !pf.about.is_empty() {
+                            ui.label(format!("о себе: {}", pf.about));
+                        }
+                        let mut flags: Vec<&str> = vec![];
+                        if pf.premium {
+                            flags.push("⭐ Premium");
+                        }
+                        if pf.verified {
+                            flags.push("✓ верифицирован");
+                        }
+                        if pf.scam {
+                            flags.push("⚠ SCAM");
+                        }
+                        if pf.fake {
+                            flags.push("⛔ фейк");
+                        }
+                        if pf.voice_forbidden {
+                            flags.push("🚫 голосовые запрещены");
+                        }
+                        if !flags.is_empty() {
+                            ui.label(egui::RichText::new(flags.join(" · ")).small().strong());
+                        }
+                    }
+                    // Тарифы Stars-подарков.
+                    if let Some(opts) = app.star_gifts.get(&cid).cloned() {
+                        ui.separator();
+                        ui.label("🎁 Тарифы подарков (только просмотр):");
+                        for o in opts.iter().take(10) {
+                            ui.label(format!("• ⭐ {} — {} {} ({} за штуку)", o.stars, o.amount, o.currency, o.currency));
+                        }
+                        ui.label(
+                            egui::RichText::new("Отправка подарков: нужны коллекционные gift_id — вне скоупа Bot API.")
+                                .small()
+                                .weak(),
+                        );
+                    } else if ui.small_button("🎁 Тарифы подарков").clicked() {
+                        app.load_star_gifts(cid);
+                    }
+                    ui.separator();
+                    if ui.button("Закрыть").clicked() {
+                        app.chat_full_open = None;
+                    }
+                });
+            }
+            // Окно TTL: пресеты + свой ввод.
+            if let Some(cid) = app.ttl_open {
+                egui::Window::new("⏳ Автоудаление истории").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.label("Сообщения удалятся у всех через:");
+                    ui.horizontal(|ui| {
+                        for (label, secs) in [("Выкл", 0), ("1 день", 86400), ("7 дней", 604800), ("1 месяц", 2592000), ("1 год", 31536000)] {
+                            if ui.small_button(label).clicked() {
+                                app.set_ttl(cid, secs);
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Своё (сек):");
+                        ui.text_edit_singleline(&mut app.ttl_custom);
+                        if ui.small_button("Применить").clicked() {
+                            let secs: i32 = app.ttl_custom.trim().parse().unwrap_or(-1);
+                            if secs >= 0 {
+                                app.set_ttl(cid, secs);
+                            } else {
+                                app.status = "секунды — число ≥ 0".into();
+                            }
+                        }
+                    });
+                    if ui.button("Закрыть").clicked() {
+                        app.ttl_open = None;
+                    }
+                });
+            }
+            // Окно прыжка к дате.
+            if let Some(cid) = app.jump_open {
+                egui::Window::new("📅 Перейти к дате").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.label("Дата (ГГГГ-ММ-ДД или ДД.ММ.ГГГГ):");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut app.jump_date);
+                        if ui.button("Перейти").clicked() {
+                            app.jump_to_date(cid);
+                            app.jump_open = None;
+                        }
+                    });
+                    if ui.button("Закрыть").clicked() {
+                        app.jump_open = None;
+                    }
+                });
+            }
+            // Окно «кто реагировал».
+            if let Some((vcid, vmid)) = app.voters_open {
+                let voters = app.voters.get(&(vcid, vmid)).cloned().unwrap_or_default();
+                egui::Window::new("👥 Реакции").collapsible(false).show(ui.ctx(), |ui| {
+                    if voters.is_empty() {
+                        ui.label("загружаю…");
+                    }
+                    for v in voters.iter().take(100) {
+                        ui.label(format!("{} {} · {}", v.emoji, v.name, crate::ui::app::format_msg_time(v.date)));
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.voters_open = None;
+                    }
+                });
+            }
+            // Окно «рядом».
+            if app.nearby_open {
+                egui::Window::new("📍 Рядом").collapsible(false).show(ui.ctx(), |ui| {
+                    ui.set_min_width(320.0);
+                    ui.horizontal(|ui| {
+                        ui.label("lat:");
+                        ui.text_edit_singleline(&mut app.nearby_lat);
+                        ui.label("long:");
+                        ui.text_edit_singleline(&mut app.nearby_long);
+                        if ui.small_button("↻").on_hover_text("Обновить").clicked() {
+                            app.load_nearby();
+                        }
+                    });
+                    if app.nearby.is_empty() {
+                        ui.label("пока пусто — нажмите ↻");
+                    }
+                    for p in app.nearby.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(if p.is_user { "👤" } else { "👥" });
+                            ui.label(&p.title);
+                            if !p.is_user && ui.small_button("→").on_hover_text("Открыть чат").clicked() {
+                                app.nearby_open = false;
+                                app.select_chat(p.id);
+                            }
+                        });
+                    }
+                    if ui.button("Закрыть").clicked() {
+                        app.nearby_open = false;
                     }
                 });
             }
@@ -841,6 +1047,13 @@ fn bubble_content(
         if let Some(n) = m.reactions {
             if n > 0 {
                 ui.label(egui::RichText::new(format!("⭐ {n}")).small());
+                if ui
+                    .small_button("👥")
+                    .on_hover_text("Кто реагировал")
+                    .clicked()
+                {
+                    app.load_voters(chat_id, m.id);
+                }
             }
         }
         if let Some(v) = m.views {
@@ -1178,6 +1391,96 @@ fn poll_card(
 /// Композер: баннер reply/edit + ввод + attach + отправка.
 /// Черновик живёт в `app.composer_current` и сохраняется при смене чата.
 fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
+    // Панель стикеров: превью или эмодзи, клик — отправка.
+    if app.stickers_open {
+        let stickers = app.stickers.clone();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("😀").small().weak());
+            egui::ScrollArea::horizontal()
+                .max_height(84.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for st in stickers.iter().take(24) {
+                            let sent = if let Some(path) = &st.preview_path {
+                                if let Some(tex) = TelecomfortApp::thumb_from_file(
+                                    ui.ctx(),
+                                    path,
+                                    &format!("sticker::{}", st.id),
+                                    64,
+                                ) {
+                                    ui.add(
+                                        egui::Image::new((tex.id(), egui::Vec2::new(56.0, 56.0)))
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .clicked()
+                                } else {
+                                    ui.small_button(st.emoji.clone().unwrap_or_else(|| "😀".into()))
+                                        .clicked()
+                                }
+                            } else {
+                                ui.small_button(st.emoji.clone().unwrap_or_else(|| "😀".into()))
+                                    .clicked()
+                            };
+                            if sent {
+                                app.send_saved_document(
+                                    chat_id,
+                                    st.id,
+                                    st.access_hash,
+                                    st.file_reference.clone(),
+                                );
+                            }
+                        }
+                    });
+                });
+            if ui.small_button("✕").clicked() {
+                app.stickers_open = false;
+            }
+        });
+    }
+    // Панель GIF: превью-кадры, клик — отправка.
+    if app.gifs_open {
+        let gifs = app.gifs.clone();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("🎞").small().weak());
+            egui::ScrollArea::horizontal()
+                .max_height(84.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for g in gifs.iter().take(24) {
+                            let sent = if let Some(path) = &g.preview_path {
+                                if let Some(tex) = TelecomfortApp::thumb_from_file(
+                                    ui.ctx(),
+                                    path,
+                                    &format!("gif::{}", g.id),
+                                    64,
+                                ) {
+                                    ui.add(
+                                        egui::Image::new((tex.id(), egui::Vec2::new(72.0, 54.0)))
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .clicked()
+                                } else {
+                                    ui.small_button("🎞").clicked()
+                                }
+                            } else {
+                                ui.small_button("🎞").clicked()
+                            };
+                            if sent {
+                                app.send_saved_document(
+                                    chat_id,
+                                    g.id,
+                                    g.access_hash,
+                                    g.file_reference.clone(),
+                                );
+                            }
+                        }
+                    });
+                });
+            if ui.small_button("✕").clicked() {
+                app.gifs_open = false;
+            }
+        });
+    }
     if let Some((_, mid, snippet)) = app.reply_to.clone() {
         ui.horizontal(|ui| {
             ui.label(
@@ -1295,6 +1598,19 @@ fn composer(app: &mut TelecomfortApp, ui: &mut egui::Ui, chat_id: i64) {
             .clicked()
         {
             app.geo_open = true;
+        }
+        if ui
+            .button("🎤")
+            .on_hover_text("Голосовое из аудиофайла (ogg/opus/mp3/m4a)")
+            .clicked()
+        {
+            app.send_voice_pick(chat_id);
+        }
+        if ui.button("😀").on_hover_text("Недавние стикеры").clicked() {
+            app.load_stickers();
+        }
+        if ui.button("🎞").on_hover_text("Сохранённые GIF").clicked() {
+            app.load_gifs();
         }
         ui.checkbox(&mut app.silent_send, "🔕")
             .on_hover_text("Тихая отправка (без звука у получателя)");

@@ -32,6 +32,14 @@ pub fn normalize_title(s: &str) -> String {
         .join(" ")
 }
 
+/// hex(SHA-256) строки (PIN-код блокировки).
+pub fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    hex::encode(h.finalize())
+}
+
 pub fn sha256_of_file(path: &std::path::Path) -> anyhow::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -62,4 +70,23 @@ pub fn is_ebook(path: &std::path::Path) -> bool {
             | Some("azw3")
             | Some("djvu")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_hex_is_stable_and_64_chars() {
+        let a = sha256_hex("1234");
+        let b = sha256_hex("1234");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, sha256_hex("1235"));
+        // Известный вектор: SHA-256("").
+        assert_eq!(
+            sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }

@@ -34,13 +34,39 @@ unsafe impl Send for GrammersBackend {}
 unsafe impl Sync for GrammersBackend {}
 
 impl GrammersBackend {
+    /// Подключение без прокси (удобная обёртка над [`Self::connect_with_proxy`]).
+    #[allow(dead_code)]
     pub async fn connect(session_path: &Path, api_id: i32, api_hash: &str) -> Result<Self> {
+        Self::connect_with_proxy(session_path, api_id, api_hash, None).await
+    }
+
+    /// Подключение с опциональным SOCKS5-прокси (только socks5://…; MTProto-прокси
+    /// grammers не поддерживает — задокументировано в README).
+    pub async fn connect_with_proxy(
+        session_path: &Path,
+        api_id: i32,
+        api_hash: &str,
+        proxy_url: Option<String>,
+    ) -> Result<Self> {
         if let Some(parent) = session_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let session =
             Arc::new(SqliteSession::open(session_path.to_string_lossy().to_string()).await?);
-        let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
+        let SenderPool { runner, handle, .. } = match proxy_url.filter(|u| !u.trim().is_empty()) {
+            Some(url) => {
+                use grammers_mtsender::ConnectionParams;
+                SenderPool::with_configuration(
+                    Arc::clone(&session),
+                    api_id,
+                    ConnectionParams {
+                        proxy_url: Some(url),
+                        ..Default::default()
+                    },
+                )
+            }
+            None => SenderPool::new(Arc::clone(&session), api_id),
+        };
         let client = Client::new(handle);
         tokio::spawn(runner.run());
         Ok(Self {
@@ -3059,6 +3085,672 @@ impl GrammersBackend {
     }
 }
 
+impl GrammersBackend {
+    /// Страница истории старше offset_id (экспорт/прыжок к дате).
+    pub async fn history_before(
+        &self,
+        chat_id: i64,
+        offset_id: i32,
+        limit: usize,
+    ) -> Result<Vec<super::MessageInfo>> {
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let mut iter = self.client.iter_messages(pref);
+        iter = iter.limit(limit.min(200)).offset_id(offset_id);
+        let mut out = Vec::new();
+        while let Some(m) = iter.next().await? {
+            out.push(message_to_info(&m, chat_id));
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Завершить одну сессию (account.resetAuthorization).
+    pub async fn terminate_session(&self, hash: i64) -> Result<()> {
+        use grammers_client::tl;
+        self.client
+            .invoke(&tl::functions::account::ResetAuthorization { hash })
+            .await
+            .context("resetAuthorization failed")?;
+        Ok(())
+    }
+
+    /// Автоудаление истории чата (messages.setHistoryTTL). 0 — выключить.
+    pub async fn set_history_ttl(&self, chat_id: i64, period_secs: i32) -> Result<()> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        self.client
+            .invoke(&tl::functions::messages::SetHistoryTtl {
+                peer: (&pref).into(),
+                period: period_secs,
+            })
+            .await
+            .context("setHistoryTTL failed (нужны права?)")?;
+        Ok(())
+    }
+
+    /// Полное описание канала/группы (channels.getFullChannel).
+    pub async fn chat_full(&self, chat_id: i64) -> Result<super::ChatFullInfo> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        let full = self
+            .client
+            .invoke(&tl::functions::channels::GetFullChannel { channel })
+            .await
+            .context("getFullChannel failed")?;
+        let full_chat = match full {
+            tl::enums::messages::ChatFull::Full(f) => f.full_chat,
+        };
+        match full_chat {
+            tl::enums::ChatFull::Full(f) => {
+                let count = match &f.participants {
+                    tl::enums::ChatParticipants::Participants(p) => {
+                        Some(p.participants.len() as i32)
+                    }
+                    _ => None,
+                };
+                Ok(super::ChatFullInfo {
+                    about: f.about,
+                    participants_count: count,
+                    ..Default::default()
+                })
+            }
+            tl::enums::ChatFull::ChannelFull(f) => Ok(super::ChatFullInfo {
+                about: f.about,
+                participants_count: f.participants_count,
+                admins_count: f.admins_count,
+                online_count: f.online_count,
+                linked_chat_id: f.linked_chat_id,
+                ttl_period: f.ttl_period,
+            }),
+            tl::enums::ChatFull::CommunityFull(_) => Ok(super::ChatFullInfo::default()),
+        }
+    }
+
+    /// Достать пользователя диалога через GetPeerDialogs (там же access_hash).
+    async fn dialog_user(&self, chat_id: i64) -> Result<grammers_client::tl::types::User> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let want = pref.id.bare_id_unchecked();
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetPeerDialogs {
+                peers: vec![tl::enums::InputDialogPeer::Peer(
+                    tl::types::InputDialogPeer {
+                        peer: (&pref).into(),
+                    },
+                )],
+            })
+            .await
+            .context("getPeerDialogs failed")?;
+        let users = match res {
+            tl::enums::messages::PeerDialogs::Dialogs(d) => d.users,
+        };
+        for u in users {
+            if let tl::enums::User::User(t) = u {
+                if t.id == want {
+                    return Ok(t);
+                }
+            }
+        }
+        anyhow::bail!("пользователь не найден в диалоге")
+    }
+
+    /// Полное описание собеседника: bio + флаги (users.getFullUser).
+    pub async fn peer_full(&self, chat_id: i64) -> Result<super::PeerFullInfo> {
+        use grammers_client::tl;
+        let user = self.dialog_user(chat_id).await?;
+        let access_hash = user.access_hash.unwrap_or(0);
+        let full = self
+            .client
+            .invoke(&tl::functions::users::GetFullUser {
+                id: tl::enums::InputUser::User(tl::types::InputUser {
+                    user_id: user.id,
+                    access_hash,
+                }),
+            })
+            .await
+            .context("getFullUser failed")?;
+        let payload = match full {
+            tl::enums::users::UserFull::Full(f) => f,
+        };
+        let (about, voice_forbidden) = match payload.full_user {
+            tl::enums::UserFull::Full(f) => {
+                (f.about.unwrap_or_default(), f.voice_messages_forbidden)
+            }
+        };
+        let (premium, verified, scam, fake) = match payload.users.into_iter().next() {
+            Some(tl::enums::User::User(u)) => (u.premium, u.verified, u.scam, u.fake),
+            _ => (false, false, false, false),
+        };
+        Ok(super::PeerFullInfo {
+            about,
+            premium,
+            verified,
+            scam,
+            fake,
+            voice_forbidden,
+        })
+    }
+
+    /// Кто поставил реакции (messages.getMessageReactionsList).
+    pub async fn message_reactions(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+    ) -> Result<Vec<super::ReactionVoter>> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let list = self
+            .client
+            .invoke(&tl::functions::messages::GetMessageReactionsList {
+                peer: (&pref).into(),
+                id: message_id,
+                reaction: None,
+                offset: None,
+                limit: 100,
+            })
+            .await
+            .context("getMessageReactionsList failed")?;
+        let (reactions, users, chats) = match list {
+            tl::enums::messages::MessageReactionsList::List(l) => (l.reactions, l.users, l.chats),
+        };
+        use std::collections::HashMap;
+        let mut names: HashMap<i64, String> = HashMap::new();
+        for u in users {
+            if let tl::enums::User::User(t) = u {
+                let name = format!(
+                    "{} {}",
+                    t.first_name.unwrap_or_default(),
+                    t.last_name.unwrap_or_default()
+                )
+                .trim()
+                .to_string();
+                names.insert(
+                    t.id,
+                    if name.is_empty() {
+                        format!("id {0}", t.id)
+                    } else {
+                        name
+                    },
+                );
+            }
+        }
+        for c in chats {
+            let (id, title) = match c {
+                tl::enums::Chat::Channel(t) => (t.id, t.title),
+                tl::enums::Chat::Chat(t) => (t.id, t.title),
+                _ => continue,
+            };
+            names.insert(id, title);
+        }
+        Ok(reactions
+            .into_iter()
+            .filter_map(|r| {
+                let r = match r {
+                    tl::enums::MessagePeerReaction::Reaction(t) => t,
+                };
+                let peer_id = match r.peer_id {
+                    tl::enums::Peer::User(u) => u.user_id,
+                    tl::enums::Peer::Chat(c) => c.chat_id,
+                    tl::enums::Peer::Channel(c) => c.channel_id,
+                };
+                let emoji = match r.reaction {
+                    tl::enums::Reaction::Emoji(e) => e.emoticon,
+                    tl::enums::Reaction::CustomEmoji(e) => format!("custom:{}", e.document_id),
+                    tl::enums::Reaction::Paid => "⭐".into(),
+                    _ => "?".into(),
+                };
+                Some(super::ReactionVoter {
+                    user_id: peer_id,
+                    name: names
+                        .get(&peer_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("id {peer_id}")),
+                    date: r.date as i64,
+                    emoji,
+                })
+            })
+            .collect())
+    }
+
+    /// Скачать документ-превью в кэш (стикеры/GIF).
+    async fn download_doc_preview(
+        &self,
+        doc: &grammers_client::tl::enums::Document,
+        dest: &std::path::Path,
+    ) -> Result<()> {
+        use grammers_client::tl;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let media = tl::enums::MessageMedia::Document(tl::types::MessageMediaDocument {
+            nopremium: false,
+            spoiler: false,
+            video: false,
+            round: false,
+            voice: false,
+            document: Some(doc.clone()),
+            alt_documents: None,
+            video_cover: None,
+            video_timestamp: None,
+            ttl_seconds: None,
+        });
+        let gm = grammers_client::media::Media::from_raw(media).context("bad media")?;
+        self.client.download_media(&gm, dest).await?;
+        Ok(())
+    }
+
+    /// Недавние стикеры с превью (messages.getRecentStickers, лимит 24).
+    pub async fn recent_stickers(&self) -> Result<Vec<super::StickerInfo>> {
+        use grammers_client::tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetRecentStickers {
+                attached: false,
+                hash: 0,
+            })
+            .await
+            .context("getRecentStickers failed")?;
+        let stickers = match res {
+            tl::enums::messages::RecentStickers::Stickers(r) => r.stickers,
+            tl::enums::messages::RecentStickers::NotModified => vec![],
+        };
+        let dir = super::stickers_cache_dir();
+        let mut out = Vec::new();
+        for doc in stickers.into_iter().take(24) {
+            let tl::enums::Document::Document(d) = doc else {
+                continue;
+            };
+            if d.mime_type == "application/x-tgsticker" {
+                // Анимированный TGS превью не рисуем — покажем эмодзи.
+                let emoji = d.attributes.iter().find_map(|a| match a {
+                    tl::enums::DocumentAttribute::Sticker(s) => Some(s.alt.clone()),
+                    _ => None,
+                });
+                out.push(super::StickerInfo {
+                    id: d.id,
+                    access_hash: d.access_hash,
+                    file_reference: d.file_reference,
+                    emoji,
+                    preview_path: None,
+                });
+                continue;
+            }
+            let dest = dir.join(format!("recent_{}.webp", d.id));
+            let preview = if dest.exists() {
+                Some(dest)
+            } else if self
+                .download_doc_preview(&tl::enums::Document::Document(d.clone()), &dest)
+                .await
+                .is_ok()
+                && dest.exists()
+            {
+                Some(dest)
+            } else {
+                None
+            };
+            let emoji = d.attributes.iter().find_map(|a| match a {
+                tl::enums::DocumentAttribute::Sticker(s) => Some(s.alt.clone()),
+                _ => None,
+            });
+            out.push(super::StickerInfo {
+                id: d.id,
+                access_hash: d.access_hash,
+                file_reference: d.file_reference,
+                emoji,
+                preview_path: preview,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Отправить существующий документ (стикер/GIF) по ссылке (messages.sendMedia).
+    pub async fn send_document_ref(
+        &self,
+        chat_id: i64,
+        doc_id: i64,
+        access_hash: i64,
+        file_reference: Vec<u8>,
+        caption: &str,
+        silent: bool,
+    ) -> Result<i32> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::SendMedia {
+                silent,
+                background: false,
+                clear_draft: false,
+                noforwards: false,
+                update_stickersets_order: true,
+                invert_media: false,
+                allow_paid_floodskip: false,
+                peer: (&pref).into(),
+                reply_to: None,
+                media: tl::enums::InputMedia::Document(tl::types::InputMediaDocument {
+                    spoiler: false,
+                    id: tl::enums::InputDocument::Document(tl::types::InputDocument {
+                        id: doc_id,
+                        access_hash,
+                        file_reference,
+                    }),
+                    video_cover: None,
+                    video_timestamp: None,
+                    ttl_seconds: None,
+                    query: None,
+                }),
+                message: caption.to_string(),
+                random_id,
+                reply_markup: None,
+                entities: None,
+                schedule_date: None,
+                schedule_repeat_period: None,
+                send_as: None,
+                quick_reply_shortcut: None,
+                effect: None,
+                allow_paid_stars: None,
+                suggested_post: None,
+            })
+            .await
+            .context("sendMedia failed")?;
+        let mid = match res {
+            tl::enums::Updates::UpdateShortSentMessage(m) => m.id,
+            tl::enums::Updates::Updates(u) => u
+                .updates
+                .iter()
+                .find_map(|x| match x {
+                    tl::enums::Update::NewMessage(nm) => Some(nm.message.id()),
+                    _ => None,
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        Ok(mid)
+    }
+
+    /// Сохранённые GIF с превью-кадром (messages.getSavedGifs, лимит 24).
+    pub async fn saved_gifs(&self) -> Result<Vec<super::GifInfo>> {
+        use grammers_client::tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::GetSavedGifs { hash: 0 })
+            .await
+            .context("getSavedGifs failed")?;
+        let gifs = match res {
+            tl::enums::messages::SavedGifs::Gifs(g) => g.gifs,
+            tl::enums::messages::SavedGifs::NotModified => vec![],
+        };
+        let dir = super::stickers_cache_dir();
+        let mut out = Vec::new();
+        for doc in gifs.into_iter().take(24) {
+            let tl::enums::Document::Document(d) = doc else {
+                continue;
+            };
+            let (mut w, mut h, mut dur) = (0, 0, 0);
+            for a in &d.attributes {
+                if let tl::enums::DocumentAttribute::Video(v) = a {
+                    w = v.w;
+                    h = v.h;
+                    dur = (v.duration * 1000.0) as i32;
+                }
+            }
+            let dest = dir.join(format!("gif_{}.mp4", d.id));
+            if !dest.exists() {
+                let _ = self
+                    .download_doc_preview(&tl::enums::Document::Document(d.clone()), &dest)
+                    .await;
+            }
+            let poster = dir.join(format!("gif_{}.jpg", d.id));
+            if dest.exists() && !poster.exists() {
+                if let Some(frame) = crate::media::video::first_frame_builtin(&dest) {
+                    crate::media::video::save_poster_jpeg(&frame, &poster);
+                }
+            }
+            out.push(super::GifInfo {
+                id: d.id,
+                access_hash: d.access_hash,
+                file_reference: d.file_reference,
+                width: w,
+                height: h,
+                duration_ms: dur,
+                preview_path: if poster.exists() { Some(poster) } else { None },
+            });
+        }
+        Ok(out)
+    }
+
+    /// Длительность и waveform голосового из аудиофайла (декодируем rodio).
+    fn voice_probe(path: &std::path::Path) -> (i32, Vec<u8>) {
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => return (0, vec![0u8; 63]),
+        };
+        let cursor = std::io::Cursor::new(data);
+        let source = match rodio::Decoder::new(cursor) {
+            Ok(s) => s,
+            Err(_) => return (0, vec![0u8; 63]),
+        };
+        use rodio::Source;
+        let channels = source.channels().get().max(1) as u64;
+        let rate = source.sample_rate().get().max(1) as u64;
+        let samples: Vec<f32> = source.take((channels * rate * 600) as usize).collect();
+        if samples.is_empty() {
+            return (0, vec![0u8; 63]);
+        }
+        let duration = (samples.len() as u64 / (channels * rate)).min(3600) as i32;
+        // 63 значения 0..31 по RMS каждого чанка (формат Telegram, сэмплы уже -1..1).
+        let chunk = (samples.len() / 63).max(1);
+        let mut wave = Vec::with_capacity(63);
+        for c in samples.chunks(chunk).take(63) {
+            let rms = (c.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / c.len() as f64).sqrt();
+            wave.push((rms * 31.0 * 2.2).clamp(0.0, 31.0) as u8);
+        }
+        while wave.len() < 63 {
+            wave.push(0);
+        }
+        (duration.max(1), wave)
+    }
+
+    /// Отправить аудиофайл как голосовое (upload + SendMedia с voice-атрибутом).
+    pub async fn send_voice(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: &str,
+        silent: bool,
+        schedule_at: Option<std::time::SystemTime>,
+    ) -> Result<i32> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let uploaded = self.client.upload_file(path).await?;
+        let (duration, waveform) = Self::voice_probe(path);
+        let mime = match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref()
+        {
+            Some("opus") | Some("ogg") => "audio/ogg",
+            Some("m4a") => "audio/mp4",
+            Some("mp3") => "audio/mpeg",
+            _ => "audio/ogg",
+        }
+        .to_string();
+        let fname = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "voice.ogg".into());
+        let _ = fname;
+        let file = uploaded.raw;
+        let random_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::SendMedia {
+                silent,
+                background: false,
+                clear_draft: false,
+                noforwards: false,
+                update_stickersets_order: false,
+                invert_media: false,
+                allow_paid_floodskip: false,
+                peer: (&pref).into(),
+                reply_to: None,
+                media: tl::enums::InputMedia::UploadedDocument(
+                    tl::types::InputMediaUploadedDocument {
+                        nosound_video: false,
+                        force_file: false,
+                        spoiler: false,
+                        file,
+                        thumb: None,
+                        mime_type: mime,
+                        attributes: vec![
+                            tl::enums::DocumentAttribute::Audio(
+                                tl::types::DocumentAttributeAudio {
+                                    voice: true,
+                                    duration,
+                                    title: None,
+                                    performer: None,
+                                    waveform: Some(waveform),
+                                },
+                            ),
+                            tl::enums::DocumentAttribute::Filename(
+                                tl::types::DocumentAttributeFilename { file_name: fname },
+                            ),
+                        ],
+                        stickers: None,
+                        video_cover: None,
+                        video_timestamp: None,
+                        ttl_seconds: None,
+                    },
+                ),
+                message: caption.to_string(),
+                random_id,
+                reply_markup: None,
+                entities: None,
+                schedule_date: schedule_at.map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i32)
+                        .unwrap_or(0)
+                }),
+                schedule_repeat_period: None,
+                send_as: None,
+                quick_reply_shortcut: None,
+                effect: None,
+                allow_paid_stars: None,
+                suggested_post: None,
+            })
+            .await
+            .context("sendMedia (voice) failed")?;
+        let mid = match res {
+            tl::enums::Updates::UpdateShortSentMessage(m) => m.id,
+            tl::enums::Updates::Updates(u) => u
+                .updates
+                .iter()
+                .find_map(|x| match x {
+                    tl::enums::Update::NewMessage(nm) => Some(nm.message.id()),
+                    _ => None,
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        Ok(mid)
+    }
+
+    /// Люди и группы рядом (contacts.getLocated).
+    pub async fn nearby(&self, lat: f64, long: f64) -> Result<Vec<super::NearbyPeer>> {
+        use grammers_client::tl;
+        let res = self
+            .client
+            .invoke(&tl::functions::contacts::GetLocated {
+                background: false,
+                geo_point: tl::enums::InputGeoPoint::Point(tl::types::InputGeoPoint {
+                    lat,
+                    long,
+                    accuracy_radius: None,
+                }),
+                self_expires: None,
+            })
+            .await
+            .context("getLocated failed")?;
+        let (chats, users) = match res {
+            tl::enums::Updates::Updates(u) => (u.chats, u.users),
+            tl::enums::Updates::Combined(u) => (u.chats, u.users),
+            _ => (vec![], vec![]),
+        };
+        let mut out = Vec::new();
+        for u in users {
+            if let tl::enums::User::User(t) = u {
+                let name = format!(
+                    "{} {}",
+                    t.first_name.unwrap_or_default(),
+                    t.last_name.unwrap_or_default()
+                )
+                .trim()
+                .to_string();
+                out.push(super::NearbyPeer {
+                    id: t.id,
+                    title: if name.is_empty() {
+                        format!("id {}", t.id)
+                    } else {
+                        name
+                    },
+                    is_user: true,
+                });
+            }
+        }
+        for c in chats {
+            let (id, title) = match c {
+                tl::enums::Chat::Channel(t) => (t.id, t.title),
+                tl::enums::Chat::Chat(t) => (t.id, t.title),
+                _ => continue,
+            };
+            out.push(super::NearbyPeer {
+                id,
+                title,
+                is_user: false,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Тарифы Stars-подарков (только чтение, payments.getStarsGiftOptions).
+    pub async fn star_gift_options(&self, chat_id: i64) -> Result<Vec<super::StarGiftOption>> {
+        use grammers_client::tl;
+        let user = self.dialog_user(chat_id).await?;
+        let options = self
+            .client
+            .invoke(&tl::functions::payments::GetStarsGiftOptions {
+                user_id: Some(tl::enums::InputUser::User(tl::types::InputUser {
+                    user_id: user.id,
+                    access_hash: user.access_hash.unwrap_or(0),
+                })),
+            })
+            .await
+            .context("getStarsGiftOptions failed")?;
+        Ok(options
+            .into_iter()
+            .map(|o| match o {
+                tl::enums::StarsGiftOption::Option(t) => super::StarGiftOption {
+                    stars: t.stars,
+                    currency: t.currency,
+                    amount: t.amount,
+                },
+            })
+            .collect())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -3478,6 +4170,75 @@ impl crate::telegram::TelegramService for GrammersBackend {
         _kind: &str,
     ) -> anyhow::Result<(Vec<String>, Vec<f64>)> {
         GrammersBackend::channel_graph(self, _chat_id, _kind).await
+    }
+    async fn history_before(
+        &self,
+        chat_id: i64,
+        offset_id: i32,
+        limit: usize,
+    ) -> anyhow::Result<Vec<super::MessageInfo>> {
+        GrammersBackend::history_before(self, chat_id, offset_id, limit).await
+    }
+    async fn terminate_session(&self, hash: i64) -> anyhow::Result<()> {
+        GrammersBackend::terminate_session(self, hash).await
+    }
+    async fn set_history_ttl(&self, chat_id: i64, period_secs: i32) -> anyhow::Result<()> {
+        GrammersBackend::set_history_ttl(self, chat_id, period_secs).await
+    }
+    async fn chat_full(&self, chat_id: i64) -> anyhow::Result<super::ChatFullInfo> {
+        GrammersBackend::chat_full(self, chat_id).await
+    }
+    async fn peer_full(&self, chat_id: i64) -> anyhow::Result<super::PeerFullInfo> {
+        GrammersBackend::peer_full(self, chat_id).await
+    }
+    async fn message_reactions(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+    ) -> anyhow::Result<Vec<super::ReactionVoter>> {
+        GrammersBackend::message_reactions(self, chat_id, message_id).await
+    }
+    async fn recent_stickers(&self) -> anyhow::Result<Vec<super::StickerInfo>> {
+        GrammersBackend::recent_stickers(self).await
+    }
+    async fn send_document_ref(
+        &self,
+        chat_id: i64,
+        doc_id: i64,
+        access_hash: i64,
+        file_reference: Vec<u8>,
+        caption: &str,
+        silent: bool,
+    ) -> anyhow::Result<i32> {
+        GrammersBackend::send_document_ref(
+            self,
+            chat_id,
+            doc_id,
+            access_hash,
+            file_reference,
+            caption,
+            silent,
+        )
+        .await
+    }
+    async fn saved_gifs(&self) -> anyhow::Result<Vec<super::GifInfo>> {
+        GrammersBackend::saved_gifs(self).await
+    }
+    async fn send_voice(
+        &self,
+        chat_id: i64,
+        path: &std::path::Path,
+        caption: &str,
+        silent: bool,
+        schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        GrammersBackend::send_voice(self, chat_id, path, caption, silent, schedule_at).await
+    }
+    async fn nearby(&self, lat: f64, long: f64) -> anyhow::Result<Vec<super::NearbyPeer>> {
+        GrammersBackend::nearby(self, lat, long).await
+    }
+    async fn star_gift_options(&self, chat_id: i64) -> anyhow::Result<Vec<super::StarGiftOption>> {
+        GrammersBackend::star_gift_options(self, chat_id).await
     }
     fn is_connected(&self) -> bool {
         GrammersBackend::is_connected(self)

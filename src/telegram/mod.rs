@@ -204,6 +204,75 @@ pub struct ChannelStats {
     pub notifications_pct: f64,
 }
 
+/// Полное описание канала/группы (единый запрос channels.getFullChannel).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChatFullInfo {
+    pub about: String,
+    pub participants_count: Option<i32>,
+    pub admins_count: Option<i32>,
+    pub online_count: Option<i32>,
+    pub linked_chat_id: Option<i64>,
+    pub ttl_period: Option<i32>,
+}
+
+/// Полное описание пользователя (users.getFullUser + флаги).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PeerFullInfo {
+    pub about: String,
+    pub premium: bool,
+    pub verified: bool,
+    pub scam: bool,
+    pub fake: bool,
+    pub voice_forbidden: bool,
+}
+
+/// Один проголосовавший реакцией (messages.getMessageReactionsList).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionVoter {
+    pub user_id: i64,
+    pub name: String,
+    pub date: i64,
+    pub emoji: String,
+}
+
+/// Недавний стикер (документ + превью в кэше).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickerInfo {
+    pub id: i64,
+    pub access_hash: i64,
+    pub file_reference: Vec<u8>,
+    pub emoji: Option<String>,
+    pub preview_path: Option<std::path::PathBuf>,
+}
+
+/// Сохранённая GIF (документ mp4 + превью-кадр в кэше).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GifInfo {
+    pub id: i64,
+    pub access_hash: i64,
+    pub file_reference: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    pub duration_ms: i32,
+    pub preview_path: Option<std::path::PathBuf>,
+}
+
+/// Вариант Stars-подарка (только чтение тарифов).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarGiftOption {
+    pub stars: i64,
+    pub currency: String,
+    pub amount: i64,
+}
+
+/// Рядом находящийся пир (contacts.getLocated, без точной дистанции — API её не отдаёт).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NearbyPeer {
+    pub id: i64,
+    pub title: String,
+    pub is_user: bool,
+}
+
 /// Зритель сторис (имя для списка просмотревших).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoryViewer {
@@ -852,6 +921,113 @@ pub trait TelegramService: Send + Sync {
         _kind: &str,
     ) -> anyhow::Result<(Vec<String>, Vec<f64>)> {
         Ok((vec![], vec![]))
+    }
+    /// Страница истории старше offset_id (для экспорта и прыжка к дате).
+    /// Дефолт: берёт свежую историю и фильтрует — работает на любом бэкенде.
+    async fn history_before(
+        &self,
+        chat_id: i64,
+        offset_id: i32,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        let all = self.history(chat_id, limit.saturating_add(200)).await?;
+        Ok(all
+            .into_iter()
+            .filter(|m| m.id < offset_id)
+            .take(limit)
+            .collect())
+    }
+    /// Окно истории вокруг даты (unix): листает history_before назад, пока не дойдёт.
+    /// Возвращает (сообщения, достигнуто_ли_начало).
+    async fn history_at_date(
+        &self,
+        chat_id: i64,
+        date: i64,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<MessageInfo>, bool)> {
+        let mut cursor = i32::MAX;
+        let mut window: Vec<MessageInfo> = Vec::new();
+        for _ in 0..30 {
+            let page = self.history_before(chat_id, cursor, 200).await?;
+            if page.is_empty() {
+                return Ok((window, true));
+            }
+            cursor = page.last().map(|m| m.id).unwrap_or(0);
+            window = page;
+            if window.iter().any(|m| m.date <= date) {
+                break;
+            }
+        }
+        let reached_start = window.is_empty();
+        let out: Vec<MessageInfo> = window
+            .into_iter()
+            .filter(|m| (m.date - date).abs() < 86400 * 2)
+            .take(limit)
+            .collect();
+        Ok((out, reached_start))
+    }
+    /// Завершить одну сессию по hash (account.resetAuthorization).
+    async fn terminate_session(&self, _hash: i64) -> anyhow::Result<()> {
+        anyhow::bail!("terminate_session is not implemented for this backend")
+    }
+    /// Автоудаление сообщений чата через N секунд, 0 — выключить (messages.setHistoryTTL).
+    async fn set_history_ttl(&self, _chat_id: i64, _period_secs: i32) -> anyhow::Result<()> {
+        anyhow::bail!("history TTL is not implemented for this backend")
+    }
+    /// Полное описание канала/группы (channels.getFullChannel).
+    async fn chat_full(&self, _chat_id: i64) -> anyhow::Result<ChatFullInfo> {
+        anyhow::bail!("chat_full is not implemented for this backend")
+    }
+    /// Полное описание собеседника: bio + флаги (users.getFullUser).
+    async fn peer_full(&self, _chat_id: i64) -> anyhow::Result<PeerFullInfo> {
+        anyhow::bail!("peer_full is not implemented for this backend")
+    }
+    /// Кто поставил реакции на сообщение (messages.getMessageReactionsList).
+    async fn message_reactions(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+    ) -> anyhow::Result<Vec<ReactionVoter>> {
+        anyhow::bail!("message_reactions is not implemented for this backend")
+    }
+    /// Недавние стикеры с превью (messages.getRecentStickers).
+    async fn recent_stickers(&self) -> anyhow::Result<Vec<StickerInfo>> {
+        anyhow::bail!("recent_stickers is not implemented for this backend")
+    }
+    /// Отправить существующий документ (стикер/GIF) по ссылке на него.
+    async fn send_document_ref(
+        &self,
+        _chat_id: i64,
+        _doc_id: i64,
+        _access_hash: i64,
+        _file_reference: Vec<u8>,
+        _caption: &str,
+        _silent: bool,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("send_document_ref is not implemented for this backend")
+    }
+    /// Сохранённые GIF с превью (messages.getSavedGifs).
+    async fn saved_gifs(&self) -> anyhow::Result<Vec<GifInfo>> {
+        anyhow::bail!("saved_gifs is not implemented for this backend")
+    }
+    /// Отправить аудиофайл как голосовое (voice-атрибут + waveform).
+    async fn send_voice(
+        &self,
+        _chat_id: i64,
+        _path: &std::path::Path,
+        _caption: &str,
+        _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!("voice sending is not implemented for this backend")
+    }
+    /// Люди и группы рядом (contacts.getLocated).
+    async fn nearby(&self, _lat: f64, _long: f64) -> anyhow::Result<Vec<NearbyPeer>> {
+        anyhow::bail!("nearby is not implemented for this backend")
+    }
+    /// Тарифы Stars-подарков для пользователя (только чтение).
+    async fn star_gift_options(&self, _chat_id: i64) -> anyhow::Result<Vec<StarGiftOption>> {
+        anyhow::bail!("star_gifts is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }
