@@ -88,6 +88,20 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         );
     });
     ui.horizontal(|ui| {
+        if ui
+            .small_button("🔌 Проверить прокси")
+            .on_hover_text("Подключиться через прокси отдельным соединением (сессия не тронется)")
+            .clicked()
+        {
+            app.test_proxy();
+        }
+        ui.label(
+            egui::RichText::new("тест пишет лог в Журнал")
+                .small()
+                .weak(),
+        );
+    });
+    ui.horizontal(|ui| {
         ui.label("Телефон:");
         ui.text_edit_singleline(&mut app.phone);
     });

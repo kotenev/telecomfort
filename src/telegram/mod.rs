@@ -213,6 +213,9 @@ pub struct ChatFullInfo {
     pub online_count: Option<i32>,
     pub linked_chat_id: Option<i64>,
     pub ttl_period: Option<i32>,
+    /// Включён ли антиспам (только каналы/супергруппы).
+    #[serde(default)]
+    pub antispam: bool,
 }
 
 /// Полное описание пользователя (users.getFullUser + флаги).
@@ -1075,6 +1078,14 @@ pub trait TelegramService: Send + Sync {
         _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<i32> {
         anyhow::bail!("round video is not implemented for this backend")
+    }
+    /// Включить/выключить антиспам канала (channels.toggleAntiSpam).
+    async fn toggle_antispam(&self, _chat_id: i64, _enabled: bool) -> anyhow::Result<()> {
+        anyhow::bail!("antispam is not implemented for this backend")
+    }
+    /// Пожаловаться на спам от имени чата (messages.reportSpam).
+    async fn report_spam(&self, _chat_id: i64) -> anyhow::Result<bool> {
+        anyhow::bail!("report_spam is not implemented for this backend")
     }
     fn is_connected(&self) -> bool;
 }
