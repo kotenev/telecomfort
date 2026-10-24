@@ -56,6 +56,16 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                             app.clear_passcode();
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Автоблок через (сек, 0 — выкл):");
+                        let mut secs = app.cfg.ui.auto_lock_secs.to_string();
+                        if ui.text_edit_singleline(&mut secs).changed() {
+                            if let Ok(v) = secs.trim().parse::<u64>() {
+                                app.cfg.ui.auto_lock_secs = v;
+                                let _ = app.cfg.save();
+                            }
+                        }
+                    });
                     ui.label(
                         egui::RichText::new("PIN хранится как SHA-256, блокировка — при каждом старте.")
                             .small()

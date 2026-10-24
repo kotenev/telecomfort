@@ -568,6 +568,18 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                             format!("автоудаление: {ttl}с")
                         });
                     }
+                    ui.horizontal(|ui| {
+                        let mut anti = info.antispam;
+                        ui.label("антиспам:");
+                        if ui.checkbox(&mut anti, "").changed() {
+                            app.toggle_antispam(cid, anti);
+                        }
+                        ui.label(
+                            egui::RichText::new("только каналы/супергруппы + права админа")
+                                .small()
+                                .weak(),
+                        );
+                    });
                     ui.separator();
                     // Собеседник (для 1-1): bio + флаги.
                     if let Some(pf) = app.peer_full.get(&cid).cloned() {
@@ -1262,6 +1274,15 @@ fn bubble_content(
                 .clicked()
             {
                 app.react_to(chat_id, m.id, emoji);
+            }
+        }
+        if !m.outgoing {
+            if ui
+                .small_button("⚠")
+                .on_hover_text("Пожаловаться на спам")
+                .clicked()
+            {
+                app.confirm_action = Some(crate::ui::app::ConfirmAction::ReportSpam { chat_id });
             }
         }
         if m.outgoing {

@@ -3164,6 +3164,7 @@ impl GrammersBackend {
                 online_count: f.online_count,
                 linked_chat_id: f.linked_chat_id,
                 ttl_period: f.ttl_period,
+                antispam: f.antispam,
             }),
             tl::enums::ChatFull::CommunityFull(_) => Ok(super::ChatFullInfo::default()),
         }
@@ -4040,6 +4041,61 @@ impl GrammersBackend {
     }
 }
 
+impl GrammersBackend {
+    /// Антиспам канала (channels.toggleAntiSpam).
+    pub async fn toggle_antispam(&self, chat_id: i64, enabled: bool) -> Result<()> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let channel: tl::enums::InputChannel = pref.into();
+        self.client
+            .invoke(&tl::functions::channels::ToggleAntiSpam { channel, enabled })
+            .await
+            .context("toggleAntiSpam failed (нужны права админа?)")?;
+        Ok(())
+    }
+
+    /// Жалоба на спам (messages.reportSpam) — помечает пир.
+    pub async fn report_spam(&self, chat_id: i64) -> Result<bool> {
+        use grammers_client::tl;
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        let res = self
+            .client
+            .invoke(&tl::functions::messages::ReportSpam {
+                peer: (&pref).into(),
+            })
+            .await
+            .context("reportSpam failed")?;
+        Ok(res)
+    }
+
+    /// Скачивание с реальным прогрессом (параллельные чанки + resume).
+    pub async fn download_message_media_with_progress(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        dest_dir: &std::path::Path,
+        workers: usize,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<std::path::PathBuf> {
+        let pref = self.resolve_ref(chat_id).await?.context("peer not found")?;
+        std::fs::create_dir_all(dest_dir).ok();
+        let mut msgs = self
+            .client
+            .get_messages_by_id(pref.clone(), &[message_id])
+            .await?;
+        let msg = msgs
+            .drain(..)
+            .flatten()
+            .next()
+            .context("сообщение не найдено — возможно, удалено")?;
+        let media = msg.media().context("у сообщения нет медиа")?;
+        let fname = media_file_name(&media, message_id);
+        let dest = dest_dir.join(fname);
+        crate::media::mtproto::download_parallel(&self.client, &media, &dest, workers, on_progress)
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::telegram::TelegramService for GrammersBackend {
     async fn dialogs(&self) -> anyhow::Result<Vec<ChatInfo>> {
@@ -4559,6 +4615,30 @@ impl crate::telegram::TelegramService for GrammersBackend {
         schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<i32> {
         GrammersBackend::send_round_video(self, chat_id, path, caption, silent, schedule_at).await
+    }
+    async fn toggle_antispam(&self, chat_id: i64, enabled: bool) -> anyhow::Result<()> {
+        GrammersBackend::toggle_antispam(self, chat_id, enabled).await
+    }
+    async fn report_spam(&self, chat_id: i64) -> anyhow::Result<bool> {
+        GrammersBackend::report_spam(self, chat_id).await
+    }
+    async fn download_message_media_with_progress(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        dest_dir: &std::path::Path,
+        workers: usize,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> anyhow::Result<std::path::PathBuf> {
+        GrammersBackend::download_message_media_with_progress(
+            self,
+            chat_id,
+            message_id,
+            dest_dir,
+            workers,
+            on_progress,
+        )
+        .await
     }
     fn is_connected(&self) -> bool {
         GrammersBackend::is_connected(self)

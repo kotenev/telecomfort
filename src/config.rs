@@ -231,6 +231,9 @@ pub struct UiSettings {
     /// hex(SHA-256(PIN)). Пусто = блокировка выключена.
     #[serde(default)]
     pub passcode_sha256: String,
+    /// Автоблокировка после N секунд бездействия. 0 — только при старте.
+    #[serde(default)]
+    pub auto_lock_secs: u64,
 }
 
 fn default_theme() -> String {
@@ -242,6 +245,7 @@ impl Default for UiSettings {
         Self {
             theme: default_theme(),
             passcode_sha256: String::new(),
+            auto_lock_secs: 0,
         }
     }
 }

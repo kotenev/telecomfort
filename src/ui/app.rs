@@ -401,6 +401,8 @@ pub enum ConfirmAction {
     LeaveChannel { chat_id: i64 },
     /// Удалить свои сторис.
     DeleteStories { story_ids: Vec<i32> },
+    /// Пожаловаться на спам от имени чата.
+    ReportSpam { chat_id: i64 },
 }
 
 pub struct TelecomfortApp {
@@ -655,6 +657,7 @@ pub struct TelecomfortApp {
     pub pw_hint: String,
     pub pw_email: String,
     pub pw_armed: bool,
+    pub last_activity: std::time::Instant,
     pub voice_rec: Option<crate::media::voice_rec::Recorder>,
     pub voice_chat: Option<i64>,
     pub ttl_open: Option<i64>,
@@ -890,6 +893,7 @@ impl TelecomfortApp {
             pw_hint: String::new(),
             pw_email: String::new(),
             pw_armed: false,
+            last_activity: std::time::Instant::now(),
             voice_rec: None,
             voice_chat: None,
             ttl_open: None,
@@ -2620,6 +2624,83 @@ impl TelecomfortApp {
                 }
                 Err(e) => {
                     let _ = tx.send(BgEvent::Error(format!("кружок: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Переключить антиспам канала, затем обновить карточку.
+    pub fn toggle_antispam(&mut self, chat_id: i64, enabled: bool) {
+        let tg = Arc::clone(&self.tg);
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            match tg.toggle_antispam(chat_id, enabled).await {
+                Ok(()) => {
+                    let _ = tx.send(BgEvent::Log(format!(
+                        "антиспам {}: {}",
+                        chat_id,
+                        if enabled { "вкл" } else { "выкл" }
+                    )));
+                    match tg.chat_full(chat_id).await {
+                        Ok(info) => {
+                            let _ = tx.send(BgEvent::ChatFullLoaded { chat_id, info });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("инфо чата: {e:#}")));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("антиспам: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Проверить SOCKS5-прокси: подключение + whoami, без смены сессии.
+    pub fn test_proxy(&mut self) {
+        use crate::telegram::backend_grammers::GrammersBackend;
+        let api_id: i32 = match self.api_id.trim().parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.status = "API ID должен быть числом".into();
+                return;
+            }
+        };
+        if self.api_hash.trim().is_empty() {
+            self.status = "заполните API HASH".into();
+            return;
+        }
+        let api_hash = self.api_hash.trim().to_string();
+        let proxy = {
+            let pu = self.proxy_url.trim().to_string();
+            if pu.is_empty() {
+                None
+            } else {
+                Some(pu)
+            }
+        };
+        if proxy.is_none() {
+            self.status = "прокси не задан — нечего проверять".into();
+            return;
+        }
+        let tx = self.tx.clone();
+        let rt = self.rt.clone();
+        self.status = "проверяю прокси…".into();
+        // Отдельный temp-сессионный файл, чтобы не трогать основную сессию.
+        let probe_path =
+            std::env::temp_dir().join(format!("telecomfort_proxy_probe_{api_id}.session"));
+        rt.spawn(async move {
+            match GrammersBackend::connect_with_proxy(&probe_path, api_id, &api_hash, proxy).await {
+                Ok(backend) => {
+                    let ok = backend.is_authorized().await.unwrap_or(false);
+                    let _ = tx.send(BgEvent::Log(format!(
+                        "прокси: соединение OK (авторизован: {ok})"
+                    )));
+                    let _ = std::fs::remove_file(&probe_path);
+                }
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Error(format!("прокси: {e:#}")));
                 }
             }
         });
@@ -4728,6 +4809,21 @@ impl TelecomfortApp {
                     }
                 });
             }
+            ConfirmAction::ReportSpam { chat_id } => {
+                self.rt.spawn(async move {
+                    match tg.report_spam(chat_id).await {
+                        Ok(true) => {
+                            let _ = tx.send(BgEvent::Log("жалоба на спам отправлена".into()));
+                        }
+                        Ok(false) => {
+                            let _ = tx.send(BgEvent::Log("сервер не принял жалобу".into()));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(BgEvent::Error(format!("жалоба: {e:#}")));
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -5640,6 +5736,25 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 
 impl eframe::App for TelecomfortApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Активность (клик/клавиша/скролл) сбрасывает таймер автоблокировки.
+        let active = ui.input(|i| {
+            i.pointer.any_click()
+                || !i.keys_down.is_empty()
+                || i.smooth_scroll_delta != egui::Vec2::ZERO
+        });
+        if active {
+            self.last_activity = std::time::Instant::now();
+        }
+        if !self.locked
+            && !self.cfg.ui.passcode_sha256.is_empty()
+            && auto_lock_due_secs(
+                self.last_activity.elapsed().as_secs(),
+                self.cfg.ui.auto_lock_secs,
+            )
+        {
+            self.locked = true;
+            self.passcode_input.clear();
+        }
         if self.locked {
             self.show_lock_screen(ui);
             return;
@@ -5729,6 +5844,10 @@ impl eframe::App for TelecomfortApp {
                 ConfirmAction::DeleteStories { story_ids } => (
                     "🗑 Удалить сторис?",
                     format!("Удалить {} шт. безвозвратно?", story_ids.len()),
+                ),
+                ConfirmAction::ReportSpam { .. } => (
+                    "⚠ Пожаловаться на спам?",
+                    "Чат будет помечен как спам (messages.reportSpam).".to_string(),
                 ),
             };
             egui::Window::new(title)
@@ -5880,6 +5999,11 @@ pub fn parse_jump_date(s: &str) -> Option<i64> {
     Some(days * 86400 + 43200)
 }
 
+/// Пора ли автоблокироваться: таймаут задан и простой превышен.
+pub fn auto_lock_due_secs(idle_secs: u64, timeout_secs: u64) -> bool {
+    timeout_secs > 0 && idle_secs >= timeout_secs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5940,6 +6064,15 @@ mod tests {
         assert!(white > 1000, "white={white}");
         // Пустой payload не должен паниковать.
         let _ = qr_image_232("");
+    }
+
+    #[test]
+    fn auto_lock_due_secs_logic() {
+        assert!(!auto_lock_due_secs(3600, 0)); // выключено
+        assert!(!auto_lock_due_secs(59, 60));
+        assert!(auto_lock_due_secs(60, 60));
+        assert!(auto_lock_due_secs(61, 60));
+        assert!(auto_lock_due_secs(u64::MAX, 1));
     }
 
     #[test]

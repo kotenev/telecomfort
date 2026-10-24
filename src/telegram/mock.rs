@@ -1012,6 +1012,7 @@ impl TelegramService for MockTelegram {
     }
     async fn chat_full(&self, _chat_id: i64) -> anyhow::Result<ChatFullInfo> {
         Ok(ChatFullInfo {
+            antispam: false,
             about: "Демо-описание канала (mock)".into(),
             participants_count: Some(1234),
             admins_count: Some(3),
@@ -1183,6 +1184,12 @@ impl TelegramService for MockTelegram {
         _schedule_at: Option<std::time::SystemTime>,
     ) -> anyhow::Result<i32> {
         Ok(9200)
+    }
+    async fn toggle_antispam(&self, _chat_id: i64, _enabled: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn report_spam(&self, _chat_id: i64) -> anyhow::Result<bool> {
+        Ok(true)
     }
     async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
         Ok((vec![7u8; 16], 9_999_999_999))
@@ -1807,6 +1814,9 @@ mod tests {
                 .expect("round"),
             9200
         );
+        // Антиспам и жалоба: mock всегда ок.
+        m.toggle_antispam(-1001, true).await.expect("antispam");
+        assert!(m.report_spam(-1001).await.expect("report"));
         assert!(m.change_password("old", "123", "", "").await.is_err());
     }
 }
