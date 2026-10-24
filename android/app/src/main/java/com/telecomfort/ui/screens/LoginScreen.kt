@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import com.telecomfort.core.Core
+import com.telecomfort.core.optStr
 import kotlinx.coroutines.launch
 
 /**
@@ -108,7 +109,7 @@ fun LoginScreen(onDone: () -> Unit, store: com.telecomfort.core.SecureStore? = n
                         val r = Core.call("sign_in_code", mapOf("key" to (loginKey ?: ""), "code" to code))
                         if (r.optString("status") == "password_required") {
                             stage = "password"
-                            hint = runCatching { Core.call("password_hint").optString("hint", null) }.getOrNull()
+                            hint = runCatching { Core.call("password_hint").optStr("hint") }.getOrNull()
                             status = "Нужен пароль 2FA"
                         } else persistAndGo()
                     }.onFailure(::err)

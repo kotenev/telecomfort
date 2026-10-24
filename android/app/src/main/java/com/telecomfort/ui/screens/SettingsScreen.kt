@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -101,7 +102,7 @@ fun SettingsScreen(nav: NavController, onToggleTheme: () -> Unit, store: com.tel
     LazyColumn(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row {
-                IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
+                IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
                 Text("Настройки", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Text("Тема: ", style = MaterialTheme.typography.bodySmall)
