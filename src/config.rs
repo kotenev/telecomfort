@@ -34,6 +34,9 @@ pub struct TelegramSettings {
     /// Путь к файлу сессии grammers
     #[serde(default = "default_session_path")]
     pub session_path: PathBuf,
+    /// SOCKS5-прокси для MTProto (socks5://user:pass@host:port), пусто — напрямую.
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 fn default_profile_name() -> String {
@@ -219,6 +222,30 @@ pub struct CalibreSettings {
     pub delete_after_import: bool,
 }
 
+/// Оформление и защита приложения.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiSettings {
+    /// "dark" | "light".
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// hex(SHA-256(PIN)). Пусто = блокировка выключена.
+    #[serde(default)]
+    pub passcode_sha256: String,
+}
+
+fn default_theme() -> String {
+    "dark".into()
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            passcode_sha256: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncSettings {
     /// Включить фоновую синхронизацию (диалоги/сторис/автозагрузка)
@@ -273,6 +300,8 @@ pub struct AppConfig {
     pub calibre: CalibreSettings,
     #[serde(default)]
     pub sync: SyncSettings,
+    #[serde(default)]
+    pub ui: UiSettings,
 }
 
 impl Default for AppConfig {
@@ -286,6 +315,7 @@ impl Default for AppConfig {
             yandex: YandexSettings::default(),
             calibre: CalibreSettings::default(),
             sync: SyncSettings::default(),
+            ui: UiSettings::default(),
         }
     }
 }
@@ -343,6 +373,7 @@ impl AppConfig {
                     api_hash: String::new(),
                     phone: String::new(),
                     session_path: session_path_for("main"),
+                    proxy_url: String::new(),
                 });
                 self.active_profile = "main".into();
             }
@@ -464,6 +495,23 @@ mod tests {
             .rules
             .iter()
             .any(|r| r.chat == "test-chat"));
+    }
+
+    #[test]
+    fn ui_settings_roundtrip_and_defaults() {
+        let u = UiSettings::default();
+        assert_eq!(u.theme, "dark");
+        assert!(u.passcode_sha256.is_empty());
+        let mut cfg = AppConfig::default();
+        cfg.ui.theme = "light".into();
+        cfg.ui.passcode_sha256 = "abc123".into();
+        let text = toml::to_string(&cfg).unwrap();
+        let parsed: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.ui.theme, "light");
+        assert_eq!(parsed.ui.passcode_sha256, "abc123");
+        // Старый конфиг без секции ui — дефолты, не ошибка.
+        let old: AppConfig = toml::from_str("active_profile = \"main\"\n").unwrap();
+        assert_eq!(old.ui.theme, "dark");
     }
 
     #[test]

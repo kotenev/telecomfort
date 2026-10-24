@@ -7,6 +7,63 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
             ui.heading("Настройки");
             ui.separator();
 
+            ui.collapsing("🎨 Оформление и 🔒 блокировка", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Тема:");
+                    let before = app.theme.clone();
+                    egui::ComboBox::from_id_salt("theme_pick")
+                        .selected_text(if app.theme == "light" { "☀ Светлая" } else { "🌙 Тёмная" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut app.theme, "dark".into(), "🌙 Тёмная");
+                            ui.selectable_value(&mut app.theme, "light".into(), "☀ Светлая");
+                        });
+                    if app.theme != before {
+                        app.apply_theme(ui.ctx());
+                        app.save_theme();
+                    }
+                    if !app.cfg.ui.passcode_sha256.is_empty()
+                        && ui.small_button("🔒 Заблокировать сейчас").clicked()
+                    {
+                        app.lock_now();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Новый PIN:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.passcode_new)
+                            .password(true)
+                            .desired_width(120.0),
+                    );
+                    ui.label("Повтор:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.passcode_confirm)
+                            .password(true)
+                            .desired_width(120.0),
+                    );
+                    if ui.small_button("💾 Задать PIN").clicked() {
+                        app.save_passcode();
+                    }
+                });
+                if !app.cfg.ui.passcode_sha256.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label("Текущий PIN:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut app.passcode_input)
+                                .password(true)
+                                .desired_width(120.0),
+                        );
+                        if ui.small_button("🧹 Убрать PIN").clicked() {
+                            app.clear_passcode();
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new("PIN хранится как SHA-256, блокировка — при каждом старте.")
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+
             ui.collapsing("🔑 Telegram (MTProto) · профили", |ui| {
                 super::login::show(app, ui);
             });
@@ -100,6 +157,9 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                 for s in app.sessions.clone() {
                     ui.horizontal(|ui| {
                         let cur = if s.current { " · текущая" } else { "" };
+                        if !s.current && ui.small_button("⏏").on_hover_text("Завершить эту сессию").clicked() {
+                            app.terminate_one_session(s.hash);
+                        }
                         ui.label(
                             egui::RichText::new(format!("{}{}", s.app_name, cur)).strong(),
                         );

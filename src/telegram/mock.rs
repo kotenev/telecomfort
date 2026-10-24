@@ -1,6 +1,9 @@
 //! Офлайн mock: позволяет открыть UI без API-ключей и показать все фичи.
 
-use super::{AccountInfo, ChatInfo, MessageInfo, StoryInfo, TelegramService};
+use super::{
+    AccountInfo, ChatFullInfo, ChatInfo, GifInfo, MessageInfo, NearbyPeer, PeerFullInfo,
+    ReactionVoter, StarGiftOption, StickerInfo, StoryInfo, TelegramService,
+};
 use async_trait::async_trait;
 
 pub struct MockTelegram;
@@ -988,6 +991,143 @@ impl TelegramService for MockTelegram {
         Ok((labels, values))
     }
 
+    async fn history_before(
+        &self,
+        chat_id: i64,
+        offset_id: i32,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        let all = self.history(chat_id, 500).await?;
+        Ok(all
+            .into_iter()
+            .filter(|m| m.id < offset_id)
+            .take(limit)
+            .collect())
+    }
+    async fn terminate_session(&self, _hash: i64) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn set_history_ttl(&self, _chat_id: i64, _period_secs: i32) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn chat_full(&self, _chat_id: i64) -> anyhow::Result<ChatFullInfo> {
+        Ok(ChatFullInfo {
+            about: "Демо-описание канала (mock)".into(),
+            participants_count: Some(1234),
+            admins_count: Some(3),
+            online_count: Some(56),
+            linked_chat_id: Some(-1002),
+            ttl_period: Some(0),
+        })
+    }
+    async fn peer_full(&self, _chat_id: i64) -> anyhow::Result<PeerFullInfo> {
+        Ok(PeerFullInfo {
+            about: "Демо-bio (mock)".into(),
+            premium: true,
+            verified: false,
+            scam: false,
+            fake: false,
+            voice_forbidden: false,
+        })
+    }
+    async fn message_reactions(
+        &self,
+        _chat_id: i64,
+        _message_id: i32,
+    ) -> anyhow::Result<Vec<ReactionVoter>> {
+        Ok(vec![
+            ReactionVoter {
+                user_id: 11,
+                name: "Анна".into(),
+                date: 1_700_000_000,
+                emoji: "❤".into(),
+            },
+            ReactionVoter {
+                user_id: 12,
+                name: "Борис".into(),
+                date: 1_700_000_100,
+                emoji: "👍".into(),
+            },
+        ])
+    }
+    async fn recent_stickers(&self) -> anyhow::Result<Vec<StickerInfo>> {
+        Ok(vec![
+            StickerInfo {
+                id: 501,
+                access_hash: 0,
+                file_reference: vec![],
+                emoji: Some("😀".into()),
+                preview_path: None,
+            },
+            StickerInfo {
+                id: 502,
+                access_hash: 0,
+                file_reference: vec![],
+                emoji: Some("🔥".into()),
+                preview_path: None,
+            },
+        ])
+    }
+    async fn send_document_ref(
+        &self,
+        _chat_id: i64,
+        doc_id: i64,
+        _access_hash: i64,
+        _file_reference: Vec<u8>,
+        _caption: &str,
+        _silent: bool,
+    ) -> anyhow::Result<i32> {
+        Ok(9000 + (doc_id % 100) as i32)
+    }
+    async fn saved_gifs(&self) -> anyhow::Result<Vec<GifInfo>> {
+        Ok(vec![GifInfo {
+            id: 601,
+            access_hash: 0,
+            file_reference: vec![],
+            width: 320,
+            height: 240,
+            duration_ms: 1500,
+            preview_path: None,
+        }])
+    }
+    async fn send_voice(
+        &self,
+        _chat_id: i64,
+        _path: &std::path::Path,
+        _caption: &str,
+        _silent: bool,
+        _schedule_at: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<i32> {
+        Ok(9100)
+    }
+    async fn nearby(&self, _lat: f64, _long: f64) -> anyhow::Result<Vec<NearbyPeer>> {
+        Ok(vec![
+            NearbyPeer {
+                id: 21,
+                title: "Кафе рядом (mock)".into(),
+                is_user: false,
+            },
+            NearbyPeer {
+                id: 22,
+                title: "Анна (mock)".into(),
+                is_user: true,
+            },
+        ])
+    }
+    async fn star_gift_options(&self, _chat_id: i64) -> anyhow::Result<Vec<StarGiftOption>> {
+        Ok(vec![
+            StarGiftOption {
+                stars: 25,
+                currency: "XTR".into(),
+                amount: 100,
+            },
+            StarGiftOption {
+                stars: 100,
+                currency: "XTR".into(),
+                amount: 350,
+            },
+        ])
+    }
     async fn qr_login_start(&self) -> anyhow::Result<(Vec<u8>, i64)> {
         Ok((vec![7u8; 16], 9_999_999_999))
     }
@@ -1545,5 +1685,52 @@ mod tests {
             .await
             .expect("album");
         assert_eq!(ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn mock_management_contract_15() {
+        use crate::telegram::TelegramService;
+        let m = MockTelegram;
+        // Пагинация назад: history_before(200) отдаёт только id < 200.
+        let page = m.history_before(-1001, 200, 50).await.expect("page");
+        assert!(page.iter().all(|x| x.id < 200));
+        // history_at_date возвращает окно + флаг начала.
+        let (win, _) = m
+            .history_at_date(-1001, 1_700_000_000, 20)
+            .await
+            .expect("at_date");
+        assert!(win.len() <= 20);
+        // Одна сессия завершается без ошибки.
+        m.terminate_session(123).await.expect("terminate");
+        m.set_history_ttl(-1001, 86400).await.expect("ttl");
+        // Полные описания.
+        let full = m.chat_full(-1001).await.expect("chat_full");
+        assert!(!full.about.is_empty() && full.participants_count == Some(1234));
+        let peer = m.peer_full(11).await.expect("peer_full");
+        assert!(peer.premium && !peer.scam);
+        // Реакции: два голосующих.
+        let voters = m.message_reactions(-1001, 5).await.expect("reactions");
+        assert_eq!(voters.len(), 2);
+        assert_eq!(voters[0].emoji, "❤");
+        // Стикеры/GIF: превью опциональны, отправка по ссылке даёт id.
+        let stickers = m.recent_stickers().await.expect("stickers");
+        assert!(!stickers.is_empty());
+        let sid = m
+            .send_document_ref(-1001, 501, 0, vec![], "", false)
+            .await
+            .expect("send ref");
+        assert!(sid >= 9000);
+        let gifs = m.saved_gifs().await.expect("gifs");
+        assert_eq!(gifs.len(), 1);
+        // Войс, рядом, тарифы подарков.
+        assert_eq!(
+            m.send_voice(-1001, std::path::Path::new("a.ogg"), "", false, None)
+                .await
+                .expect("voice"),
+            9100
+        );
+        assert_eq!(m.nearby(55.75, 37.61).await.expect("nearby").len(), 2);
+        let opts = m.star_gift_options(11).await.expect("gifts");
+        assert_eq!(opts[0].stars, 25);
     }
 }

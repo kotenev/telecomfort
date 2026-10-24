@@ -37,6 +37,7 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
                     api_hash: String::new(),
                     phone: String::new(),
                     session_path: session_path_for(&name),
+                    proxy_url: String::new(),
                 });
                 app.active_profile = name;
                 switch_profile(app);
@@ -79,6 +80,12 @@ pub fn show(app: &mut TelecomfortApp, ui: &mut egui::Ui) {
         ui.text_edit_singleline(&mut app.api_id);
         ui.label("API HASH:");
         ui.text_edit_singleline(&mut app.api_hash);
+    });
+    ui.horizontal(|ui| {
+        ui.label("SOCKS5:");
+        ui.text_edit_singleline(&mut app.proxy_url).on_hover_text(
+            "socks5://user:pass@host:port — пусто = напрямую. MTProto-прокси не поддерживаются.",
+        );
     });
     ui.horizontal(|ui| {
         ui.label("Телефон:");
@@ -195,6 +202,7 @@ fn switch_profile(app: &mut TelecomfortApp) {
         };
         app.api_hash = p.api_hash.clone();
         app.phone = p.phone.clone();
+        app.proxy_url = p.proxy_url.clone();
         app.login_stage = "api".into();
         app.status = format!("профиль «{}» выбран — введите код или войдите", p.name);
         app.profiles_to_cfg();
@@ -265,6 +273,7 @@ fn start_login(app: &mut TelecomfortApp) {
         p.api_id = api_id;
         p.api_hash = api_hash.clone();
         p.phone = phone.clone();
+        p.proxy_url = app.proxy_url.trim().to_string();
         if p.session_path.as_os_str().is_empty() {
             p.session_path = session_path_for(&profile_name);
         }
@@ -275,12 +284,21 @@ fn start_login(app: &mut TelecomfortApp) {
     let _ = app.cfg.save();
     app.status = "подключаюсь…".into();
     app.login_stage = "connecting".into();
+    let proxy = {
+        let pu = app.proxy_url.trim().to_string();
+        if pu.is_empty() {
+            None
+        } else {
+            Some(pu)
+        }
+    };
 
     rt.spawn(async move {
-        match crate::telegram::backend_grammers::GrammersBackend::connect(
+        match crate::telegram::backend_grammers::GrammersBackend::connect_with_proxy(
             &session_path,
             api_id,
             &api_hash,
+            proxy,
         )
         .await
         {
