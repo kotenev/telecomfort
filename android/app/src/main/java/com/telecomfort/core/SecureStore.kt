@@ -1,3 +1,8 @@
+// AndroidX security-crypto 1.1.0 помечает свои классы EncryptedSharedPreferences/MasterKey
+// устаревшими и советует обычные SharedPreferences. Шифрование оставляем намеренно,
+// поэтому предупреждение подавлено для всего файла, а не заменено менее защищённым API.
+@file:Suppress("DEPRECATION")
+
 package com.telecomfort.core
 
 import android.content.Context
@@ -7,6 +12,12 @@ import androidx.security.crypto.MasterKey
 import java.security.MessageDigest
 
 /** Шифрохранилище (EncryptedSharedPreferences): ключи, прокси, PIN-sha256, токены. */
+/*
+ * AndroidX security-crypto 1.1.0 помечает эти классы устаревшими и советует обычные
+ * SharedPreferences. Шифрование оставляем намеренно, поэтому предупреждение подавлено
+ * точечно, а не заменено менее защищённым API.
+ */
+@Suppress("DEPRECATION")
 class SecureStore(ctx: Context) {
     private val prefs: SharedPreferences by lazy {
         val masterKey = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()

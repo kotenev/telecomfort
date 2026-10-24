@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -319,7 +321,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Назад") }
+            IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
             com.telecomfort.ui.AvatarImage(chatId, chatTitle.ifEmpty { "?" }, size = 36.dp)
             IconButton(onClick = {
                 scope.launch {
@@ -763,7 +765,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     }
     Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (editMsg != null) "Новый текст…" else "Сообщение…") })
-            IconButton(onClick = { sendText() }) { Icon(Icons.Default.Send, "Отправить") }
+            IconButton(onClick = { sendText() }) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить") }
             IconButton(onClick = { pickFiles.launch("*/*") }) { Text("📎") }
             IconButton(onClick = { pickContact.launch(null) }) { Text("👤") }
             IconButton(onClick = {
@@ -843,7 +845,8 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                         "Админов" to j.opt("admins_count"),
                         "Онлайн" to j.opt("online_count"),
                         "TTL" to j.opt("ttl_period"),
-                    ).filter { it.second != null && it.second.toString() != "null" }
+                    ).mapNotNull { (k, v) -> v?.let { k to it.toString() } }
+                        .filter { it.second != "null" }
                         .forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.bodySmall) }
                     if (j.optBoolean("antispam", false)) Text("🛡 антиспам вкл", style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = {

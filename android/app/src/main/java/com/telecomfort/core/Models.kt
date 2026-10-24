@@ -16,7 +16,10 @@ data class Story(val id: Int, val peerId: Long, val caption: String, val date: L
 data class StarTx(val id: String, val date: Long, val stars: Long,
                   val title: String?, val peer: String?, val flags: List<String>)
 
-fun JSONObject.optStr(k: String): String? = if (isNull(k)) null else optString(k, null)
+fun JSONObject.optStr(k: String): String? = when (val v = opt(k)) {
+    is String -> v
+    else -> null
+}
 fun JSONObject.optLong(k: String, d: Long = 0): Long = optLong(k, d)
 
 fun parseChat(o: JSONObject) = Chat(

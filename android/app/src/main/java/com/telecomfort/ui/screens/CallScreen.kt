@@ -3,7 +3,9 @@ package com.telecomfort.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -19,6 +21,29 @@ import com.telecomfort.core.Core
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+
+/**
+ * Переключатель динамика для звонка. На API 31+ используем CommunicationDevice,
+ * на старых — legacy isSpeakerphoneOn (подавлено точечно ради minSdk 26).
+ */
+private fun AudioManager.setCallSpeaker(enabled: Boolean) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (enabled) {
+            val speaker = availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speaker == null || !setCommunicationDevice(speaker)) {
+                @Suppress("DEPRECATION")
+                isSpeakerphoneOn = true
+            }
+        } else {
+            clearCommunicationDevice()
+        }
+        return
+    }
+    @Suppress("DEPRECATION")
+    isSpeakerphoneOn = enabled
+}
 
 /**
  * Экран 1:1 звонка. Медиапоток (libtgvoip + SRTP-подобное шифрование,
@@ -75,7 +100,7 @@ fun CallScreen(nav: NavController) {
     }
     DisposableEffect(Unit) {
         onDispose {
-            am.isSpeakerphoneOn = false
+            am.setCallSpeaker(false)
             am.mode = AudioManager.MODE_NORMAL
         }
     }
@@ -152,7 +177,7 @@ fun CallScreen(nav: NavController) {
                         }) { Text(if (muted) "🔇 Микрофон выкл" else "🎤 Микрофон вкл") }
                         FilledTonalButton(onClick = {
                             speaker = !speaker
-                            am.isSpeakerphoneOn = speaker
+                            am.setCallSpeaker(speaker)
                         }) { Text(if (speaker) "🔊 Динамик" else "📞 Трубка") }
                     }
                     Spacer(Modifier.height(16.dp))

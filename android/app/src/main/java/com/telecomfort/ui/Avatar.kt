@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.telecomfort.core.Core
+import com.telecomfort.core.optStr
 import kotlinx.coroutines.launch
 
 /** Кэш аватаров в памяти: chatId -> Bitmap (отсутствие записи = ещё не пробовали). */
@@ -42,7 +43,7 @@ fun AvatarImage(chatId: Long, title: String, size: Dp = 40.dp, onClick: (() -> U
             scope.launch {
                 runCatching {
                     val r = Core.call("avatar_path", mapOf("chat" to chatId))
-                    val path = r.optString("path", null)
+                    val path = r.optStr("path")
                     val b = if (!path.isNullOrEmpty()) BitmapFactory.decodeFile(path) else null
                     if (b != null) {
                         AvatarCache.bitmaps[chatId] = b
