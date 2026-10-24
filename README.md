@@ -101,7 +101,9 @@
    переименование/удаление (⚙ Папки), вкладки-фильтры остаются.
    Оформление: тёмная/светлая тема (Настройки → 🎨, применяется сразу, хранится в конфиге).
    Блокировка приложения PIN-кодом (🔒 в Настройках: SHA-256, экран блокировки при старте, кнопка «Заблокировать сейчас»).
-   SOCKS5-прокси (поле в профиле входа, `socks5://user:pass@host:port`; MTProto-прокси grammers не поддерживает).
+   Прокси (поле в профиле входа): SOCKS5 `socks5://user:pass@host:port` и MTProxy
+   (`tg://proxy?server=…&port=…&secret=…`, `mtproto://host:port?secret=…`) — obfuscated2 +
+   intermediate/padded-intermediate через локальный SOCKS5-мост (`src/telegram/mtproxy.rs`).
    Экспорт истории чата (⤵J/⤵H в шапке: JSON до 20000 сообщений страницами по 500, HTML-таблица с экранированием).
    Автоудаление истории (⏳ в шапке: пресеты 1д/7д/1мес/1г/своё, `messages.setHistoryTTL`).
    Карточка «О чате» (ℹ️: описание, участники/админы/онлайн, связанный чат с переходом, TTL; для 1-1 — bio + флаги Premium/✓/SCAM/фейк/запрет голосовых, `users.getFullUser`).
@@ -150,10 +152,13 @@
    сверка ключа по QR/эмодзи) + отдельные апдейты (updateEncryption, updateEncryptedChatTyping).
    В grammers E2E нет вообще; самописный E2E — риск малозаметных криптобагов (padding oracle,
    replay) с катастрофическими последствиями. Вывод: не реализуем из соображений безопасности.
-3. MTProto-прокси (секретные прокси). Транспорт grammers-mtsender жёстко зашит на TCP
-   (full/abridged/intermediate); SOCKS5 цепляется спереди через proxy_url (реализовано).
-   MTProto-прокси (obfuscated2-хендшейк на секрете) требует правок транспорта внутри
-   grammers-mtsender — только форком. Вывод: SOCKS5 покрывает кейс, MTProto — нужен форк.
+3. MTProto-прокси (секретные прокси): **реализовано** без форка grammers. Локальный
+   SOCKS5-мост принимает CONNECT от grammers, сам открывает TCP к MTProxy, шлёт
+   64-байтовый obfuscated2-init (AES-256-CTR + SHA256(secret), DC id и тег
+   `0xdddddddd`/`0xeeeeeeee`) и перекладывает `Full`-кадры grammers в
+   intermediate/padded-intermediate и обратно. Секрет 16 байт → intermediate,
+   17 байт с `0xdd` → padded-intermediate. Ссылки `tg://proxy`, `t.me/proxy`,
+   `mtproto://` (параметр `dc=` переопределяет DC). Тесты: `src/telegram/mtproxy.rs`.
 
 Работает в **демо-режиме (mock)** без ключей — можно сразу открыть UI и посмотреть все фичи.
 Для live-режима нужны `api_id` / `api_hash` с https://my.telegram.org.

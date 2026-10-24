@@ -53,6 +53,8 @@ image = { version = "0.25", features = ["png", "jpeg", "webp", "gif"] }
 sha2 = "0.11"
 sha1 = "0.11"
 aes = "0.9"
+# AES-256-CTR для obfuscated2 MTProxy (та же версия, что тянет grammers-crypto).
+ctr = "0.10"
 num-bigint = "0.4"
 num-traits = "0.2"
 getrandom = "0.3"

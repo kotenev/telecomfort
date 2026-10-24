@@ -34,7 +34,9 @@ pub struct TelegramSettings {
     /// Путь к файлу сессии grammers
     #[serde(default = "default_session_path")]
     pub session_path: PathBuf,
-    /// SOCKS5-прокси для MTProto (socks5://user:pass@host:port), пусто — напрямую.
+    /// Прокси для MTProto: `socks5://user:pass@host:port`, либо MTProxy-ссылка
+    /// `tg://proxy?server=…&port=…&secret=…` / `mtproto://host:port?secret=…`.
+    /// Пусто — напрямую.
     #[serde(default)]
     pub proxy_url: String,
 }
