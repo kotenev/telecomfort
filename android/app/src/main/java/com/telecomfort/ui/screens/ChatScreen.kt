@@ -36,6 +36,11 @@ import java.io.File
 fun ChatScreen(chatId: Long, nav: NavController) {
     var items by remember { mutableStateOf<List<Message>>(emptyList()) }
     var rawItems by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var replyTo by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    var editMsg by remember { mutableStateOf<Message?>(null) }
+    var forwardIds by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var forwardTo by remember { mutableStateOf<Long?>(null) }
+    var forwardChats by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var text by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var showInfo by remember { mutableStateOf(false) }
@@ -72,6 +77,19 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     }
     LaunchedEffect(chatId) { reload() }
 
+    val pickRound = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                val dst = File(ctx.cacheDir, "round_${System.currentTimeMillis()}.mp4")
+                ctx.contentResolver.openInputStream(uri)?.use { it.copyTo(dst.outputStream()) }
+                val r = Core.call("send_round", mapOf("chat" to chatId, "path" to dst.absolutePath, "caption" to text))
+                status = "Кружок отправлен (msg ${r.optInt("id")})"
+                text = ""
+                reload()
+            }.onFailure { status = "Ошибка: ${it.message}" }
+        }
+    }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
@@ -91,7 +109,15 @@ fun ChatScreen(chatId: Long, nav: NavController) {
     fun sendText() {
         scope.launch {
             runCatching {
-                Core.call("send_text", mapOf("chat" to chatId, "text" to text))
+                if (editMsg != null) {
+                    Core.call("edit_text", mapOf("chat" to chatId, "id" to editMsg!!.id, "text" to text))
+                    editMsg = null
+                } else {
+                    val params = mutableMapOf<String, Any>("chat" to chatId, "text" to text)
+                    replyTo?.let { params["reply_to"] = it.first }
+                    Core.call("send_text", params)
+                    replyTo = null
+                }
                 text = ""
                 reload()
             }.onFailure { status = "Ошибка: ${it.message}" }
@@ -200,8 +226,27 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }, dismissButton = { TextButton(onClick = { showJump = false }) { Text("Отмена") } })
             }
             IconButton(onClick = { showExport = true }) { Text("⤵") }
+            IconButton(onClick = { nav.navigate("stars") }) { Text("⭐") }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { reload() }) { Icon(Icons.Default.Refresh, "Обновить") }
+        }
+        var mediaFilter by remember { mutableStateOf("") }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("" to "все", "photo" to "📷", "video" to "🎬", "links" to "🔗").forEach { (kind, label) ->
+                FilterChip(selected = kind == mediaFilter, onClick = {
+                    mediaFilter = kind
+                    scope.launch {
+                        runCatching {
+                            if (kind.isEmpty()) reload()
+                            else {
+                                val r = Core.call("search_media", mapOf("chat" to chatId, "kind" to kind, "limit" to 100))
+                                rawItems = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                items = rawItems.map { parseMessage(it) }
+                            }
+                        }.onFailure { status = "Ошибка: ${it.message}" }
+                    }
+                }, label = { Text(label) })
+            }
         }
         LazyColumn(Modifier.weight(1f), state = listState, reverseLayout = true) {
             itemsIndexed(items.reversed(), key = { _, m -> m.id }) { ri, m ->
@@ -258,6 +303,42 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                     }.onFailure { status = "Ошибка перевода (нужен Premium?): ${it.message}" }
                                 }
                             }) { Text("🌐") }
+                        TextButton(onClick = {
+                            replyTo = m.id to m.text.take(80)
+                            editMsg = null
+                        }) { Text("↩") }
+                        if (m.outgoing) {
+                            TextButton(onClick = {
+                                editMsg = m; text = m.text; replyTo = null
+                            }) { Text("✏️") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("delete_msg", mapOf("chat" to chatId, "id" to m.id))
+                                        reload()
+                                    }.onFailure { status = "Ошибка: ${it.message}" }
+                                }
+                            }) { Text("🗑") }
+                        }
+                        TextButton(onClick = {
+                            forwardIds = listOf(m.id)
+                            scope.launch {
+                                runCatching {
+                                    val r = Core.call("dialogs")
+                                    forwardChats = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                    forwardTo = null
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("↗") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("toggle_pin", mapOf("chat" to chatId, "id" to m.id))
+                                    status = "Закреплено (повторный тап по закреплённому — открепить в окне 📌)"
+                                    reload()
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("📌") }
                         if (poll != null) {
                             Column {
                                 Text("📊 ${poll.optString("question")}", style = MaterialTheme.typography.bodySmall)
@@ -274,6 +355,16 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                                     }) {
                                         Text("${if (a.optBoolean("chosen")) "✓ " else ""}${a.optString("text")} ${a.optInt("votes", 0)}")
                                     }
+                                }
+                                if (m.outgoing && !poll.optBoolean("closed")) {
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            runCatching {
+                                                Core.call("stop_poll", mapOf("chat" to chatId, "id" to m.id))
+                                                reload()
+                                            }.onFailure { status = "Ошибка: ${it.message}" }
+                                        }
+                                    }) { Text("■ Закрыть опрос") }
                                 }
                             }
                         }
@@ -304,8 +395,22 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 TextButton(onClick = { showStickers = false; showGifs = false }) { Text("✕") }
             }
         }
+        replyTo?.let { (id, snippet) ->
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("↩ Ответ на #$id: ${snippet.take(60)}", modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { replyTo = null }) { Text("✕") }
+            }
+        }
+        editMsg?.let { em ->
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("✏️ Правка #${em.id}", modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { editMsg = null; text = "" }) { Text("✕") }
+            }
+        }
         Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text("Сообщение…") })
+            OutlinedTextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (editMsg != null) "Новый текст…" else "Сообщение…") })
             IconButton(onClick = { sendText() }) { Icon(Icons.Default.Send, "Отправить") }
             IconButton(onClick = { pickFile.launch("*/*") }) { Text("📎") }
             IconButton(onClick = {
@@ -326,6 +431,7 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("📍") }
             IconButton(onClick = { toggleRecord() }) { Text(if (recording != null) "■" else "🎙") }
+            IconButton(onClick = { pickRound.launch("video/*") }) { Text("◉") }
             IconButton(onClick = {
                 showStickers = !showStickers; showGifs = false
                 if (showStickers && stickers.isEmpty()) scope.launch {
@@ -365,6 +471,57 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                     ).filter { it.second != null && it.second.toString() != "null" }
                         .forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.bodySmall) }
                     if (j.optBoolean("antispam", false)) Text("🛡 антиспам вкл", style = MaterialTheme.typography.bodySmall)
+                    var peerInfo by remember { mutableStateOf<org.json.JSONObject?>(null) }
+                    var invite by remember { mutableStateOf<String?>(null) }
+                    var slowmode by remember { mutableStateOf("0") }
+                    LaunchedEffect(chatId) {
+                        scope.launch {
+                            runCatching { peerInfo = Core.call("peer_full", mapOf("chat" to chatId)) }.onFailure {}
+                            runCatching { invite = Core.call("invite_link", mapOf("chat" to chatId)).optString("link") }.onFailure {}
+                        }
+                    }
+                    peerInfo?.let { pf ->
+                        val about = pf.optString("about", "")
+                        if (about.isNotEmpty()) Text("О себе: $about", style = MaterialTheme.typography.bodySmall)
+                        val flags = listOf("⭐ Premium" to pf.optBoolean("premium"), "✓ верифицирован" to pf.optBoolean("verified"), "⚠ SCAM" to pf.optBoolean("scam"), "⛔ фейк" to pf.optBoolean("fake"))
+                            .filter { it.second }.joinToString(" · ") { it.first }
+                        if (flags.isNotEmpty()) Text(flags, style = MaterialTheme.typography.bodySmall)
+                    }
+                    invite?.let { link ->
+                        Text("🔗 $link", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        OutlinedTextField(slowmode, { slowmode = it }, label = { Text("Слоумод, сек") }, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    Core.call("set_slowmode", mapOf("chat" to chatId, "secs" to (slowmode.toLongOrNull() ?: 0)))
+                                    status = "Слоумод обновлён"
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("ОК") }
+                    }
+                    var antispamOn by remember { mutableStateOf(j.optBoolean("antispam", false)) }
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(antispamOn, { v ->
+                            antispamOn = v
+                            scope.launch {
+                                runCatching {
+                                    Core.call("toggle_antispam", mapOf("chat" to chatId, "enabled" to v))
+                                    status = "Антиспам: ${if (v) "вкл" else "выкл"}"
+                                }.onFailure { status = "Ошибка (нужны права?): ${it.message}" }
+                            }
+                        })
+                        Text("Антиспам (админы)", style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                Core.call("leave_channel", mapOf("chat" to chatId))
+                                nav.popBackStack()
+                            }.onFailure { status = "Ошибка: ${it.message}" }
+                        }
+                    }) { Text("🚪 Покинуть", color = MaterialTheme.colorScheme.error) }
                     j.optLong("linked_chat_id", 0).takeIf { it != 0L }?.let { linked ->
                         TextButton(onClick = { showInfo = false; nav.navigate("chat/$linked") }) {
                             Text("→ Связанный чат $linked")
@@ -379,8 +536,21 @@ fun ChatScreen(chatId: Long, nav: NavController) {
             LazyColumn(Modifier.heightIn(max = 400.dp)) {
                 items(participants.size) { i ->
                     val pm = participants[i]
-                    Text("• ${pm.optString("name", "?")}${if (pm.optBoolean("admin")) " 🛡" else ""}",
-                        style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text("• ${pm.optString("name", "?")}${if (pm.optBoolean("admin")) " 🛡" else ""}",
+                            modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        if (!pm.optBoolean("admin")) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        Core.call("kick_participant", mapOf("chat" to chatId, "user" to pm.optLong("id")))
+                                        val r = Core.call("participants", mapOf("chat" to chatId, "limit" to 200))
+                                        participants = (0 until r.getJSONArray("result").length()).map { r.getJSONArray("result").getJSONObject(it) }
+                                    }.onFailure { status = "Ошибка (нужны права?): ${it.message}" }
+                                }
+                            }) { Text("✕") }
+                        }
+                    }
                 }
             }
         }, confirmButton = { TextButton(onClick = { showParticipants = false }) { Text("Закрыть") } })
@@ -434,6 +604,30 @@ fun ChatScreen(chatId: Long, nav: NavController) {
                 }
             }) { Text("Создать") }
         }, dismissButton = { TextButton(onClick = { showPoll = false }) { Text("Отмена") } })
+    }
+    if (forwardIds.isNotEmpty()) {
+        var q by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = { forwardIds = emptyList() }, title = { Text("↗ Переслать в…") }, text = {
+            Column {
+                OutlinedTextField(q, { q = it }, label = { Text("Поиск чата") })
+                LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                    val list = forwardChats.filter { q.isEmpty() || it.optString("title").contains(q, true) }
+                    items(list.size) { i ->
+                        val c = list[i]
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    val r = Core.call("forward", mapOf("from" to chatId, "ids" to forwardIds, "to" to c.optLong("id")))
+                                    status = "Переслано: ${r.optInt("count")}"
+                                    forwardIds = emptyList()
+                                    reload()
+                                }.onFailure { status = "Ошибка: ${it.message}" }
+                            }
+                        }) { Text("→ ${c.optString("title")}") }
+                    }
+                }
+            }
+        }, confirmButton = {}, dismissButton = { TextButton(onClick = { forwardIds = emptyList() }) { Text("Отмена") } })
     }
     if (showTtl) {
         var secs by remember { mutableStateOf("86400") }
